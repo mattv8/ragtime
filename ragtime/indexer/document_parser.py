@@ -32,6 +32,12 @@ logger = get_logger(__name__)
 
 # Type alias for OCR mode
 OcrModeType = Literal["disabled", "tesseract", "vision"]
+
+
+class VisionOcrError(RuntimeError):
+    """A vision OCR request failed and must prevent clean index publication."""
+
+
 MAX_EXTRACTED_TEXT_BYTES = 16 * 1024 * 1024
 
 
@@ -117,9 +123,7 @@ def extract_text_from_file(
         elif suffix in OCR_EXTENSIONS and effective_ocr_mode == "tesseract":
             return _extract_image_ocr(content)
         elif suffix in OCR_EXTENSIONS and effective_ocr_mode == "vision":
-            # Vision OCR requires async - log warning and fall back to tesseract
-            logger.warning(f"Vision OCR requires async. Use extract_text_from_file_async() for {file_path.name}. Falling back to tesseract.")
-            return _extract_image_ocr(content)
+            raise VisionOcrError(f"Vision OCR for {file_path.name} requires extract_text_from_file_async()")
         elif suffix in OCR_EXTENSIONS:
             # OCR disabled, skip image files
             logger.debug(f"Skipping image {file_path.name} - OCR disabled")
@@ -127,6 +131,8 @@ def extract_text_from_file(
         else:
             # Plain text files
             return _extract_text(content)
+    except VisionOcrError:
+        raise
     except Exception as e:
         logger.warning(f"Failed to extract text from {file_path}: {e}")
         return ""
@@ -155,7 +161,7 @@ async def extract_image_structured_async(
         vision_api_key: Optional provider API key
 
     Returns:
-        VisionOcrResult with structured semantic data, or None if extraction fails
+        VisionOcrResult with structured semantic data, or None for non-image files
     """
     suffix = file_path.suffix.lower()
 
@@ -165,17 +171,15 @@ async def extract_image_structured_async(
     effective_provider = ocr_provider or "ollama"
     effective_base_url = vision_base_url
 
-    if not ocr_vision_model or not effective_base_url:
-        logger.warning("Structured OCR requires vision model and base URL")
-        return None
+    if not ocr_vision_model:
+        raise VisionOcrError("Structured vision OCR requires a configured model")
 
     # Load content if not provided
     if content is None:
         try:
             content = file_path.read_bytes()
-        except Exception as e:
-            logger.warning(f"Failed to read image {file_path}: {e}")
-            return None
+        except Exception as exc:
+            raise VisionOcrError(f"Structured vision OCR could not read source {file_path.name}") from exc
 
     try:
         # Keep provider/settings/Prisma imports out of local parser workers.
@@ -190,9 +194,8 @@ async def extract_image_structured_async(
             source_format=suffix,
             include_classification=True,
         )
-    except Exception as e:
-        logger.warning(f"Structured OCR failed for {file_path}: {e}")
-        return None
+    except Exception as exc:
+        raise VisionOcrError(f"Structured vision OCR failed for source {file_path.name}") from exc
 
 
 async def extract_text_from_file_async(
@@ -260,9 +263,8 @@ async def extract_text_from_file_async(
             if effective_ocr_mode == "vision":
                 effective_provider = ocr_provider or "ollama"
                 effective_base_url = vision_base_url
-                if not ocr_vision_model or not effective_base_url:
-                    logger.warning(f"Vision OCR requires model and base_url. Falling back to tesseract for {file_path.name}")
-                    return await asyncio.to_thread(_extract_image_ocr, content)
+                if not ocr_vision_model:
+                    raise VisionOcrError(f"Vision OCR requires a configured model for {file_path.name}")
                 return await _extract_image_vision_ocr(
                     content,
                     effective_base_url,
@@ -290,6 +292,8 @@ async def extract_text_from_file_async(
             # Plain text - offload to thread for large files to avoid
             # blocking the event loop during decode + whitespace cleanup.
             return await asyncio.to_thread(_extract_text, content)
+    except VisionOcrError:
+        raise
     except Exception as e:
         logger.warning(f"Failed to extract text from {file_path}: {e}")
         return ""
@@ -482,7 +486,7 @@ def _extract_image_ocr(content: bytes) -> str:
 
 async def _extract_image_vision_ocr(
     content: bytes,
-    vision_base_url: str,
+    vision_base_url: Optional[str],
     vision_model: str,
     provider: str = "ollama",
     api_key: str | None = None,
@@ -530,14 +534,8 @@ async def _extract_image_vision_ocr(
         elapsed = time.time() - start_time
         logger.debug(f"Vision OCR ({provider}/{vision_model}) completed in {elapsed:.2f}s, extracted {len(text)} chars")
         return text
-    except Exception as e:
-        logger.warning(f"Vision OCR error with {vision_model}: {e}")
-        # Fall back to tesseract for standard formats, skip for raw
-        if source_format and source_format.lower() in RAW_CAMERA_EXTENSIONS:
-            logger.info(f"Cannot fall back to Tesseract for raw format {source_format}")
-            return ""
-        logger.info("Falling back to Tesseract OCR")
-        return _extract_image_ocr(content)
+    except Exception as exc:
+        raise VisionOcrError(f"Vision OCR failed for {provider}/{vision_model}: {exc}") from exc
 
 
 def is_supported_document(file_path: Path) -> bool:

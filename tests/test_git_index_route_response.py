@@ -2,10 +2,18 @@ import unittest
 from io import BytesIO
 from unittest import mock
 
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 
 import ragtime.indexer.routes as _ROUTES
-from ragtime.indexer.models import CreateIndexRequest, IndexConfig, IndexJob, IndexJobPhase, IndexStatus
+from ragtime.indexer.models import (
+    AppSettings,
+    CreateIndexRequest,
+    IndexConfig,
+    IndexJob,
+    IndexJobPhase,
+    IndexStatus,
+    OcrMode,
+)
 
 
 class GitIndexRouteResponseTests(unittest.IsolatedAsyncioTestCase):
@@ -140,3 +148,28 @@ class GitIndexRouteResponseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(git_response.processed_chunks, 30)
         self.assertEqual(upload_response.phase, IndexJobPhase.FINALIZING)
         self.assertEqual(upload_response.processed_chunks, 30)
+
+    async def test_upload_retry_rejects_an_invalid_vision_target_before_moving_files(self) -> None:
+        failed_upload_job = self._job(
+            id="failed-upload",
+            source_type="upload",
+            status=IndexStatus.FAILED,
+            config=IndexConfig(name="ragtime", ocr_mode=OcrMode.VISION),
+        )
+
+        with (
+            mock.patch.object(_ROUTES.repository, "get_job", new=mock.AsyncMock(return_value=failed_upload_job)),
+            mock.patch.object(_ROUTES.repository, "get_settings", new=mock.AsyncMock(return_value=AppSettings())),
+            mock.patch.object(_ROUTES.indexer, "retry_upload_job", new=mock.AsyncMock()) as retry,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await _ROUTES.retry_failed_job(
+                    "failed-upload",
+                    _ROUTES.RetryJobRequest(),
+                    _user=mock.sentinel.user,
+                    _=None,
+                )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail, "ocr_vision_model is required for OCR provider 'ollama'")
+        retry.assert_not_awaited()

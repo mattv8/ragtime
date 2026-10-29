@@ -667,7 +667,7 @@ function getEmbeddingSettingsFormData(
     omlx_api_key: data.omlx_api_key,
     ollama_embedding_timeout_seconds: data.ollama_embedding_timeout_seconds,
     default_ocr_mode: data.default_ocr_mode,
-    default_ocr_provider: data.default_ocr_provider || 'ollama',
+    default_ocr_provider: data.default_ocr_provider,
     default_ocr_vision_model: data.default_ocr_vision_model,
     ocr_concurrency_limit: data.ocr_concurrency_limit,
   };
@@ -973,6 +973,8 @@ export function SettingsPanel({
 
   const [claudeCodeAuthStatus, setClaudeCodeAuthStatus] =
     useState<ClaudeCodeAuthStatusResponse | null>(null);
+  const [subscriptionStatusError, setSubscriptionStatusError] = useState<string | null>(null);
+  const [claudeCodeStatusError, setClaudeCodeStatusError] = useState<string | null>(null);
   const [claudeCodeConnecting, setClaudeCodeConnecting] = useState(false);
   const [claudeCodeRequestId, setClaudeCodeRequestId] = useState<string | null>(null);
   const [claudeCodeAuthorizationUrl, setClaudeCodeAuthorizationUrl] = useState<string>('');
@@ -1630,6 +1632,7 @@ export function SettingsPanel({
       try {
         const status = await api.getOpenAICodexAuthStatus();
         setOpenAiCodexAuthStatus(status);
+        setSubscriptionStatusError(null);
         setFormData((prev) => ({
           ...prev,
           openai_codex_base_url: status.base_url,
@@ -1637,6 +1640,9 @@ export function SettingsPanel({
         return status;
       } catch (err) {
         setOpenAiCodexAuthStatus(null);
+        setSubscriptionStatusError(
+          normalizeProviderFailureMessage(err, 'Failed to check OpenAI Codex status'),
+        );
         if (!options?.quiet) {
           reportLlmModelsFailure(
             normalizeProviderFailureMessage(err, 'Failed to check OpenAI Codex status'),
@@ -1844,9 +1850,13 @@ export function SettingsPanel({
           throw new Error('Failed to check Claude Code status');
         }
         setClaudeCodeAuthStatus(status);
+        setClaudeCodeStatusError(null);
         return status;
       } catch (err) {
         setClaudeCodeAuthStatus(null);
+        setClaudeCodeStatusError(
+          normalizeProviderFailureMessage(err, 'Failed to check Claude Code status'),
+        );
         if (!options?.quiet) {
           reportLlmModelsFailure(
             normalizeProviderFailureMessage(err, 'Failed to check Claude Code status'),
@@ -2639,7 +2649,7 @@ export function SettingsPanel({
         mcp_default_route_password: undefined,
         // OCR settings
         default_ocr_mode: data.default_ocr_mode,
-        default_ocr_provider: data.default_ocr_provider || 'ollama',
+        default_ocr_provider: data.default_ocr_provider,
         default_ocr_vision_model: data.default_ocr_vision_model,
         ocr_concurrency_limit: data.ocr_concurrency_limit,
         userspace_preview_sandbox_flags: data.userspace_preview_sandbox_flags,
@@ -3194,6 +3204,13 @@ export function SettingsPanel({
 
   // Save Embedding Configuration
   const handleSaveEmbedding = async () => {
+    if (
+      formData.default_ocr_mode === 'vision' &&
+      (!formData.default_ocr_provider || !formData.default_ocr_vision_model?.trim())
+    ) {
+      toast.error('Choose a vision OCR provider and model before saving vision OCR.');
+      return;
+    }
     setEmbeddingSaving(true);
 
     try {
@@ -3656,63 +3673,49 @@ export function SettingsPanel({
   const [visionModels, setVisionModels] = useState<VisionModel[]>([]);
   const [visionModelsLoading, setVisionModelsLoading] = useState(false);
   const [visionModelsError, setVisionModelsError] = useState<string | null>(null);
+  const visionModelsRequestGenerationRef = useRef(0);
   const autoVisionModelsRequestKeyRef = useRef<string | null>(null);
   const [showOcrRecommendations, setShowOcrRecommendations] = useState(false);
 
-  const selectedOcrProvider = (formData.default_ocr_provider || 'ollama') as OcrProvider;
-  const selectedOcrProviderLabel = OCR_PROVIDER_LABELS[selectedOcrProvider] || selectedOcrProvider;
+  const selectedOcrProvider = formData.default_ocr_provider ?? null;
+  const selectedOcrProviderLabel = selectedOcrProvider
+    ? OCR_PROVIDER_LABELS[selectedOcrProvider] || selectedOcrProvider
+    : 'No provider selected';
+  useEffect(() => {
+    if (selectedOcrProvider === 'claude_code') {
+      void refreshClaudeCodeStatus({ quiet: true });
+    } else if (selectedOcrProvider === 'openai_codex') {
+      void refreshOpenAiCodexStatus({ quiet: true });
+    }
+  }, [selectedOcrProvider, refreshClaudeCodeStatus, refreshOpenAiCodexStatus]);
+  const openLlmProviderSetup = useCallback(() => {
+    updateAccordionView((current) => openSettingsAccordionNavigation(current, ['llm-providers']));
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById('setting-llm_provider')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }, [updateAccordionView]);
 
   const fetchVisionModels = useCallback(async () => {
-    const provider = (formData.default_ocr_provider || 'ollama') as OcrProvider;
-    const request: Parameters<typeof api.getVisionModels>[0] = { provider };
-
-    if (provider === 'ollama') {
-      if (!formData.ollama_protocol || !formData.ollama_host || !formData.ollama_port) return;
-      request.protocol = formData.ollama_protocol as 'http' | 'https';
-      request.host = formData.ollama_host;
-      request.port = formData.ollama_port;
-    } else if (provider === 'openai') {
-      request.api_key = formData.openai_api_key;
-      if (!request.api_key || request.api_key.length < 10) {
-        setVisionModelsError('Enter an OpenAI API key before loading vision models.');
-        return;
-      }
-    } else if (provider === 'openrouter') {
-      request.api_key = formData.openrouter_api_key;
-      if (!request.api_key || request.api_key.length < 10) {
-        setVisionModelsError('Enter an OpenRouter API key before loading vision models.');
-        return;
-      }
-    } else if (provider === 'omlx') {
-      request.base_url = buildLocalBaseUrl(
-        formData.llm_omlx_protocol,
-        formData.llm_omlx_host,
-        formData.llm_omlx_port,
-        PROVIDER_CONNECTIONS.omlxLlm,
-      );
-      request.api_key = formData.omlx_api_key;
-    } else if (provider === 'lmstudio') {
-      request.base_url = buildLocalBaseUrl(
-        formData.llm_lmstudio_protocol,
-        formData.llm_lmstudio_host,
-        formData.llm_lmstudio_port,
-        PROVIDER_CONNECTIONS.lmstudioLlm,
-      );
-      request.api_key = formData.lmstudio_api_key;
-    } else if (provider === 'llama_cpp') {
-      request.base_url = buildLocalBaseUrl(
-        formData.llm_llama_cpp_protocol,
-        formData.llm_llama_cpp_host,
-        formData.llm_llama_cpp_port,
-        PROVIDER_CONNECTIONS.llamaCppLlm,
-      );
+    const provider = formData.default_ocr_provider;
+    if (!provider) {
+      setVisionModelsError('Choose a vision OCR provider before loading models.');
+      setVisionModelsLoading(false);
+      return;
     }
+    // Model discovery always resolves the saved server-side connection. Draft credentials and
+    // endpoints are not an authenticated OCR setup and must never be sent from the browser.
+    const request: Parameters<typeof api.getVisionModels>[0] = { provider };
+    const requestGeneration = visionModelsRequestGenerationRef.current + 1;
+    visionModelsRequestGenerationRef.current = requestGeneration;
 
     setVisionModelsLoading(true);
     setVisionModelsError(null);
 
     try {
       const response = await api.getVisionModels(request);
+      if (requestGeneration !== visionModelsRequestGenerationRef.current) return;
 
       if (response.success) {
         setVisionModels(response.models);
@@ -3725,29 +3728,22 @@ export function SettingsPanel({
         setVisionModelsError(response.message);
       }
     } catch (err) {
-      setVisionModelsError(err instanceof Error ? err.message : 'Failed to fetch vision models');
+      if (requestGeneration === visionModelsRequestGenerationRef.current) {
+        setVisionModelsError(err instanceof Error ? err.message : 'Failed to fetch vision models');
+      }
     } finally {
-      setVisionModelsLoading(false);
+      if (requestGeneration === visionModelsRequestGenerationRef.current) {
+        setVisionModelsLoading(false);
+      }
     }
-  }, [
-    formData.default_ocr_provider,
-    formData.ollama_protocol,
-    formData.ollama_host,
-    formData.ollama_port,
-    formData.openai_api_key,
-    formData.openrouter_api_key,
-    formData.llm_omlx_protocol,
-    formData.llm_omlx_host,
-    formData.llm_omlx_port,
-    formData.omlx_api_key,
-    formData.llm_lmstudio_protocol,
-    formData.llm_lmstudio_host,
-    formData.llm_lmstudio_port,
-    formData.lmstudio_api_key,
-    formData.llm_llama_cpp_protocol,
-    formData.llm_llama_cpp_host,
-    formData.llm_llama_cpp_port,
-  ]);
+  }, [formData.default_ocr_provider]);
+
+  useEffect(() => {
+    visionModelsRequestGenerationRef.current += 1;
+    setVisionModels([]);
+    setVisionModelsLoading(false);
+    setVisionModelsError(null);
+  }, [formData.default_ocr_provider, settings]);
 
   // Auto-fetch vision models when OCR mode changes to semantic vision.
   useEffect(() => {
@@ -3757,32 +3753,8 @@ export function SettingsPanel({
       !visionModelsLoading
     ) {
       const requestKey = JSON.stringify({
-        provider: formData.default_ocr_provider || 'ollama',
-        ollama_protocol: formData.ollama_protocol,
-        ollama_host: formData.ollama_host,
-        ollama_port: formData.ollama_port,
-        openai_api_key: Boolean(formData.openai_api_key),
-        openrouter_api_key: Boolean(formData.openrouter_api_key),
-        omlx_base_url: buildLocalBaseUrl(
-          formData.llm_omlx_protocol,
-          formData.llm_omlx_host,
-          formData.llm_omlx_port,
-          PROVIDER_CONNECTIONS.omlxLlm,
-        ),
-        omlx_api_key: Boolean(formData.omlx_api_key),
-        lmstudio_base_url: buildLocalBaseUrl(
-          formData.llm_lmstudio_protocol,
-          formData.llm_lmstudio_host,
-          formData.llm_lmstudio_port,
-          PROVIDER_CONNECTIONS.lmstudioLlm,
-        ),
-        lmstudio_api_key: Boolean(formData.lmstudio_api_key),
-        llama_cpp_base_url: buildLocalBaseUrl(
-          formData.llm_llama_cpp_protocol,
-          formData.llm_llama_cpp_host,
-          formData.llm_llama_cpp_port,
-          PROVIDER_CONNECTIONS.llamaCppLlm,
-        ),
+        provider: formData.default_ocr_provider,
+        savedConnection: settings?.updated_at,
       });
       if (autoVisionModelsRequestKeyRef.current === requestKey) return;
       autoVisionModelsRequestKeyRef.current = requestKey;
@@ -3791,22 +3763,7 @@ export function SettingsPanel({
   }, [
     formData.default_ocr_mode,
     formData.default_ocr_provider,
-    formData.ollama_protocol,
-    formData.ollama_host,
-    formData.ollama_port,
-    formData.openai_api_key,
-    formData.openrouter_api_key,
-    formData.llm_omlx_protocol,
-    formData.llm_omlx_host,
-    formData.llm_omlx_port,
-    formData.omlx_api_key,
-    formData.llm_lmstudio_protocol,
-    formData.llm_lmstudio_host,
-    formData.llm_lmstudio_port,
-    formData.lmstudio_api_key,
-    formData.llm_llama_cpp_protocol,
-    formData.llm_llama_cpp_host,
-    formData.llm_llama_cpp_port,
+    settings?.updated_at,
     fetchVisionModels,
     visionModels.length,
     visionModelsLoading,
@@ -4366,7 +4323,6 @@ export function SettingsPanel({
   const embeddingOpenAiConfigured = Boolean(
     (formData.openai_api_key ?? settings?.openai_api_key)?.trim(),
   );
-  const embeddingOpenAiCodexConfigured = openAiCodexConfigured;
   const embeddingOpenRouterConfigured = Boolean(
     (formData.openrouter_api_key ?? settings?.openrouter_api_key)?.trim(),
   );
@@ -4420,7 +4376,7 @@ export function SettingsPanel({
       case 'openrouter':
         return embeddingOpenRouterConfigured ? provider : null;
       case 'openai_codex':
-        return embeddingOpenAiCodexConfigured ? provider : null;
+        return openAiCodexConfigured ? provider : null;
       case 'ollama':
         return embeddingOllamaConfigured ? provider : null;
       case 'llama_cpp':
@@ -4550,23 +4506,18 @@ export function SettingsPanel({
       };
     }
     if (formData.embedding_provider === 'openai_codex') {
-      const connected = !!(openAiCodexAuthStatus?.connected || settings?.has_openai_codex_auth);
+      const connected = Boolean(
+        openAiCodexAuthStatus?.connected || settings?.has_openai_codex_auth,
+      );
       return {
         provider: 'openai_codex' as const,
         label: 'OpenAI Codex',
         apiKey: connected ? 'stored-openai-codex-auth' : '',
         apiKeyField: null,
         modelPlaceholder: 'text-embedding-3-small',
-        unloadedHelp: connected
-          ? 'Uses your connected OpenAI Codex subscription auth. Click "Fetch Models" to verify embedding-capable models.'
-          : 'Connect OpenAI Codex in LLM Configuration first, then fetch embedding models.',
-        loadedHelp: () => {
-          const selectedModel = embeddingModels.find((m) => m.id === formData.embedding_model);
-          const dimInfo = selectedModel?.dimensions
-            ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
-            : '';
-          return `Select an embedding model available through OpenAI Codex auth.${dimInfo}`;
-        },
+        unloadedHelp:
+          'Existing configuration: verify embedding availability with the configured endpoint.',
+        loadedHelp: () => 'Select an embedding model verified by the configured endpoint.',
       };
     }
     if (formData.embedding_provider === 'openrouter') {
@@ -4728,22 +4679,6 @@ export function SettingsPanel({
           aria-label={embeddingOpenAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}
         />
         <span className="llm-provider-status-label">OpenAI</span>
-      </span>
-      <span
-        className="llm-provider-status-item"
-        title={
-          embeddingOpenAiCodexConfigured ? 'OpenAI Codex configured' : 'OpenAI Codex not configured'
-        }
-      >
-        <span
-          className={`llm-provider-status-dot ${embeddingOpenAiCodexConfigured ? 'configured' : ''}`}
-          aria-label={
-            embeddingOpenAiCodexConfigured
-              ? 'OpenAI Codex configured'
-              : 'OpenAI Codex not configured'
-          }
-        />
-        <span className="llm-provider-status-label">Codex</span>
       </span>
       <span
         className="llm-provider-status-item"
@@ -7778,12 +7713,11 @@ export function SettingsPanel({
                   <label>Provider</label>
                   <div className="input-with-button input-with-actions">
                     <select
-                      value={formData.embedding_provider || 'ollama'}
+                      value={formData.embedding_provider}
                       onChange={(e) => {
                         const newProvider = e.target.value as
                           | 'ollama'
                           | 'openai'
-                          | 'openai_codex'
                           | 'openrouter'
                           | 'llama_cpp'
                           | 'lmstudio'
@@ -7821,8 +7755,12 @@ export function SettingsPanel({
                       <option value="omlx">oMLX</option>
                       <option value="openai_compatible">OpenAI-compatible</option>
                       <option value="openai">OpenAI</option>
-                      <option value="openai_codex">OpenAI Codex</option>
                       <option value="openrouter">OpenRouter</option>
+                      {formData.embedding_provider === 'openai_codex' && (
+                        <option value="openai_codex" disabled>
+                          OpenAI Codex (existing configuration)
+                        </option>
+                      )}
                     </select>
                     {llmProviderForEmbeddingCopy && (
                       <button
@@ -7838,6 +7776,12 @@ export function SettingsPanel({
                     Model capability filtering comes from the shared model metadata. Providers with
                     no embedding-capable models will return an empty model list.
                   </p>
+                  {(formData.embedding_provider as string) === 'openai_codex' && (
+                    <p className="field-help">
+                      Existing OpenAI Codex embedding configuration is retained. Its configured
+                      endpoint must verify embedding capability before indexing.
+                    </p>
+                  )}
                 </div>
                 {/* Show embedding dimension info */}
                 {(() => {
@@ -8426,15 +8370,15 @@ export function SettingsPanel({
 
                   <div className="settings-ocr-grid" id="settings-ocr-controls">
                     <div className="form-group" style={{ flex: 1 }}>
-                      <label>Default OCR Mode</label>
+                      <label htmlFor="settings-default-ocr-mode">Default OCR Mode</label>
                       <select
+                        id="settings-default-ocr-mode"
                         value={formData.default_ocr_mode || 'disabled'}
                         onChange={(e) => {
                           const newMode = e.target.value as OcrMode;
                           setFormData({
                             ...formData,
                             default_ocr_mode: newMode,
-                            default_ocr_provider: formData.default_ocr_provider || 'ollama',
                           });
                           if (newMode !== 'vision') {
                             setVisionModelsError(null);
@@ -8466,11 +8410,14 @@ export function SettingsPanel({
 
                     {formData.default_ocr_mode === 'vision' && (
                       <div className="form-group" style={{ flex: 1 }}>
-                        <label>Vision OCR Provider</label>
+                        <label htmlFor="settings-vision-ocr-provider">Vision OCR Provider</label>
                         <select
-                          value={selectedOcrProvider}
+                          id="settings-vision-ocr-provider"
+                          value={selectedOcrProvider || ''}
                           onChange={(e) => {
-                            const provider = e.target.value as OcrProvider;
+                            const provider = e.target.value
+                              ? (e.target.value as OcrProvider)
+                              : null;
                             setFormData({
                               ...formData,
                               default_ocr_mode: 'vision',
@@ -8481,6 +8428,7 @@ export function SettingsPanel({
                             setVisionModelsError(null);
                           }}
                         >
+                          <option value="">Select a provider</option>
                           {Object.entries(OCR_PROVIDER_LABELS).map(([provider, label]) => (
                             <option key={provider} value={provider}>
                               {label}
@@ -8488,16 +8436,66 @@ export function SettingsPanel({
                           ))}
                         </select>
                         <p className="field-help">
-                          Uses the provider connection configured above for chat or model serving.
+                          {selectedOcrProvider === 'claude_code' ||
+                          selectedOcrProvider === 'openai_codex'
+                            ? 'Uses the connected subscription configured in LLM Configuration. Load checks metadata only and never sends a browser token.'
+                            : 'Uses provider keys and server settings saved in LLM Configuration. Save changes there before loading; Load checks metadata only and does not run OCR.'}
                         </p>
+                        {(selectedOcrProvider === 'claude_code' ||
+                          selectedOcrProvider === 'openai_codex') && (
+                          <p
+                            className={
+                              (
+                                selectedOcrProvider === 'claude_code'
+                                  ? claudeCodeStatusError
+                                  : subscriptionStatusError
+                              )
+                                ? 'field-error'
+                                : 'field-help'
+                            }
+                            role={
+                              (
+                                selectedOcrProvider === 'claude_code'
+                                  ? claudeCodeStatusError
+                                  : subscriptionStatusError
+                              )
+                                ? 'alert'
+                                : undefined
+                            }
+                            aria-live="polite"
+                          >
+                            {selectedOcrProvider === 'claude_code'
+                              ? claudeCodeStatusError
+                                ? `Claude Code setup check failed: ${claudeCodeStatusError}`
+                                : claudeCodeAuthStatus && !claudeCodeAuthStatus.installed
+                                  ? `Claude Code CLI missing.${claudeCodeAuthStatus.error ? ` ${claudeCodeAuthStatus.error}` : ''}`
+                                  : claudeCodeAuthStatus?.connected ||
+                                      settings?.has_claude_code_auth
+                                    ? 'Claude Code subscription connected.'
+                                    : `Claude Code subscription not configured.${claudeCodeAuthStatus?.error ? ` ${claudeCodeAuthStatus.error}` : ''}`
+                              : openAiCodexAuthStatus?.connected || settings?.has_openai_codex_auth
+                                ? 'OpenAI Codex subscription connected.'
+                                : subscriptionStatusError
+                                  ? `OpenAI Codex setup check failed: ${subscriptionStatusError}`
+                                  : 'OpenAI Codex subscription not configured.'}{' '}
+                            <button
+                              type="button"
+                              className="btn-link"
+                              onClick={openLlmProviderSetup}
+                            >
+                              Open LLM setup
+                            </button>
+                          </p>
+                        )}
                       </div>
                     )}
 
                     {formData.default_ocr_mode === 'vision' && (
                       <div className="form-group" style={{ flex: 1 }}>
-                        <label>Vision Model</label>
+                        <label htmlFor="settings-vision-ocr-model">Vision Model</label>
                         <div className="input-with-button input-with-actions">
                           <select
+                            id="settings-vision-ocr-model"
                             value={formData.default_ocr_vision_model || ''}
                             onChange={(e) =>
                               setFormData({
@@ -8534,7 +8532,11 @@ export function SettingsPanel({
                             {visionModelsLoading ? 'Loading...' : 'Load'}
                           </button>
                         </div>
-                        {visionModelsError && <p className="field-error">{visionModelsError}</p>}
+                        {visionModelsError && (
+                          <p className="field-error" role="alert">
+                            {visionModelsError}
+                          </p>
+                        )}
                         <p className="field-help">
                           Select a {selectedOcrProviderLabel} vision model for semantic OCR. Load
                           checks provider metadata without running a vision request.
@@ -8544,8 +8546,9 @@ export function SettingsPanel({
 
                     {formData.default_ocr_mode === 'vision' && (
                       <div className="form-group">
-                        <label>Concurrency</label>
+                        <label htmlFor="settings-ocr-concurrency">Concurrency</label>
                         <input
+                          id="settings-ocr-concurrency"
                           type="number"
                           min={1}
                           max={10}
@@ -8562,7 +8565,10 @@ export function SettingsPanel({
                           style={{ width: '80px' }}
                         />
                         <p className="field-help">
-                          Parallel OCR requests. Higher values use more VRAM.
+                          {selectedOcrProvider &&
+                          ['ollama', 'omlx', 'lmstudio', 'llama_cpp'].includes(selectedOcrProvider)
+                            ? 'Parallel OCR requests. Higher values use more local VRAM.'
+                            : 'Parallel OCR requests. Hosted providers apply their own quota and rate limits.'}
                         </p>
                       </div>
                     )}
@@ -8573,13 +8579,22 @@ export function SettingsPanel({
                       className="form-group"
                       style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}
                     >
-                      {(selectedOcrProvider === 'openai' ||
-                        selectedOcrProvider === 'openrouter') && (
-                        <p className="field-help" style={{ marginBottom: '8px' }}>
+                      {selectedOcrProvider &&
+                        ['openai', 'anthropic', 'openrouter'].includes(selectedOcrProvider) && (
+                          <p className="field-help" style={{ marginBottom: '8px' }}>
+                            <span style={{ color: 'var(--color-warning)' }}>
+                              <strong>API cost note:</strong> {selectedOcrProviderLabel} vision OCR
+                              sends image content to the selected model for each processed image.
+                              Cost and latency vary by model, image size, and OCR concurrency.
+                            </span>
+                          </p>
+                        )}
+                      {(selectedOcrProvider === 'claude_code' ||
+                        selectedOcrProvider === 'openai_codex') && (
+                        <p className="field-help">
                           <span style={{ color: 'var(--color-warning)' }}>
-                            <strong>API cost note:</strong> {selectedOcrProviderLabel} vision OCR
-                            sends image content to the selected model for each processed image. Cost
-                            and latency vary by model, image size, and OCR concurrency.
+                            <strong>Subscription note:</strong> OCR sends images through your
+                            connected subscription and uses its quota and rate limits.
                           </span>
                         </p>
                       )}
@@ -8636,7 +8651,7 @@ export function SettingsPanel({
                   onClick={handleSaveEmbedding}
                   disabled={embeddingSaving}
                 >
-                  {embeddingSaving ? 'Saving...' : 'Save Embedding Configuration'}
+                  {embeddingSaving ? 'Saving...' : 'Save Embedding and OCR Configuration'}
                 </button>
               </div>
             </fieldset>

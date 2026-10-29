@@ -940,6 +940,7 @@ def chunk_semantic_segments(
     chunk_size: int,
     chunk_overlap: int,
     metadata: dict,
+    use_tokens: bool = False,
 ) -> list[Document]:
     """
     Chunk content by semantic segments, keeping related content together.
@@ -954,9 +955,11 @@ def chunk_semantic_segments(
 
     Args:
         segments: List of (segment_type, content) tuples
-        chunk_size: Max characters per chunk
-        chunk_overlap: Character overlap between chunks (for large segments)
+        chunk_size: Maximum chunk size in tokens when ``use_tokens`` is true,
+            otherwise characters
+        chunk_overlap: Token or character overlap between chunks
         metadata: Base metadata to attach to each chunk
+        use_tokens: Use the configured token budget instead of character sizing
 
     Returns:
         List of Document objects with semantic chunking
@@ -972,15 +975,39 @@ def chunk_semantic_segments(
         seg_meta = metadata.copy()
         seg_meta["segment_type"] = segment_type
 
+        if segment_type == "table":
+            normalized_table = _normalize_ocr_table(content)
+            if normalized_table is not None:
+                table_chunks = _split_markdown_table_rows(normalized_table, chunk_size, use_tokens, str(seg_meta.get("source", "unknown")))
+                assert table_chunks is not None
+                for table_chunk in table_chunks:
+                    table_meta = seg_meta.copy()
+                    table_meta["chunker"] = "semantic_table_rows"
+                    table_meta["chunk_index"] = chunk_index
+                    docs.append(Document(page_content=table_chunk, metadata=table_meta))
+                    chunk_index += 1
+                continue
+            seg_meta["segment_type"] = "table_text"
+            seg_meta["table_format"] = "unparsed"
+            if _chunk_size(content, use_tokens) > chunk_size:
+                unit = "token" if use_tokens else "character"
+                raise ValueError(f"Unparsed OCR table text is too large for {unit} limit (source: {seg_meta.get('source', 'unknown')})")
+            seg_meta["chunker"] = "semantic_table_text_atomic"
+            seg_meta["chunk_index"] = chunk_index
+            docs.append(Document(page_content=content, metadata=seg_meta))
+            chunk_index += 1
+            continue
+
         # If segment fits in one chunk, don't split it
-        if len(content) <= chunk_size:
+        content_size = _chunk_size(content, use_tokens)
+        if content_size <= chunk_size:
             seg_meta["chunker"] = "semantic_single"
             seg_meta["chunk_index"] = chunk_index
             docs.append(Document(page_content=content, metadata=seg_meta))
             chunk_index += 1
         else:
             # Large segment - use RecursiveChunker but only within this segment
-            segment_docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, seg_meta)
+            segment_docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, seg_meta, use_tokens)
             for doc in segment_docs:
                 doc.metadata["chunk_index"] = chunk_index
                 # Intentional overwrite: semantic-segment chunking owns the tag.
@@ -991,6 +1018,89 @@ def chunk_semantic_segments(
                 chunk_index += 1
 
     return docs
+
+
+def _chunk_size(content: str, use_tokens: bool) -> int:
+    """Measure a generated chunk using its configured budget unit."""
+    return count_tokens(content, TIKTOKEN_ENCODING) if use_tokens else len(content)
+
+
+def _split_markdown_table_rows(
+    content: str,
+    chunk_size: int,
+    use_tokens: bool = False,
+    source: str = "unknown",
+) -> list[str] | None:
+    """Split a Markdown table at complete rows, repeating its header exactly."""
+    lines = content.splitlines()
+    separator_index = _markdown_table_separator_index(lines)
+    if separator_index is None:
+        return None
+
+    header = "\n".join(lines[: separator_index + 1])
+    rows = lines[separator_index + 1 :]
+    if _chunk_size(header, use_tokens) > chunk_size:
+        raise ValueError(f"Structured OCR table header is too large for chunk limit (source: {source})")
+    chunks: list[str] = []
+    current_rows: list[str] = []
+
+    for row_number, row in enumerate(rows, start=1):
+        row_chunk = f"{header}\n{row}"
+        if _chunk_size(row_chunk, use_tokens) > chunk_size:
+            size = _chunk_size(row_chunk, use_tokens)
+            unit = "token" if use_tokens else "character"
+            raise ValueError(f"Structured OCR table row {row_number} is too large for {unit} limit ({size}>{chunk_size}; source: {source})")
+        candidate = f"{header}\n" + "\n".join([*current_rows, row])
+        if current_rows and _chunk_size(candidate, use_tokens) > chunk_size:
+            chunks.append(f"{header}\n" + "\n".join(current_rows))
+            current_rows = []
+        current_rows.append(row)
+
+    if current_rows:
+        chunks.append(f"{header}\n" + "\n".join(current_rows))
+    return chunks or [header]
+
+
+def _normalize_ocr_table(content: str) -> str | None:
+    """Return parseable Markdown for an OCR table without guessing cell boundaries."""
+    lines = content.splitlines()
+    if _markdown_table_separator_index(lines) is not None:
+        return content
+    return _normalize_tsv_table(lines)
+
+
+def _markdown_table_separator_index(lines: list[str]) -> int | None:
+    """Find a Markdown separator, allowing leading OCR captions as table context."""
+    for index in range(1, len(lines)):
+        if _is_markdown_table_separator(lines[index]):
+            return index
+    return None
+
+
+def _normalize_tsv_table(lines: list[str]) -> str | None:
+    """Convert consistently shaped TSV OCR output to Markdown without dropping cells."""
+    first_row_index = next((index for index, line in enumerate(lines) if "\t" in line), None)
+    if first_row_index is None:
+        return None
+    caption = lines[:first_row_index]
+    rows = lines[first_row_index:]
+    cells_by_row = [row.split("\t") for row in rows]
+    column_count = len(cells_by_row[0])
+    if column_count < 2 or any(len(cells) != column_count for cells in cells_by_row):
+        return None
+
+    def markdown_row(cells: list[str]) -> str:
+        return "| " + " | ".join(cell.replace("|", "\\|") for cell in cells) + " |"
+
+    header = markdown_row(cells_by_row[0])
+    separator = "| " + " | ".join("---" for _ in range(column_count)) + " |"
+    return "\n".join([*caption, header, separator, *(markdown_row(cells) for cells in cells_by_row[1:])])
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    """Return whether a line is the separator beneath a Markdown table header."""
+    cells = [cell.strip().replace(":", "") for cell in line.strip().strip("|").split("|")]
+    return bool(cells) and all(cell and set(cell) == {"-"} for cell in cells)
 
 
 def is_recursive_fallback_error(error: Exception) -> bool:
@@ -1008,6 +1118,11 @@ def is_recursive_fallback_error(error: Exception) -> bool:
         or "mapped to plain text" in err_lower
         or "should use recursivechunker" in err_lower
     )
+
+
+def _is_table_validation_error(error: Exception) -> bool:
+    """Return whether a worker failure contains a deliberate table-boundary error."""
+    return any("structured ocr table" in str(current).lower() for current in iter_exception_chain(error))
 
 
 def _chunk_document_batch_sync(
@@ -1039,6 +1154,17 @@ def _chunk_document_batch_sync(
         file_path = metadata.get("source", "")
         docs = []
 
+        if metadata.get("segment_type") == "table":
+            docs = _chunk_table_document(content, metadata, chunk_size, use_tokens)
+            all_chunks.extend((doc.page_content, doc.metadata) for doc in docs)
+            splitter_counts["semantic_table_rows"] = splitter_counts.get("semantic_table_rows", 0) + len(docs)
+            continue
+        if metadata.get("segment_type") == "table_text":
+            docs = _chunk_table_text_document(content, metadata, chunk_size, use_tokens)
+            all_chunks.extend((doc.page_content, doc.metadata) for doc in docs)
+            splitter_counts["semantic_table_text_atomic"] = splitter_counts.get("semantic_table_text_atomic", 0) + 1
+            continue
+
         try:
             # Try Chonkie CodeChunker with auto language detection
             try:
@@ -1064,6 +1190,8 @@ def _chunk_document_batch_sync(
                     raise
 
         except Exception as e:
+            if metadata.get("segment_type") == "table":
+                raise
             logger.error(f"Chunking failed for {file_path or 'unknown'}: {e}")
             # Last resort: simple recursive text splitting
             docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, metadata, use_tokens)
@@ -1073,6 +1201,33 @@ def _chunk_document_batch_sync(
             all_chunks.append((doc.page_content, doc.metadata))
 
     return all_chunks, splitter_counts
+
+
+def _chunk_table_document(content: str, metadata: dict, chunk_size: int, use_tokens: bool) -> list[Document]:
+    """Return bounded structured-table chunks without losing OCR provenance."""
+    source = str(metadata.get("source", "unknown"))
+    normalized_table = _normalize_ocr_table(content)
+    if normalized_table is None:
+        if _chunk_size(content, use_tokens) > chunk_size:
+            unit = "token" if use_tokens else "character"
+            raise ValueError(f"Unparsed OCR table text is too large for {unit} limit (source: {source})")
+        table_metadata = metadata.copy()
+        table_metadata["segment_type"] = "table_text"
+        table_metadata["table_format"] = "unparsed"
+        table_metadata["chunker"] = "semantic_table_text_atomic"
+        return [Document(page_content=content, metadata=table_metadata)]
+    table_chunks = _split_markdown_table_rows(normalized_table, chunk_size, use_tokens, source)
+    assert table_chunks is not None
+    return [Document(page_content=table_chunk, metadata=metadata.copy()) for table_chunk in table_chunks]
+
+
+def _chunk_table_text_document(content: str, metadata: dict, chunk_size: int, use_tokens: bool) -> list[Document]:
+    """Keep unparseable OCR table text atomic so fallback cannot invent row boundaries."""
+    if _chunk_size(content, use_tokens) > chunk_size:
+        unit = "token" if use_tokens else "character"
+        source = metadata.get("source", "unknown")
+        raise ValueError(f"Unparsed OCR table text is too large for {unit} limit (source: {source})")
+    return [Document(page_content=content, metadata=metadata.copy())]
 
 
 def _chunk_document_batch_recursive_sync(
@@ -1088,9 +1243,18 @@ def _chunk_document_batch_recursive_sync(
     for content, metadata in batch_data:
         file_path = metadata.get("source", "unknown")
         try:
-            docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, metadata, use_tokens)
-            splitter_counts["chonkie_recursive_pool_fallback"] = splitter_counts.get("chonkie_recursive_pool_fallback", 0) + 1
+            if metadata.get("segment_type") == "table":
+                docs = _chunk_table_document(content, metadata, chunk_size, use_tokens)
+                splitter_counts["semantic_table_rows_pool_fallback"] = splitter_counts.get("semantic_table_rows_pool_fallback", 0) + len(docs)
+            elif metadata.get("segment_type") == "table_text":
+                docs = _chunk_table_text_document(content, metadata, chunk_size, use_tokens)
+                splitter_counts["semantic_table_text_atomic_pool_fallback"] = splitter_counts.get("semantic_table_text_atomic_pool_fallback", 0) + 1
+            else:
+                docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, metadata, use_tokens)
+                splitter_counts["chonkie_recursive_pool_fallback"] = splitter_counts.get("chonkie_recursive_pool_fallback", 0) + 1
         except Exception as e:
+            if metadata.get("segment_type") in {"table", "table_text"}:
+                raise
             logger.error(f"Recursive fallback chunking failed for {file_path}: {e}")
             fallback_meta = metadata.copy()
             fallback_meta["chunker"] = "whole_document_pool_fallback"
@@ -1227,6 +1391,8 @@ async def chunk_spooled_batch(
     try:
         manifest_path, record_count, output_bytes = await run_resource_task(request, _chunk_spooled_batch_sync, task_args)
     except (ResourceTaskError, asyncio.TimeoutError) as error:
+        if _is_table_validation_error(error):
+            raise ValueError(str(error)) from error
         # A poisoned/native-heavy batch is retried one document at a time with
         # the deterministic recursive fallback, still in supervised children.
         # Descriptors are stream-merged on a thread; no chunk collection enters
@@ -1406,7 +1572,9 @@ async def chunk_documents_parallel(
                 _chunk_document_batch_sync,
                 (batch_data, chunk_size, chunk_overlap, use_tokens),
             )
-        except (ChunkingPoolError, BrokenProcessPool, ResourceTaskError, asyncio.TimeoutError):
+        except (ChunkingPoolError, BrokenProcessPool, ResourceTaskError, asyncio.TimeoutError) as error:
+            if _is_table_validation_error(error):
+                raise ValueError(str(error)) from error
             # A single recursive retry is still off-loop and supervised.  Do
             # not revive a private pool after a native failure.
             result_chunks, _counts = await run_resource_task(
@@ -1448,6 +1616,17 @@ def rechunk_oversized_content(
     """
     if metadata is None:
         metadata = {}
+
+    if metadata.get("segment_type") in {"table", "table_text"}:
+        if metadata.get("segment_type") == "table_text":
+            if count_tokens(content, TIKTOKEN_ENCODING) > safe_token_limit:
+                raise ValueError(f"Unparsed OCR table text is too large for token limit (source: {metadata.get('source', 'unknown')})")
+            return [Document(page_content=content, metadata=metadata.copy())]
+        table_docs = _chunk_table_document(content, metadata, safe_token_limit, use_tokens=True)
+        for index, document in enumerate(table_docs, start=1):
+            document.metadata["rechunk_part"] = index
+            document.metadata["rechunk_total"] = len(table_docs)
+        return table_docs
 
     # Account for overlap in the chunk size - overlap adds tokens to each chunk
     # so we need to reduce the base chunk size

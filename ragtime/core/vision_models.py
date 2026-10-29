@@ -14,6 +14,7 @@ Detection uses Ollama's /api/show 'capabilities' array which is the authoritativ
 source for model capabilities (e.g., ["completion", "vision", "tools"]).
 """
 
+import asyncio
 import base64
 import io
 import json
@@ -22,20 +23,25 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
+from langchain_core.messages import HumanMessage
 from PIL import Image
 
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
+from ragtime.core.app_setting_defaults import DEFAULT_OCR_CONCURRENCY_LIMIT
+from ragtime.core.app_settings import get_app_settings
+from ragtime.core.claude_code_chat import ClaudeCodeChatModel
 from ragtime.core.file_constants import RAW_CAMERA_EXTENSIONS
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import register_model_image_input_capability
-from ragtime.core.model_providers import normalize_provider_name
+from ragtime.core.model_limits import get_output_limit, register_model_image_input_capability
+from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key
 from ragtime.core.ollama import (
     extract_capabilities,
     get_model_details,
     is_vision_model_by_capability,
     supports_structured_output,
 )
-from ragtime.core.ollama_concurrency import get_ollama_semaphore
+from ragtime.core.openai_codex_auth import OPENAI_CODEX_DEFAULT_BASE_URL, ensure_openai_codex_token_fresh
+from ragtime.core.openai_codex_transport import build_codex_responses_request, codex_response_headers
 
 logger = get_logger(__name__)
 
@@ -43,6 +49,8 @@ logger = get_logger(__name__)
 DEFAULT_MAX_IMAGE_DIMENSION = 2048
 # JPEG quality for resized images (balance between size and quality)
 DEFAULT_JPEG_QUALITY = 85
+ANTHROPIC_MAX_ENCODED_IMAGE_BYTES = 5 * 1024 * 1024
+OPENAI_COMPATIBLE_MAX_ENCODED_IMAGE_BYTES = 20 * 1024 * 1024
 OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 OPENAI_COMPATIBLE_VISION_PROVIDERS = {"openai", "openrouter", "omlx", "lmstudio", "llama_cpp"}
 MODELS_DEV_API_URL = "https://models.dev/api.json"
@@ -50,6 +58,58 @@ MODELS_DEV_VISION_CACHE_TTL_SECONDS = 3600.0
 VISION_CAPABILITY_TOKENS = {"vision", "image", "images", "image_input", "multimodal"}
 VISION_MODEL_TYPE_TOKENS = {"vlm"}
 TINY_PNG_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+ANTHROPIC_VERSION = "2023-06-01"
+OCR_OUTPUT_BUDGET_CEILING = 8192
+OCR_FALLBACK_OUTPUT_BUDGET = 4096
+OCR_OUTPUT_BUDGET_CACHE_TTL_SECONDS = MODELS_DEV_VISION_CACHE_TTL_SECONDS
+# Per-model budgets; memoized so per-page OCR never re-triggers catalog lookups when models.dev is unavailable.
+_ocr_output_budget_cache: dict[str, tuple[float, int]] = {}
+
+
+async def _resolve_ocr_output_budget(model: str) -> int:
+    """Bound OCR output by the model's known output cap, or use the conservative fallback."""
+    now = time.monotonic()
+    cached = _ocr_output_budget_cache.get(model)
+    if cached is not None and now - cached[0] < OCR_OUTPUT_BUDGET_CACHE_TTL_SECONDS:
+        return cached[1]
+    budget = await _lookup_ocr_output_budget(model)
+    _ocr_output_budget_cache[model] = (now, budget)
+    return budget
+
+
+async def _lookup_ocr_output_budget(model: str) -> int:
+    try:
+        known_limit = await get_output_limit(model)
+    except Exception:
+        logger.debug("Output limit lookup failed for %s; using OCR fallback budget", model, exc_info=True)
+        return OCR_FALLBACK_OUTPUT_BUDGET
+    if known_limit is None or known_limit <= 0:
+        return OCR_FALLBACK_OUTPUT_BUDGET
+    return min(OCR_OUTPUT_BUDGET_CEILING, known_limit)
+
+
+class _VisionOcrLimiter:
+    """A capacity-adjustable, cancellation-safe limiter for OCR requests."""
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        self.active = 0
+        self.condition = asyncio.Condition()
+
+    async def acquire(self, capacity: int) -> None:
+        async with self.condition:
+            self.capacity = capacity
+            while self.active >= self.capacity:
+                await self.condition.wait()
+            self.active += 1
+
+    async def release(self) -> None:
+        async with self.condition:
+            self.active -= 1
+            self.condition.notify_all()
+
+
+_vision_ocr_limiter: _VisionOcrLimiter | None = None
 
 
 # =============================================================================
@@ -73,6 +133,7 @@ Be factual and objective. Include specific details useful for search."""
 # JSON schema for structured classification output
 CLASSIFICATION_SCHEMA = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "image_type": {"type": "string"},
         "subject": {"type": "string"},
@@ -82,13 +143,14 @@ CLASSIFICATION_SCHEMA = {
         "setting": {"type": "string"},
         "tags": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["image_type", "subject", "description", "objects", "tags"],
+    "required": ["image_type", "subject", "description", "objects", "colors", "setting", "tags"],
 }
 
 # Prompt for OCR with classification (structured JSON output)
 OCR_WITH_CLASSIFICATION_PROMPT = """Analyze this image. Extract all visible text AND describe the image for search indexing. Return valid JSON.
 
 For extracted_text: list each text block with its type (Title, NarrativeText, ListItem, Table, Code, Handwritten, Uncategorized) and the exact text content.
+For tables, emit Markdown with a header row, separator row, every source row in order, and empty cells retained. Preserve exact digits, units, clause identifiers, and uncertain text using explicit `[illegible]` markers.
 
 For image analysis: describe the image type, subject, description, objects, setting, and search tags.
 
@@ -97,11 +159,13 @@ If there is no text in the image, return an empty extracted_text array."""
 # JSON schema for OCR with classification
 OCR_WITH_CLASSIFICATION_SCHEMA = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "extracted_text": {
             "type": "array",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "type": {
                         "type": "string",
@@ -127,7 +191,7 @@ OCR_WITH_CLASSIFICATION_SCHEMA = {
         "setting": {"type": "string"},
         "tags": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["extracted_text", "image_type", "subject", "description", "tags"],
+    "required": ["extracted_text", "image_type", "subject", "description", "objects", "setting", "tags"],
 }
 
 # Prompt for OCR only (no classification)
@@ -143,16 +207,19 @@ For each text block, identify its type:
 - Uncategorized: other text
 
 Preserve text exactly. Maintain reading order.
+For tables, emit Markdown with a header row, separator row, every source row in order, and empty cells retained. Preserve exact digits, units, clause identifiers, and uncertain text using explicit `[illegible]` markers.
 If there is no text, return an empty array."""
 
 # JSON schema for OCR only
 OCR_ONLY_SCHEMA = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "extracted_text": {
             "type": "array",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "type": {
                         "type": "string",
@@ -518,6 +585,21 @@ def _auth_headers(api_key: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"} if key else {}
 
 
+_VISION_DEFAULT_BASE_URLS = {
+    "openai": OPENAI_DEFAULT_BASE_URL,
+    "openrouter": openrouter.DEFAULT_BASE_URL,
+    "openai_codex": OPENAI_CODEX_DEFAULT_BASE_URL,
+}
+
+
+def _vision_http_endpoint(provider: str, base_url: str | None) -> str:
+    """Return the endpoint an HTTP OCR provider calls, or fail when it has none."""
+    endpoint = str(base_url or "").strip().rstrip("/") or _VISION_DEFAULT_BASE_URLS.get(provider, "")
+    if not endpoint:
+        raise ValueError(f"Vision OCR provider '{provider}' requires a base URL.")
+    return endpoint
+
+
 def _openai_compatible_base_url(provider: str, base_url: str | None = None) -> str:
     normalized_provider = normalize_provider_name(provider)
     if normalized_provider == "openai":
@@ -566,9 +648,10 @@ async def _post_openai_compatible_vision_request(
     model: str,
     prompt: str,
     image_b64: str,
+    image_mime_type: str,
     schema: dict | None,
     timeout: float,
-    max_tokens: int = 4096,
+    max_tokens: int = OCR_FALLBACK_OUTPUT_BUDGET,
 ) -> dict[str, Any]:
     chat_url = _openai_compatible_chat_url(provider, base_url)
     payload: dict[str, Any] = {
@@ -580,13 +663,12 @@ async def _post_openai_compatible_vision_request(
                     {"type": "text", "text": prompt},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                        "image_url": {"url": f"data:{image_mime_type};base64,{image_b64}"},
                     },
                 ],
             }
         ],
-        "temperature": 0.1,
-        "max_tokens": max_tokens,
+        **_openai_vision_generation_parameters(model, max_tokens),
     }
     if schema is not None:
         payload["response_format"] = {
@@ -594,19 +676,35 @@ async def _post_openai_compatible_vision_request(
             "json_schema": {
                 "name": "ragtime_vision_ocr_result",
                 "schema": schema,
-                "strict": False,
+                "strict": True,
             },
         }
 
     headers = _auth_headers(api_key)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(chat_url, json=payload, headers=headers)
-        if response.status_code == 400 and schema is not None:
+        if response.status_code == 400 and schema is not None and _response_rejects_response_format(response):
             payload.pop("response_format", None)
             response = await client.post(chat_url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
         return data if isinstance(data, dict) else {}
+
+
+def _openai_vision_generation_parameters(model: str, max_tokens: int) -> dict[str, Any]:
+    """Use the compatible token field for reasoning and GPT-5 Responses models."""
+    model_name = model.lower()
+    if model_name.startswith(("o1", "o3", "o4", "gpt-5")):
+        return {"max_completion_tokens": max_tokens}
+    return {"temperature": 0.1, "max_tokens": max_tokens}
+
+
+def _response_rejects_response_format(response: httpx.Response) -> bool:
+    try:
+        detail = response.text.lower()
+    except Exception:
+        return False
+    return "response_format" in detail or "json_schema" in detail
 
 
 async def probe_openai_compatible_vision_capability(
@@ -723,6 +821,7 @@ async def list_provider_vision_models(
     base_url: str | None = None,
     api_key: str | None = None,
     candidate_models: list[str] | None = None,
+    available_image_model_ids: set[str] | None = None,
     timeout: float = 20.0,
 ) -> list[VisionModelInfo]:
     """List vision-capable models using provider metadata.
@@ -764,6 +863,12 @@ async def list_provider_vision_models(
             normalized_provider,
             available_model_ids=available_model_ids,
         )
+
+    if normalized_provider in {"anthropic", "claude_code", "openai_codex"}:
+        # Routes supply authenticated provider catalogs.  Do not repeat catalog
+        # requests here: Codex catalog metadata in particular is authoritative.
+        trusted_ids = available_image_model_ids or set()
+        return [VisionModelInfo(name=model_id, provider=normalized_provider, capabilities=["image_input"]) for model_id in sorted(trusted_ids)]
 
     if normalized_provider == "openrouter":
         _ = base_url
@@ -812,7 +917,7 @@ def _load_image(image_content: bytes, source_format: str | None) -> tuple[Any, s
         import rawpy
     except ImportError:
         logger.warning(f"rawpy not installed, cannot process {source_format}. Install with: pip install rawpy")
-        return None, "unsupported_raw"
+        return None, "raw_error"
 
     try:
         with rawpy.imread(io.BytesIO(image_content)) as raw:
@@ -880,8 +985,9 @@ def preprocess_image(
     """
     Preprocess image for vision model processing.
 
-    Resizes large images to reduce processing time and converts to JPEG
-    for efficient transfer. Handles raw camera formats if rawpy is available.
+    Resizes large images to reduce processing time and converts resized images
+    to JPEG for efficient transfer. Below-limit standard images remain byte
+    identical so text-bearing PNGs do not incur a lossy conversion.
 
     Args:
         image_content: Raw image bytes
@@ -902,6 +1008,9 @@ def preprocess_image(
             # Failed to load (raw error or unsupported)
             return image_content, status
 
+        if status == "standard" and max(img.size) <= max_dimension:
+            return image_content, _image_mime_type(img, source_format)
+
         # 2. Process Image (Resize & Convert)
         processed_bytes, fmt = _process_image_content(img, max_dimension, quality)
 
@@ -913,38 +1022,84 @@ def preprocess_image(
         else:
             logger.debug(f"Image preprocessing: {original_size:,} -> {new_size:,} bytes")
 
-        return processed_bytes, fmt
+        return processed_bytes, f"image/{fmt}"
 
     except Exception as e:
         logger.warning(f"Image preprocessing failed: {e}, using original")
-        return image_content, "original"
+        return image_content, _source_mime_type(source_format)
+
+
+def _source_mime_type(source_format: str | None) -> str:
+    extension = str(source_format or "").strip().lower().lstrip(".")
+    return {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}.get(extension, "application/octet-stream")
+
+
+def _image_mime_type(image: Any, source_format: str | None) -> str:
+    image_format = str(getattr(image, "format", "") or "").lower()
+    return _source_mime_type(image_format or source_format)
 
 
 def _prepare_vision_image_content(
     image_content: bytes,
     *,
+    provider: str,
     preprocess: bool,
     max_dimension: int,
     source_format: str | None,
 ) -> tuple[bytes, str]:
-    if not preprocess:
-        return image_content, "original"
-    return preprocess_image(
-        image_content,
-        max_dimension=max_dimension,
-        source_format=source_format,
+    processed, mime_type = (
+        preprocess_image(
+            image_content,
+            max_dimension=max_dimension,
+            source_format=source_format,
+        )
+        if preprocess
+        else (image_content, _source_mime_type(source_format))
     )
+    if mime_type == "raw_error":
+        raise ValueError("Vision OCR image could not be decoded.")
+    encoded_limit = _encoded_image_limit(provider)
+    if mime_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"} or _base64_size(processed) > encoded_limit:
+        image, status = _load_image(image_content, source_format)
+        if image is None:
+            raise ValueError("Vision OCR image could not be decoded.")
+        processed, image_format = _bounded_vision_image(image, max_dimension, encoded_limit)
+        mime_type = f"image/{image_format}"
+    if _base64_size(processed) > encoded_limit:
+        raise ValueError("Vision OCR image exceeds the provider request limit.")
+    return processed, mime_type
+
+
+def _encoded_image_limit(provider: str) -> int:
+    if normalize_provider_name(provider) in {"anthropic", "claude_code"}:
+        return ANTHROPIC_MAX_ENCODED_IMAGE_BYTES
+    return OPENAI_COMPATIBLE_MAX_ENCODED_IMAGE_BYTES
+
+
+def _base64_size(content: bytes) -> int:
+    return 4 * ((len(content) + 2) // 3)
+
+
+def _bounded_vision_image(image: Any, max_dimension: int, encoded_limit: int) -> tuple[bytes, str]:
+    dimension = max_dimension
+    while dimension >= 64:
+        processed, image_format = _process_image_content(image, dimension, DEFAULT_JPEG_QUALITY)
+        if _base64_size(processed) <= encoded_limit:
+            return processed, image_format
+        dimension //= 2
+    return _process_image_content(image, 64, DEFAULT_JPEG_QUALITY)
 
 
 async def _supports_structured_vision_output(
     provider: str,
     model: str,
-    base_url: str,
+    base_url: str | None,
 ) -> bool:
     normalized_provider = normalize_provider_name(provider)
     if normalized_provider == "ollama":
+        ollama_endpoint = _vision_http_endpoint(normalized_provider, base_url)
         try:
-            model_details = await get_model_details(model, base_url)
+            model_details = await get_model_details(model, ollama_endpoint)
             if model_details and supports_structured_output(model_details):
                 logger.debug("Model %s supports structured output", model)
                 return True
@@ -959,7 +1114,7 @@ async def _supports_structured_vision_output(
             logger.debug("Could not check model capabilities: %s, using text prompts", exc)
         return False
 
-    return normalized_provider in OPENAI_COMPATIBLE_VISION_PROVIDERS
+    return normalized_provider in OPENAI_COMPATIBLE_VISION_PROVIDERS | {"anthropic", "claude_code", "openai_codex"}
 
 
 def _resolve_vision_prompt_and_schema(
@@ -995,52 +1150,348 @@ def _extract_ollama_response_text(data: dict[str, Any]) -> str:
 async def _request_vision_response_text(
     *,
     provider: str,
-    base_url: str,
+    base_url: str | None,
     model: str,
     api_key: str | None,
     prompt: str,
     schema: dict[str, Any] | None,
     processed_content: bytes,
+    image_mime_type: str,
     timeout: float,
 ) -> str:
     normalized_provider = normalize_provider_name(provider)
     image_b64 = base64.b64encode(processed_content).decode("utf-8")
 
+    limiter = await _get_vision_ocr_limiter()
+    await limiter.acquire(await _vision_ocr_limit())
+    try:
+        # Queueing is intentionally outside each page's provider deadline.
+        async with asyncio.timeout(timeout):
+            return await _retry_vision_request(
+                lambda: _request_vision_response_once(
+                    normalized_provider=normalized_provider,
+                    base_url=base_url,
+                    model=model,
+                    api_key=api_key,
+                    prompt=prompt,
+                    schema=schema,
+                    image_b64=image_b64,
+                    image_mime_type=image_mime_type,
+                    timeout=timeout,
+                ),
+                timeout,
+            )
+    finally:
+        await limiter.release()
+
+
+async def _request_vision_response_once(
+    *,
+    normalized_provider: str,
+    base_url: str | None,
+    model: str,
+    api_key: str | None,
+    prompt: str,
+    schema: dict[str, Any] | None,
+    image_b64: str,
+    image_mime_type: str,
+    timeout: float,
+) -> str:
     if normalized_provider == "ollama":
-        semaphore = await get_ollama_semaphore()
-        async with semaphore:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                request_json = {
-                    "model": model,
-                    "prompt": prompt,
-                    "images": [image_b64],
-                    "stream": False,
-                    "options": {"temperature": 0.1, "num_predict": 4096},
-                }
-                if schema is not None:
-                    request_json["format"] = schema
-                response = await client.post(
-                    f"{base_url}/api/generate",
-                    json=request_json,
-                )
-                response.raise_for_status()
-                data = response.json()
+        ollama_endpoint = _vision_http_endpoint(normalized_provider, base_url)
+        output_budget = await _resolve_ocr_output_budget(model)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            request_json = {
+                "model": model,
+                "prompt": prompt,
+                "images": [image_b64],
+                "stream": False,
+                "options": {"temperature": 0.1, "num_predict": output_budget},
+            }
+            if schema is not None:
+                request_json["format"] = schema
+            response = await client.post(
+                f"{ollama_endpoint}/api/generate",
+                json=request_json,
+            )
+            response.raise_for_status()
+            data = response.json()
+        _reject_ollama_incomplete_response(data)
         return _extract_ollama_response_text(data)
 
     if normalized_provider in OPENAI_COMPATIBLE_VISION_PROVIDERS:
         data = await _post_openai_compatible_vision_request(
             provider=normalized_provider,
-            base_url=base_url,
-            api_key=api_key,
+            base_url=_vision_http_endpoint(normalized_provider, base_url),
+            api_key=await _resolve_vision_api_key(normalized_provider, api_key),
             model=model,
             prompt=prompt,
             image_b64=image_b64,
+            image_mime_type=image_mime_type,
+            schema=schema,
+            timeout=timeout,
+            max_tokens=await _resolve_ocr_output_budget(model),
+        )
+        _reject_openai_incomplete_response(data)
+        return _extract_openai_compatible_response_text(data)
+
+    if normalized_provider == "anthropic":
+        return await _request_anthropic_vision_response(
+            base_url=_vision_http_endpoint(normalized_provider, base_url),
+            api_key=await _resolve_vision_api_key(normalized_provider, api_key),
+            model=model,
+            prompt=prompt,
+            image_b64=image_b64,
+            image_mime_type=image_mime_type,
+            schema=schema,
+            timeout=timeout,
+            max_tokens=await _resolve_ocr_output_budget(model),
+        )
+
+    if normalized_provider == "claude_code":
+        return await _request_claude_code_vision_response(
+            model=model,
+            prompt=prompt,
+            image_b64=image_b64,
+            image_mime_type=image_mime_type,
+            schema=schema,
+            timeout=timeout,
+            max_tokens=await _resolve_ocr_output_budget(model),
+        )
+
+    if normalized_provider == "openai_codex":
+        return await _request_codex_vision_response(
+            base_url=_vision_http_endpoint(normalized_provider, base_url),
+            model=model,
+            prompt=prompt,
+            image_b64=image_b64,
+            image_mime_type=image_mime_type,
             schema=schema,
             timeout=timeout,
         )
-        return _extract_openai_compatible_response_text(data)
 
-    raise ValueError(f"Unsupported vision OCR provider: {provider}")
+    raise ValueError(f"Unsupported vision OCR provider: {normalized_provider}")
+
+
+async def _retry_vision_request(operation: Any, timeout: float) -> str:
+    deadline = time.monotonic() + max(0.1, min(timeout, 60.0))
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            return await operation()
+        except asyncio.CancelledError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {401, 403} or exc.response.status_code not in {408, 409, 429, 500, 502, 503, 504, 529}:
+                raise
+            delay = _retry_delay(exc.response, attempt)
+            last_error = exc
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, httpx.RemoteProtocolError) as exc:
+            delay = min(0.5 * (2**attempt), 4.0)
+            last_error = exc
+        if attempt == 2 or time.monotonic() + delay >= deadline:
+            assert last_error is not None
+            raise last_error
+        await asyncio.sleep(delay)
+    raise RuntimeError("Vision OCR retry loop exhausted.")
+
+
+def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After", "")
+    try:
+        return min(max(float(retry_after), 0.0), 10.0)
+    except ValueError:
+        return min(0.5 * (2**attempt), 4.0)
+
+
+def _reject_ollama_incomplete_response(data: Any) -> None:
+    if not isinstance(data, dict) or data.get("done") is False or data.get("done_reason") in {"length", "error", "load"}:
+        raise RuntimeError("Ollama OCR response was incomplete.")
+
+
+def _reject_openai_incomplete_response(data: Any) -> None:
+    choices = data.get("choices") if isinstance(data, dict) else None
+    first = choices[0] if isinstance(choices, list) and choices else None
+    if not isinstance(first, dict) or first.get("finish_reason") in {"length", "content_filter"}:
+        raise RuntimeError("Vision OCR response was incomplete or refused.")
+
+
+async def _vision_ocr_limit() -> int:
+    try:
+        settings = await get_app_settings()
+        return max(1, int(settings.get("ocr_concurrency_limit", DEFAULT_OCR_CONCURRENCY_LIMIT)))
+    except Exception:
+        return DEFAULT_OCR_CONCURRENCY_LIMIT
+
+
+async def _get_vision_ocr_limiter() -> _VisionOcrLimiter:
+    global _vision_ocr_limiter
+    if _vision_ocr_limiter is None:
+        _vision_ocr_limiter = _VisionOcrLimiter(await _vision_ocr_limit())
+    return _vision_ocr_limiter
+
+
+async def _resolve_vision_api_key(provider: str, supplied_key: str | None) -> str | None:
+    if supplied_key:
+        return supplied_key
+    settings = await get_app_settings()
+    return resolve_provider_api_key(settings, provider, "llm")
+
+
+def _response_text_from_anthropic_payload(payload: dict[str, Any]) -> str:
+    if payload.get("stop_reason") in {"max_tokens", "refusal"}:
+        raise RuntimeError("Anthropic OCR response was incomplete or refused.")
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        raise RuntimeError("Anthropic OCR response was malformed.")
+    text = [block["text"] for block in blocks if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)]
+    if not text:
+        raise RuntimeError("Anthropic OCR response did not contain text.")
+    return "\n".join(text)
+
+
+async def _request_anthropic_vision_response(
+    *,
+    base_url: str,
+    api_key: str | None,
+    model: str,
+    prompt: str,
+    image_b64: str,
+    image_mime_type: str,
+    schema: dict[str, Any] | None,
+    timeout: float,
+    max_tokens: int = OCR_FALLBACK_OUTPUT_BUDGET,
+) -> str:
+    if not api_key:
+        raise RuntimeError("Anthropic API key is not configured.")
+    payload: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": image_mime_type, "data": image_b64}},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+    }
+    if schema is not None:
+        payload["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            f"{base_url.rstrip('/')}/v1/messages", json=payload, headers={"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+        )
+        if schema is not None and response.status_code == 400 and "output_config" in response.text.lower():
+            payload.pop("output_config")
+            response = await client.post(
+                f"{base_url.rstrip('/')}/v1/messages", json=payload, headers={"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+            )
+        response.raise_for_status()
+        data = response.json()
+    if not isinstance(data, dict):
+        raise RuntimeError("Anthropic OCR response was malformed.")
+    return _response_text_from_anthropic_payload(data)
+
+
+async def _request_claude_code_vision_response(
+    *,
+    model: str,
+    prompt: str,
+    image_b64: str,
+    image_mime_type: str,
+    schema: dict[str, Any] | None,
+    timeout: float,
+    max_tokens: int = OCR_FALLBACK_OUTPUT_BUDGET,
+) -> str:
+    client = ClaudeCodeChatModel(model=model, timeout=timeout, max_tokens=max_tokens)
+    if schema is not None:
+        client = client.with_ocr_json_schema(schema)
+    response = await client.ainvoke(
+        [
+            HumanMessage(
+                content=[{"type": "text", "text": prompt}, {"type": "image", "source": {"type": "base64", "media_type": image_mime_type, "data": image_b64}}]
+            )
+        ]
+    )
+    if not isinstance(response.content, str) or not response.content.strip():
+        raise RuntimeError("Claude Code OCR response was malformed.")
+    return response.content
+
+
+async def _request_codex_vision_response(
+    *, base_url: str, model: str, prompt: str, image_b64: str, image_mime_type: str, schema: dict[str, Any] | None, timeout: float
+) -> str:
+    token = await ensure_openai_codex_token_fresh()
+    if not token:
+        raise RuntimeError("OpenAI Codex is not authenticated.")
+    settings = await get_app_settings()
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}, {"type": "input_image", "image_url": f"data:{image_mime_type};base64,{image_b64}"}]
+    payload: dict[str, Any] = {
+        "model": model,
+        "input": [{"role": "user", "content": content}],
+        "instructions": "Return only the requested OCR result.",
+        "store": False,
+        "stream": True,
+    }
+    if schema is not None:
+        payload["text"] = {"format": {"type": "json_schema", "name": "ragtime_vision_ocr_result", "schema": schema, "strict": True}}
+    request = build_codex_responses_request(httpx.Request("POST", f"{base_url.rstrip('/')}/responses"), json.dumps(payload).encode())
+    headers = {
+        **dict(request.headers),
+        **codex_response_headers(str(settings.get("openai_codex_account_id") or "")),
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream("POST", request.url, content=request.content, headers=headers) as response:
+            response.raise_for_status()
+            return await _collect_codex_sse_text(response)
+
+
+async def _collect_codex_sse_text(response: httpx.Response) -> str:
+    """Extract Responses API output text from its real SSE event stream."""
+    text_parts: list[str] = []
+    completed = False
+    async for line in response.aiter_lines():
+        if not line.startswith("data:"):
+            continue
+        try:
+            event = json.loads(line[5:].strip())
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("OpenAI Codex OCR emitted invalid SSE JSON.") from exc
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        if event_type == "response.output_text.delta":
+            delta = event.get("delta")
+            if isinstance(delta, str):
+                text_parts.append(delta)
+        elif event_type == "response.completed":
+            response_data = event.get("response")
+            if not isinstance(response_data, dict) or response_data.get("status") != "completed":
+                raise RuntimeError("OpenAI Codex OCR response was incomplete or refused.")
+            completed = True
+            if not text_parts:
+                text_parts.extend(_codex_output_text(response_data))
+        elif event_type in {"response.failed", "response.incomplete", "error"}:
+            raise RuntimeError("OpenAI Codex OCR response was incomplete or refused.")
+    output = "".join(text_parts).strip()
+    if not completed or not output:
+        raise RuntimeError("OpenAI Codex OCR response did not complete with text.")
+    return output
+
+
+def _codex_output_text(response: dict[str, Any]) -> list[str]:
+    text: list[str] = []
+    for output in response.get("output", []):
+        if not isinstance(output, dict):
+            continue
+        for content in output.get("content", []):
+            if isinstance(content, dict) and content.get("type") == "output_text" and isinstance(content.get("text"), str):
+                text.append(content["text"])
+    return text
 
 
 def _parse_vision_response_json(
@@ -1075,8 +1526,28 @@ def _extract_vision_text_lines(result: dict[str, Any]) -> list[str]:
 
 
 def _vision_ocr_result_from_dict(result: dict[str, Any]) -> "VisionOcrResult":
+    extracted_text = result.get("extracted_text")
+    allowed_types = {
+        "Title",
+        "NarrativeText",
+        "ListItem",
+        "Table",
+        "Code",
+        "Header",
+        "Footer",
+        "FigureCaption",
+        "Formula",
+        "Handwritten",
+        "Annotation",
+        "Uncategorized",
+    }
+    if not isinstance(extracted_text, list) or any(
+        not isinstance(block, dict) or not isinstance(block.get("type"), str) or not isinstance(block.get("content"), str) or block["type"] not in allowed_types
+        for block in extracted_text
+    ):
+        raise ValueError("OCR response contains malformed extracted_text blocks.")
     return VisionOcrResult(
-        extracted_text=result.get("extracted_text", []),
+        extracted_text=extracted_text,
         image_type=result.get("image_type"),
         subject=result.get("subject"),
         description=result.get("description"),
@@ -1147,7 +1618,7 @@ async def classify_image(
 
 async def extract_text_with_vision(
     image_content: bytes,
-    base_url: str,
+    base_url: str | None,
     model: str,
     provider: str = "ollama",
     api_key: str | None = None,
@@ -1183,15 +1654,14 @@ async def extract_text_with_vision(
         Extracted text plus image classification (when enabled)
     """
     normalized_provider = normalize_provider_name(provider)
-    processed_content, format_used = _prepare_vision_image_content(
+    uses_default_prompt = prompt is None
+    processed_content, image_mime_type = _prepare_vision_image_content(
         image_content,
+        provider=normalized_provider,
         preprocess=preprocess,
         max_dimension=max_dimension,
         source_format=source_format,
     )
-    if format_used == "unsupported_raw":
-        return "[UnsupportedFormat] Raw camera format could not be processed"
-
     use_structured_output = False
     if prompt is None:
         use_structured_output = await _supports_structured_vision_output(
@@ -1215,6 +1685,7 @@ async def extract_text_with_vision(
             prompt=prompt,
             schema=schema,
             processed_content=processed_content,
+            image_mime_type=image_mime_type,
             timeout=timeout,
         )
 
@@ -1223,7 +1694,12 @@ async def extract_text_with_vision(
             log_parse_errors=schema is not None,
         )
         if result is None:
+            if schema is not None:
+                raise ValueError("Vision OCR provider returned malformed structured output.")
             return response_text
+
+        if uses_default_prompt:
+            _vision_ocr_result_from_dict(result)
 
         lines = _extract_vision_text_lines(result)
 
@@ -1288,19 +1764,19 @@ class VisionOcrResult:
         """
         Get content organized by semantic segments for intelligent chunking.
 
-        Returns list of (segment_type, content) tuples where segment_type is:
-        - 'ocr_text': All OCR extracted text combined
-        - 'classification': Image classification metadata combined
-
-        This groups related content together so chunking can respect semantic
-        boundaries rather than splitting mid-concept.
+        Returns one tuple for every OCR block plus a separate classification
+        tuple when classification metadata is present.
         """
         segments = []
 
-        # Combine all OCR text as one semantic unit
-        ocr_lines = self._format_extracted_text()
-        if ocr_lines:
-            segments.append(("ocr_text", "\n".join(ocr_lines)))
+        for item in self.extracted_text:
+            if not isinstance(item, dict):
+                continue
+            block_type = item.get("type")
+            content = item.get("content")
+            if not isinstance(block_type, str) or not isinstance(content, str) or not content:
+                continue
+            segments.append((block_type.lower(), content))
 
         # Combine classification as one semantic unit (always together)
         class_lines = self._format_classification()
@@ -1312,7 +1788,7 @@ class VisionOcrResult:
 
 async def extract_text_with_vision_structured(
     image_content: bytes,
-    base_url: str,
+    base_url: str | None,
     model: str,
     provider: str = "ollama",
     api_key: str | None = None,
@@ -1345,18 +1821,13 @@ async def extract_text_with_vision_structured(
         VisionOcrResult with structured semantic data
     """
     normalized_provider = normalize_provider_name(provider)
-    processed_content, format_used = _prepare_vision_image_content(
+    processed_content, image_mime_type = _prepare_vision_image_content(
         image_content,
+        provider=normalized_provider,
         preprocess=preprocess,
         max_dimension=max_dimension,
         source_format=source_format,
     )
-    if format_used == "unsupported_raw":
-        return VisionOcrResult(
-            extracted_text=[],
-            raw_text="[UnsupportedFormat] Raw camera format could not be processed",
-        )
-
     use_structured_output = await _supports_structured_vision_output(
         normalized_provider,
         model,
@@ -1377,6 +1848,7 @@ async def extract_text_with_vision_structured(
             prompt=prompt,
             schema=schema,
             processed_content=processed_content,
+            image_mime_type=image_mime_type,
             timeout=timeout,
         )
 
@@ -1385,9 +1857,7 @@ async def extract_text_with_vision_structured(
             log_parse_errors=schema is not None,
         )
         if result is None:
-            if schema is not None:
-                logger.warning("Failed to parse structured OCR, returning raw")
-            return VisionOcrResult(extracted_text=[], raw_text=response_text)
+            raise ValueError("Vision OCR provider returned malformed structured output.")
 
         return _vision_ocr_result_from_dict(result)
 

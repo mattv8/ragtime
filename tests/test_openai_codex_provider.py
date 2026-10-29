@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import unittest
@@ -15,10 +16,10 @@ from ragtime.core.openai_codex_auth import (
     ensure_openai_codex_token_fresh,
     extract_openai_codex_account_id,
 )
+from ragtime.core.openai_codex_transport import build_codex_responses_request, codex_response_headers
 from ragtime.indexer import routes as indexer_routes
 from ragtime.indexer.embedding_errors import EmbeddingOperationError
 from ragtime.indexer.vector_utils import get_embeddings_model
-from ragtime.rag.components import _build_codex_request
 
 
 def _jwt_with_payload(payload: dict) -> str:
@@ -72,6 +73,27 @@ class FakeRepository:
         self.updates.append(updates)
         return None
 
+    async def rotate_openai_codex_tokens_if_refresh_token_matches(self, expected_refresh_token: str, updates: dict) -> bool:
+        self.updates.append(updates)
+        return True
+
+
+class RefreshingRepository(FakeRepository):
+    def __init__(self, settings: SimpleNamespace) -> None:
+        super().__init__()
+        self.settings = settings
+
+    async def get_settings(self) -> SimpleNamespace:
+        return self.settings
+
+    async def rotate_openai_codex_tokens_if_refresh_token_matches(self, expected_refresh_token: str, updates: dict) -> bool:
+        if self.settings.openai_codex_refresh_token != expected_refresh_token:
+            return False
+        self.updates.append(updates)
+        for key, value in updates.items():
+            setattr(self.settings, key, value)
+        return True
+
 
 class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
     def test_extract_account_id_prefers_chatgpt_claim(self) -> None:
@@ -102,12 +124,21 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
             content=content,
         )
 
-        rewritten = _build_codex_request(request, content)
+        rewritten = build_codex_responses_request(request, content)
 
         self.assertEqual(str(rewritten.url), OPENAI_CODEX_RESPONSES_ENDPOINT)
         self.assertEqual(rewritten.headers.get("Authorization"), "Bearer token")
         self.assertEqual(rewritten.headers.get("ChatGPT-Account-Id"), "acct_123")
         self.assertEqual(json.loads(rewritten.read()), {"input": "hello", "store": False})
+
+    def test_reusable_codex_transport_builders_expose_safe_headers_and_payload(self) -> None:
+        request = httpx.Request("POST", "https://api.openai.com/v1/responses", content=b'{"input":"hello","temperature":0}')
+
+        rewritten = build_codex_responses_request(request, request.read())
+
+        self.assertEqual(str(rewritten.url), OPENAI_CODEX_RESPONSES_ENDPOINT)
+        self.assertEqual(json.loads(rewritten.read()), {"input": "hello", "store": False})
+        self.assertEqual(codex_response_headers(" acct_123 "), {"User-Agent": "ragtime", "ChatGPT-Account-Id": "acct_123"})
 
     def test_codex_request_normalizes_payload_to_supported_fields(self) -> None:
         content = json.dumps(
@@ -125,7 +156,7 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
             content=content,
         )
 
-        rewritten = _build_codex_request(request, content)
+        rewritten = build_codex_responses_request(request, content)
 
         rewritten_body = rewritten.read()
         self.assertEqual(json.loads(rewritten_body), {"input": "hello", "store": False})
@@ -143,7 +174,7 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
         ).encode("utf-8")
         request = httpx.Request("POST", "https://api.openai.com/v1/responses", content=content)
 
-        rewritten = _build_codex_request(request, content)
+        rewritten = build_codex_responses_request(request, content)
 
         self.assertEqual(
             json.loads(rewritten.read()),
@@ -374,10 +405,7 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
 
         settings = SimpleNamespace(openai_codex_account_id="acct_123")
         with (
-            mock.patch(
-                "ragtime.indexer.routes.ensure_openai_codex_token_fresh",
-                new=mock.AsyncMock(return_value="codex-token"),
-            ),
+            mock.patch("ragtime.indexer.routes.ensure_openai_codex_token_fresh", new=mock.AsyncMock(return_value="codex-token")),
             mock.patch("ragtime.indexer.routes.httpx.AsyncClient", _FakeClient),
         ):
             result = await indexer_routes._fetch_openai_codex_embedding_models(settings)
@@ -509,6 +537,109 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
             token = await ensure_openai_codex_token_fresh(settings=settings, repository=repository)
 
         self.assertEqual(token, "still-valid-access")
+        self.assertEqual(repository.updates, [])
+
+    async def test_concurrent_refresh_rotates_tokens_once_and_returns_the_saved_token(self) -> None:
+        settings = SimpleNamespace(
+            openai_codex_access_token="expired-access",
+            openai_codex_refresh_token="rotating-refresh-token",
+            openai_codex_token_expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            openai_codex_account_id="acct_before",
+        )
+        repository = RefreshingRepository(settings)
+        refresh_started = asyncio.Event()
+        release_refresh = asyncio.Event()
+
+        async def refresh(refresh_token: str) -> dict[str, object]:
+            self.assertEqual(refresh_token, "rotating-refresh-token")
+            refresh_started.set()
+            await release_refresh.wait()
+            return {"access_token": "fresh-access", "refresh_token": "rotated-refresh", "expires_in": 3600}
+
+        with mock.patch("ragtime.core.openai_codex_auth.refresh_openai_codex_tokens", side_effect=refresh) as refresh_tokens:
+            first = asyncio.create_task(ensure_openai_codex_token_fresh(repository=repository))
+            await refresh_started.wait()
+            second = asyncio.create_task(ensure_openai_codex_token_fresh(repository=repository))
+            release_refresh.set()
+            tokens = await asyncio.gather(first, second)
+
+        self.assertEqual(tokens, ["fresh-access", "fresh-access"])
+        refresh_tokens.assert_awaited_once_with("rotating-refresh-token")
+        self.assertEqual(len(repository.updates), 1)
+        self.assertEqual(settings.openai_codex_refresh_token, "rotated-refresh")
+
+    async def test_cancelled_waiter_does_not_interrupt_token_rotation(self) -> None:
+        settings = SimpleNamespace(
+            openai_codex_access_token="expired-access",
+            openai_codex_refresh_token="refresh-token",
+            openai_codex_token_expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            openai_codex_account_id="",
+        )
+        repository = RefreshingRepository(settings)
+        refresh_started = asyncio.Event()
+        release_refresh = asyncio.Event()
+
+        async def refresh(_: str) -> dict[str, object]:
+            refresh_started.set()
+            await release_refresh.wait()
+            return {"access_token": "fresh-access", "refresh_token": "rotated-refresh"}
+
+        with mock.patch("ragtime.core.openai_codex_auth.refresh_openai_codex_tokens", side_effect=refresh):
+            cancelled_waiter = asyncio.create_task(ensure_openai_codex_token_fresh(repository=repository))
+            await refresh_started.wait()
+            cancelled_waiter.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await cancelled_waiter
+            winner = asyncio.create_task(ensure_openai_codex_token_fresh(repository=repository))
+            release_refresh.set()
+            self.assertEqual(await winner, "fresh-access")
+
+        self.assertEqual(len(repository.updates), 1)
+        self.assertEqual(settings.openai_codex_refresh_token, "rotated-refresh")
+
+    async def test_failed_refresh_uses_a_token_rotated_by_another_process(self) -> None:
+        settings = SimpleNamespace(
+            openai_codex_access_token="expired-access",
+            openai_codex_refresh_token="refresh-token",
+            openai_codex_token_expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            openai_codex_account_id="",
+        )
+        repository = RefreshingRepository(settings)
+
+        async def failed_refresh(_: str) -> dict[str, object]:
+            settings.openai_codex_access_token = "other-process-token"
+            settings.openai_codex_refresh_token = "other-process-refresh"
+            settings.openai_codex_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+            raise httpx.ConnectError("connection failed")
+
+        with mock.patch("ragtime.core.openai_codex_auth.refresh_openai_codex_tokens", side_effect=failed_refresh):
+            self.assertEqual(await ensure_openai_codex_token_fresh(repository=repository), "other-process-token")
+
+    async def test_stale_cas_rejection_returns_the_persisted_winning_token(self) -> None:
+        settings = SimpleNamespace(
+            openai_codex_access_token="expired-access",
+            openai_codex_refresh_token="refresh-token",
+            openai_codex_token_expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            openai_codex_account_id="",
+        )
+        repository = RefreshingRepository(settings)
+
+        async def reject_stale_rotation(expected_refresh_token: str, updates: dict) -> bool:
+            self.assertEqual(expected_refresh_token, "refresh-token")
+            self.assertEqual(updates["openai_codex_access_token"], "unpersisted-token")
+            settings.openai_codex_access_token = "winning-token"
+            settings.openai_codex_refresh_token = "winning-refresh-token"
+            settings.openai_codex_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+            return False
+
+        repository.rotate_openai_codex_tokens_if_refresh_token_matches = reject_stale_rotation
+        with mock.patch(
+            "ragtime.core.openai_codex_auth.refresh_openai_codex_tokens",
+            new=mock.AsyncMock(return_value={"access_token": "unpersisted-token", "refresh_token": "unpersisted-refresh-token"}),
+        ):
+            token = await ensure_openai_codex_token_fresh(repository=repository)
+
+        self.assertEqual(token, "winning-token")
         self.assertEqual(repository.updates, [])
 
     async def test_codex_embedding_refresh_exception_returns_none_when_allowed(self) -> None:

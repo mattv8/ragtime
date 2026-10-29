@@ -17,7 +17,13 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
     def _process(self, output: dict[str, object], returncode: int = 0) -> mock.AsyncMock:
         process = mock.AsyncMock()
         process.communicate.return_value = (
-            json.dumps({"is_error": False, "subtype": "success", "terminal_reason": "completed", **output}).encode(),
+            b"\n".join(
+                [
+                    json.dumps({"type": "system", "subtype": "init", "session_id": "test-session"}).encode(),
+                    json.dumps({"type": "assistant", "message": {"content": []}}).encode(),
+                    json.dumps({"type": "result", "is_error": False, "subtype": "success", "terminal_reason": "completed", **output}).encode(),
+                ]
+            ),
             b"",
         )
         process.returncode = returncode
@@ -82,9 +88,10 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
         self.assertNotIn("--bare", args)
         self.assertEqual(kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"], "oauth")
         self.assertNotIn("ANTHROPIC_API_KEY", kwargs["env"])
-        payload = json.loads(process.communicate.call_args.args[0])
-        self.assertEqual([message["role"] for message in payload["messages"]], ["user", "assistant", "tool"])
-        self.assertEqual(payload["messages"][2]["tool_call_id"], "call_1")
+        payload = json.loads(process.communicate.call_args.args[0])["message"]
+        request = json.loads(payload["content"][0]["text"])
+        self.assertEqual([message["role"] for message in request["messages"]], ["user", "assistant", "tool"])
+        self.assertEqual(request["messages"][2]["tool_call_id"], "call_1")
 
     async def test_max_tokens_overrides_child_environment_only(self) -> None:
         process = self._process({"result": "Done"})
@@ -128,7 +135,7 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
         self.assertEqual(message.tool_calls[0]["name"], "lookup")
         self.assertEqual(message.tool_calls[0]["args"], {"query": "a"})
         self.assertIn("--json-schema", create.call_args.args)
-        request = json.loads(process.communicate.call_args.args[0])
+        request = json.loads(json.loads(process.communicate.call_args.args[0])["message"]["content"][0]["text"])
         self.assertEqual(request["tools"][0]["description"], "Find a record.")
 
     async def test_tool_choice_enforces_responses_and_schema(self) -> None:
@@ -226,10 +233,90 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
         process = self._process({"result": "ok"})
         with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=process):
             await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([HumanMessage(content=[{"type": "text", "text": "one"}, {"type": "text", "text": "two"}])])
-        payload = json.loads(process.communicate.call_args.args[0])
-        self.assertEqual(payload["messages"][0]["content"], "one\ntwo")
-        with self.assertRaisesRegex(ValueError, "text-only"):
+        payload = json.loads(process.communicate.call_args.args[0])["message"]
+        request = json.loads(payload["content"][0]["text"])
+        self.assertEqual(request["messages"][0]["content"], "one\ntwo")
+        with self.assertRaisesRegex(ValueError, "base64 image"):
             await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([HumanMessage(content=[{"type": "image", "source": "x"}])])
+
+    async def test_image_blocks_use_stream_json_without_filesystem_paths(self) -> None:
+        process = self._process({"result": "read"})
+        image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aGVsbG8="}}
+        with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=process) as create:
+            response = await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([HumanMessage(content=[{"type": "text", "text": "Read"}, image])])
+
+        self.assertEqual(response.content, "read")
+        args = create.call_args.args
+        self.assertEqual(args[args.index("--input-format") + 1], "stream-json")
+        self.assertEqual(args[args.index("--output-format") + 1], "stream-json")
+        self.assertIn("--verbose", args)
+        event = json.loads(process.communicate.call_args.args[0])
+        self.assertEqual(event["type"], "user")
+        self.assertEqual(event["message"]["content"][1], image)
+
+    async def test_data_url_image_conversion_and_nonhuman_images_are_validated(self) -> None:
+        process = self._process({"result": "read"})
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}
+        with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=process):
+            await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([HumanMessage(content=[image])])
+        event = json.loads(process.communicate.call_args.args[0])
+        self.assertEqual(event["message"]["content"][1]["source"]["media_type"], "image/png")
+        with self.assertRaisesRegex(ValueError, "HumanMessage"):
+            await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([AIMessage(content=[image])])
+        with self.assertRaisesRegex(ValueError, "base64 image"):
+            await ClaudeCodeChatModel("claude-opus-4-6").ainvoke(
+                [HumanMessage(content=[{"type": "image", "source": {"type": "base64", "media_type": "image/svg+xml", "data": "aGVsbG8="}}])]
+            )
+
+    async def test_ocr_schema_uses_json_schema_without_enabling_tools(self) -> None:
+        process = self._process({"result": "Structured output provided successfully", "structured_output": {"text": "read"}})
+        schema = {"type": "object", "properties": {"text": {"type": "string"}}}
+        with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=process) as create:
+            await ClaudeCodeChatModel("claude-opus-4-6").with_ocr_json_schema(schema).ainvoke([HumanMessage(content="Read")])
+
+        args = create.call_args.args
+        self.assertEqual(json.loads(args[args.index("--json-schema") + 1]), schema)
+        self.assertIn("--tools", args)
+        self.assertEqual(args[args.index("--tools") + 1], "")
+
+    async def test_ocr_schema_rejects_missing_refused_and_truncated_structured_output(self) -> None:
+        schema = {"type": "object"}
+        cases = [
+            ({"result": "Structured output provided successfully"}, "invalid structured output"),
+            (
+                {"result": "Structured output provided successfully", "structured_output": {"text": "partial"}, "stop_reason": "max_tokens"},
+                "incomplete or refused",
+            ),
+            ({"result": "Structured output provided successfully", "structured_output": {"text": "no"}, "stop_reason": "refusal"}, "incomplete or refused"),
+        ]
+        for output, message in cases:
+            process = self._process(output)
+            with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=process):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    await ClaudeCodeChatModel("claude-opus-4-6").with_ocr_json_schema(schema).ainvoke([HumanMessage(content="Read")])
+
+    async def test_missing_stream_final_result_is_rejected(self) -> None:
+        process = mock.AsyncMock()
+        process.communicate.return_value = (b'{"type":"assistant","message":{"content":[]}}\n', b"")
+        process.returncode = 0
+        with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=process):
+            with self.assertRaisesRegex(RuntimeError, "no final result"):
+                await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([HumanMessage(content="Read")])
+
+    async def test_nonzero_exit_without_final_result_is_a_safe_failure(self) -> None:
+        process = mock.AsyncMock()
+        process.communicate.return_value = (b'{"type":"system","subtype":"init"}\n', b"details")
+        process.returncode = 1
+        with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=process):
+            with self.assertRaisesRegex(RuntimeError, "request failed"):
+                await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([HumanMessage(content="Read")])
+
+    async def test_nonzero_exit_rejects_an_apparent_success_result(self) -> None:
+        process = self._process({"result": "secret"}, returncode=1)
+        with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=process):
+            with self.assertRaisesRegex(RuntimeError, "^Claude Code request failed\\.$") as error:
+                await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([HumanMessage(content="Read")])
+        self.assertNotIn("secret", str(error.exception))
 
     async def test_system_prompt_file_is_private_framed_and_removed(self) -> None:
         process = self._process({"result": "ok"})
@@ -241,7 +328,7 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
             captured["prompt_path"] = prompt_path
             captured["mode"] = os.stat(prompt_path).st_mode & 0o777
             captured["text"] = open(prompt_path, encoding="utf-8").read()
-            captured["payload"] = json.loads(payload)
+            captured["payload"] = json.loads(payload)["message"]
             return process.communicate.return_value
 
         process.communicate.side_effect = communicate
@@ -250,10 +337,11 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
         self.assertEqual(captured["mode"], 0o600)
         self.assertEqual(captured["text"], "system authority")
         payload = cast(dict[str, object], captured["payload"])
+        request = json.loads(cast(list[dict[str, str]], payload["content"])[0]["text"])
         self.assertEqual(
-            payload["instruction"], "Answer the latest supplied user message. Use supplied tool schemas for tool-call requests only; never execute tools."
+            request["instruction"], "Answer the latest supplied user message. Use supplied tool schemas for tool-call requests only; never execute tools."
         )
-        self.assertEqual(cast(list[dict[str, str]], payload["messages"]), [{"role": "user", "content": "Hi"}])
+        self.assertEqual(request["messages"], [{"role": "user", "content": "Hi"}])
         self.assertFalse(os.path.exists(cast(str, captured["prompt_path"])))
 
     async def test_no_system_message_uses_protocol_system_prompt(self) -> None:
@@ -291,7 +379,8 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(response.content, "Found it")
-        history = json.loads(second.communicate.call_args.args[0])["messages"]
+        stream_event = json.loads(second.communicate.call_args.args[0])
+        history = json.loads(stream_event["message"]["content"][0]["text"])["messages"]
         self.assertEqual([message["role"] for message in history], ["user", "assistant", "tool"])
         self.assertEqual(history[2]["tool_call_id"], tool_request.tool_calls[0]["id"])
 
@@ -340,7 +429,7 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
         with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=malformed):
             with self.assertRaisesRegex(RuntimeError, "invalid tool response"):
                 await ClaudeCodeChatModel("claude-opus-4-6").bind_tools([tool]).ainvoke([HumanMessage(content="Hi")])
-        with self.assertRaisesRegex(ValueError, "text-only"):
+        with self.assertRaisesRegex(ValueError, "base64 image"):
             await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([HumanMessage(content=[{"type": "image"}])])
 
     async def test_rejects_failed_cli_result_even_with_success_exit_code(self) -> None:

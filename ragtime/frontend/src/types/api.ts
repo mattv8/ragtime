@@ -527,7 +527,16 @@ export type IndexJobPhase =
   | 'failed'
   | 'cancelled';
 export type OcrMode = 'disabled' | 'tesseract' | 'vision';
-export type OcrProvider = 'ollama' | 'openai' | 'openrouter' | 'omlx' | 'lmstudio' | 'llama_cpp';
+export type OcrProvider =
+  | 'ollama'
+  | 'anthropic'
+  | 'claude_code'
+  | 'openai'
+  | 'openai_codex'
+  | 'openrouter'
+  | 'omlx'
+  | 'lmstudio'
+  | 'llama_cpp';
 
 export interface IndexConfig {
   name: string;
@@ -541,7 +550,7 @@ export interface IndexConfig {
   vector_store_type?: VectorStoreType; // Vector store backend: faiss (default) or pgvector
   ocr_mode?: OcrMode; // OCR mode: disabled, tesseract, or vision
   ocr_provider?: OcrProvider | null; // Provider for semantic vision OCR
-  ocr_vision_model?: string; // Vision model for OCR
+  ocr_vision_model?: string | null; // Vision model for OCR
   git_clone_timeout_minutes?: number; // Max time for git clone (default 5 min)
   git_history_depth?: number; // 1=shallow (default), 0=full history
   reindex_interval_hours?: number; // Hours between auto pull & re-index (0=manual)
@@ -620,7 +629,7 @@ export interface IndexConfigSnapshot {
   max_file_size_kb: number;
   ocr_mode?: OcrMode; // OCR mode: disabled, tesseract, or vision
   ocr_provider?: OcrProvider | null; // Provider for semantic vision OCR
-  ocr_vision_model?: string; // Vision model for OCR
+  ocr_vision_model?: string | null; // Vision model for OCR
   enable_ocr?: boolean; // Legacy - for backward compatibility
   git_clone_timeout_minutes?: number; // May be absent for older indexes
   git_history_depth?: number; // 1=shallow (default), 0=full history
@@ -696,7 +705,7 @@ export interface UpdateIndexConfigRequest {
   max_file_size_kb?: number;
   ocr_mode?: OcrMode;
   ocr_provider?: OcrProvider | null;
-  ocr_vision_model?: string;
+  ocr_vision_model?: string | null;
   git_clone_timeout_minutes?: number;
   git_history_depth?: number;
   reindex_interval_hours?: number;
@@ -808,7 +817,7 @@ export interface AnalyzeIndexRequest {
   max_file_size_kb?: number;
   ocr_mode?: OcrMode;
   ocr_provider?: OcrProvider | null;
-  ocr_vision_model?: string;
+  ocr_vision_model?: string | null;
 }
 
 // =============================================================================
@@ -2113,7 +2122,7 @@ export interface FilesystemConnectionConfig {
   max_total_files?: number;
   ocr_mode?: OcrMode; // OCR mode: disabled, tesseract, or vision
   ocr_provider?: OcrProvider | null; // Provider for semantic vision OCR
-  ocr_vision_model?: string; // Vision model for OCR
+  ocr_vision_model?: string | null; // Vision model for OCR
 
   // Re-indexing schedule
   reindex_interval_hours?: number;

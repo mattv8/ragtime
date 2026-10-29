@@ -10,13 +10,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import importlib
 import json
 import os
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, cast
+from typing import Any, Iterable, List, Mapping, Optional, cast
 
 from fastapi import HTTPException
 from prisma import Json, Prisma
@@ -229,7 +230,7 @@ def _normalize_ocr_snapshot(config_snapshot: dict | None) -> dict | None:
     normalized = dict(config_snapshot)
     mode = _normalize_ocr_mode_value(normalized.get("ocr_mode"))
     normalized["ocr_mode"] = mode
-    if mode == "vision" and not normalized.get("ocr_provider"):
+    if mode == "vision" and "ocr_provider" not in normalized:
         normalized["ocr_provider"] = "ollama"
     return normalized
 
@@ -1023,8 +1024,6 @@ class IndexerRepository:
             ocr_mode = _normalize_ocr_mode_value(normalized_config_snapshot.get("ocr_mode"))
             raw_ocr_provider = normalized_config_snapshot.get("ocr_provider")
             ocr_provider = getattr(raw_ocr_provider, "value", raw_ocr_provider)
-            if not ocr_provider and ocr_mode == "vision":
-                ocr_provider = "ollama"
             ocr_vision_model = normalized_config_snapshot.get("ocr_vision_model")
 
         create_data: dict = {
@@ -1985,8 +1984,9 @@ class IndexerRepository:
 
         # Build update data with only provided fields
         update_data = {}
+        nullable_setting_fields = {"default_ocr_provider", "default_ocr_vision_model"}
         for snake_key, camel_key in field_mapping.items():
-            if snake_key in updates and updates[snake_key] is not None:
+            if snake_key in updates and (updates[snake_key] is not None or snake_key in nullable_setting_fields):
                 value = updates[snake_key]
                 if snake_key == "default_theme_pack" and isinstance(value, str):
                     value = canonicalize_theme_pack_id(value) or "default"
@@ -2116,6 +2116,43 @@ class IndexerRepository:
 
         logger.info(f"Updated settings: {list(update_data.keys())}")
         return await self.get_settings()
+
+    async def rotate_openai_codex_tokens_if_refresh_token_matches(
+        self,
+        expected_refresh_token: str,
+        updates: Mapping[str, Any],
+    ) -> bool:
+        """Atomically persist refreshed Codex tokens if the stored refresh token is unchanged."""
+        allowed_fields = {
+            "openai_codex_access_token": "openaiCodexAccessToken",
+            "openai_codex_refresh_token": "openaiCodexRefreshToken",
+            "openai_codex_token_expires_at": "openaiCodexTokenExpiresAt",
+            "openai_codex_account_id": "openaiCodexAccountId",
+        }
+        unexpected_fields = set(updates).difference(allowed_fields)
+        if unexpected_fields:
+            raise ValueError(f"Unsupported Codex token fields: {', '.join(sorted(unexpected_fields))}")
+        if not updates:
+            return False
+
+        db = await self._get_db()
+        async with db.tx() as tx:
+            await tx.query_raw("SELECT id FROM app_settings WHERE id = 'default' FOR UPDATE")
+            settings = await tx.appsettings.find_unique(where={"id": "default"})
+            if settings is None:
+                return False
+            stored_refresh_token = decrypt_secret(getattr(settings, "openaiCodexRefreshToken", "") or "")
+            if not hmac.compare_digest(stored_refresh_token, expected_refresh_token):
+                return False
+
+            update_data: dict[str, Any] = {}
+            for snake_key, camel_key in allowed_fields.items():
+                if snake_key not in updates:
+                    continue
+                value = updates[snake_key]
+                update_data[camel_key] = encrypt_secret(value) if snake_key.endswith(("access_token", "refresh_token")) and value else value
+            await tx.appsettings.update(where={"id": "default"}, data=update_data)
+        return True
 
     async def update_embedding_tracking(self, dimension: int, config_hash: str) -> AppSettings:
         """
