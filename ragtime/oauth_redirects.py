@@ -26,6 +26,8 @@ TRUSTED_IDE_REDIRECT_HOSTS: frozenset[str] = frozenset(
 DEFAULT_TRUSTED_REDIRECT_URIS: tuple[str, ...] = (
     "https://claude.ai/oauth/callback",
     "https://claude.ai/api/mcp/auth_callback",
+    "https://www.cursor.com/agents/mcp/oauth/callback",
+    "https://chatgpt.com/connector_platform_oauth_redirect",
 )
 
 LOOPBACK_REDIRECT_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})

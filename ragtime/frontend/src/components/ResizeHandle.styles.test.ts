@@ -75,8 +75,7 @@ describe('Resize handle style contracts', () => {
     expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.resize-handle-vertical::after\s*\{/);
     expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.resize-handle:hover::after,/);
     expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.resize-handle:active::after,/);
-    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.resize-handle:focus-visible::after,/);
-    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.resize-handle-collapsed::after\s*\{/);
+    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.resize-handle:focus-visible::after\s*\{/);
     expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.resize-handle:focus-visible\s*\{/);
     expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.resize-handle-collapsed\s*\{/);
     expect(css).toMatch(
@@ -85,11 +84,12 @@ describe('Resize handle style contracts', () => {
     expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.resize-handle-collapsed\.resize-handle-vertical\s*\{/,
     );
-    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.resize-handle-chevron\s*\{/);
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.resize-handle-collapsed\s+\.resize-handle-grip\s*\{[^}]*color:\s*var\(--color-text-secondary\);/,
+    );
 
-    expect(pointerCoarseCss).toMatch(/\[data-theme-pack='modern'\]\s+\.resize-handle::after\s*\{/);
     expect(pointerCoarseCss).toMatch(
-      /\[data-theme-pack='modern'\]\s+\.resize-handle-collapsed::after\s*\{/,
+      /\[data-theme-pack='modern'\]\s+\.resize-handle::after,\s*\[data-theme-pack='modern'\]\s+\.resize-handle-collapsed::after\s*\{[^}]*opacity:\s*0\.55;/,
     );
     expect(max768Css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.userspace-content > \.resize-handle-horizontal,/,
@@ -106,8 +106,9 @@ describe('Resize handle style contracts', () => {
       /\[data-theme-pack='modern'\]\s+\.resize-handle:focus-visible\s*\{/,
     );
 
-    expect(css).toMatch(
-      /\[data-theme-pack='modern'\]\s+\.resize-handle::after\s*\{[^}]*mask-image:\s*var\(--resize-handle-bar-mask,\s*none\);/,
+    expect(css).not.toContain('--resize-handle-bar-mask');
+    expect(css).not.toMatch(
+      /\[data-theme-pack='modern'\]\s+\.resize-handle-collapsed::after\s*\{[^}]*opacity:\s*1;/,
     );
     expect(readSource('src/styles/workbench-chat.css')).toMatch(
       /\[data-theme-pack='modern'\]\s+\.chat-panel-fullscreen > \.resize-handle-collapsed\.resize-handle-horizontal\[data-collapsed-side='before'\]\s*\{\s*display:\s*none;/,
@@ -125,6 +126,6 @@ describe('Resize handle style contracts', () => {
     expect(css).not.toContain('\n.resize-handle-horizontal {');
     expect(css).not.toContain('\n.resize-handle-vertical {');
     expect(css).not.toContain('\n.resize-handle-collapsed {');
-    expect(css).not.toContain('\n.resize-handle-chevron {');
+    expect(css).not.toContain('resize-handle-chevron');
   });
 });

@@ -220,6 +220,10 @@ flowchart LR
    # This marks cookies as Secure. Auto-enabled when ENABLE_HTTPS=true.
    SESSION_COOKIE_SECURE=false
 
+   # Trust forwarded headers only from named reverse-proxy peer IPs. The proxy must
+   # remove client-supplied forwarded headers before adding its own. Never use *.
+   # FORWARDED_ALLOW_IPS=127.0.0.1
+
    # -----------------------------------------------------------------------------
    # Runtime Configuration
    # -----------------------------------------------------------------------------
@@ -515,6 +519,8 @@ Configure tools in the Ragtime web UI before connecting MCP clients. Enabled too
 4. Fill in connection details (hostnames, credentials, database names, paths) for each tool.
 5. Use the built-in test button to verify each tool connection.
 
+For Linux, macOS, or Windows shell access, see [Connect a remote machine](REMOTE_CLIENT.md) for quick pairing, manual SSH, HTTPS tunnels, and offline setup.
+
 Once the required tools are healthy, continue with [MCP Integration](#model-context-protocol-mcp-integration).
 
 ### Creating Indexes
@@ -571,6 +577,42 @@ Workspace owners and admins can open **Share Workspace > Agent Collaboration**, 
 
 Ragtime can provide the workspace control plane while an external agent harness (Claude Desktop, Codex, OpenCode, etc.) supplies reasoning.
 
+For hosted clients such as Claude Cowork, connect through the shared OAuth-protected `/mcp` route and sign in with your Ragtime account. A configured default group gates general MCP tools; other signed-in users can still use workspace-development tools only in workspaces their existing roles authorize.
+
+##### Connect an account agent before your first workspace
+
+In **User Space**, select **Connect account agent**. The same control is available in the empty state before you create a workspace and in the toolbar when a workspace is active. Choose the client-specific OAuth tab: **Claude Cowork / Desktop**, **ChatGPT**, or **OpenCode V2**. Complete sign-in with your Ragtime account. Connecting an account agent does not create a workspace or disclose a workspace credential.
+
+After OAuth sign-in, a verified user can call `workspace_development_workspaces` to list only the workspaces they already belong to. The response includes each workspace name, full ID, current role, and a ready-to-use `workspace_development_context` call. Search can match an authorized name or description, or an exact full ID; shortened IDs are not resolved.
+
+For a read-only check, use this prompt with the connected agent:
+
+> Call `workspace_development_workspaces` to list workspaces I can access. Report their names and full IDs. Do not create a workspace, change files, or run commands.
+
+Create a workspace only after the user explicitly asks. `workspace_development_create` requires a `name` and an `idempotency_key`; use the same key when retrying the same request. For example, a user-requested sandbox can be created with:
+
+```json
+{
+  "name": "Example sandbox",
+  "description": "A user-requested workspace",
+  "idempotency_key": "create-example-sandbox-001"
+}
+```
+
+Its completed response contains the full workspace ID and the next `workspace_development_context` call. A replay with the same key and unchanged request returns the original result with `replayed: true`. If creation returns `pending` or `interrupted` with `outcome: "unconfirmed"`, retry that exact key rather than creating another workspace with a new key. A failed request replays its safe failure, and a completed workspace that is no longer available is not recreated.
+
+Account discovery and creation require a verified user OAuth identity; workspace development credentials cannot list account workspaces or create one. Use a workspace credential only after selecting an authorized workspace. Credential scopes limit it to the selected workspace: choose **Read only** (`read`), **Read / Write** (`read`, `write`), or **Read / Write / Execute** (`read`, `write`, `exec`). The default is all three scopes. Credentials can have **No expiration** (the default), or expire after 7, 30, or 90 days, or one year. Rotate or revoke a workspace credential when needed, but rotation does not repair or replace an OAuth account grant.
+
+Workspace credentials and native setup profiles remain supported for **OpenCode**, **Claude Code**, and **Codex**. The account OAuth flow is separate from those profiles and from legacy supported client configuration.
+
+##### Guidance, environment metadata, and runtime observation
+
+External agents can read seven canonical guidance topics: **Workspace workflow**, **Workspace runtime**, **Live data**, **Persistence**, **Identity**, **User Space UI**, and **Storage**. Read **Workspace workflow** for safe file work and **Workspace runtime** before runtime, preview, or application architecture work. The native profiles package the same canonical guidance; clients without native skill support can retrieve it through bounded MCP readers.
+
+Environment guidance and facts intentionally omit values. `has_value` only reports whether an environment variable is set or missing; it never reveals the value.
+
+BYOH context and runtime status use a non-recovering runtime observation. Treat `observation` as current provider-read evidence: it can be `observed`, `not_found`, `unavailable`, or `not_applicable`, with nullable liveness and a warning where applicable. `recorded_last_heartbeat_at`, `recorded_idle_expires_at`, and `recorded_ttl_expires_at` are recorded session metadata, not current liveness proof. Observation does not start, stop, restart, or preview-probe a runtime, and it does not update session or heartbeat records. The runtime manager can still perform its existing lease renewal and expiry maintenance during its own GET handling.
+
 **Chat** and **User Space AI generation** are independently controlled:
 
 - **Settings > Chat > Enable chat**: Default for Chat UI generation (titles, responses, background inference). Default: on. Administrators can set each user's Chat policy in **Users > User policies** to use the default, enable it, or disable it. An enabled user override works even when the global default is off.
@@ -582,7 +624,7 @@ Ragtime can provide the workspace control plane while an external agent harness 
 ##### Connect a coding agent
 
 1. Enable MCP in **Settings** when using the MCP connection.
-2. As a workspace owner or admin, open **Share Workspace > Coding Agent Setup**, name and create a development credential, then click **Copy Instructions**. Rotate an existing credential if its original token is no longer available.
+2. After selecting a workspace, as a workspace owner or admin, open **Share Workspace > Coding Agent Setup**, name and create a development credential, then click **Copy Instructions**. Rotate an existing credential if its original token is no longer available.
 3. Paste the instructions into your trusted external agent. It authenticates to the bootstrap API, selects its client profile, downloads and verifies the required files, and merges the local configuration while preserving user rules and provider settings.
 4. Start a new client session if requested. The agent verifies its MCP connection and retrieves the workspace context before working.
 
@@ -598,7 +640,7 @@ The copied setup instructions point to `GET /indexes/userspace/development/works
 
 The `/mcp` connection exposes compact context, resource discovery, paged instructions/contracts, and development operations. The existing full HTTP `/context` and `/operations` endpoints under the same workspace prefix remain available for downloads and programmatic clients. Credential creation, rotation, and revocation require an owner/admin session; development credentials authorize only their scoped workspace-development HTTP and MCP access.
 
-File writes and patches require the current content hash. Exec jobs have bounded concurrency and output retention. Selected SSH connections are available only through the `workspace_development` wrapper: `ssh_execute` requires both `exec` and `write` credential scopes, while an exec-only credential can download a permitted SSH file with `ssh_transfer` but cannot mutate remote or workspace destinations. Transfer contracts bind `workspace:/` paths to the enclosing workspace; workspace destinations use `expected_content_hash` for create-only or compare-and-swap replacement and never take an inner `workspace_id`. Inline SSH results are capped at 24 KiB serialized UTF-8 JSON without silent truncation; use workspace files for larger text and SSH-to-SSH for larger binary transfers. The hidden workspace code index is available by default; other indexes require an owner grant and retain backing-tool access checks. Development credentials are rejected from Chat generation, User Space generation, built-in API key management, and other credential-surface operations; they are exclusively scoped to workspace development access.
+File writes and patches require the current content hash. Exec jobs have bounded concurrency and output retention. Selected SSH connections are available only through the `workspace_development` wrapper: `ssh_execute` requires both `exec` and `write` credential scopes, while an exec-only credential can download a permitted SSH file with `ssh_transfer` but cannot mutate remote or workspace destinations. Transfer contracts bind `workspace:/` paths to the enclosing workspace; workspace destinations use `expected_content_hash` for create-only or compare-and-swap replacement and never take an inner `workspace_id`. Inline SSH results are capped at 24 KiB serialized UTF-8 JSON without silent truncation; use workspace files for larger text and SSH-to-SSH for larger binary transfers. The `execute_component` operation runs selected SQL and HTTP API tools read-only. Selected Odoo shell tools run server-side through the same operation only for callers with the `exec` scope and workspace editor role, the same requirement as runtime exec jobs; writes additionally need the tool's write setting, the workspace write opt-in, Read/Write tool access for both the workspace owner and the caller, and the `write` scope on development credentials. Odoo read access relies on best-effort code validation, not a sandbox, and each call is limited by the HTTP proxy-safe timeout. The hidden workspace code index is available by default; other indexes require an owner grant and retain backing-tool access checks. Development credentials are rejected from Chat generation, User Space generation, built-in API key management, and other credential-surface operations; they are exclusively scoped to workspace development access.
 
 ### Vector Store Abstraction
 
@@ -714,6 +756,7 @@ from the registry. Pull requests run validation only and do not publish images.
 - **Restrict `ALLOWED_ORIGINS`** to trusted domains. The application default is loopback-only when unset; avoid using `*` in network-accessible deployments because it is permissive with `allow_credentials=True`.
 - **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. MCP is disabled by default; when MCP is enabled, the default route is open unless you turn on route authentication.
 - MCP authentication supports password-based headers (including `MCP-Password` and bearer form) and OAuth2/client_credentials route modes.
+- **Trust forwarded headers narrowly.** If a reverse proxy forwards client details, configure `FORWARDED_ALLOW_IPS` with only that proxy's peer IPs. The proxy must remove client-supplied forwarded headers before adding its own; never use `*`.
 - **Protect workspace external-agent URLs.** These URLs contain revocable bearer tokens. Use them only in private sessions with trusted agents, keep them out of generated files and public issue trackers, and rotate or disable a URL when access is no longer needed.
 - Set a strong `LOCAL_ADMIN_PASSWORD` when deploying.
 - **Review trusted external redirects carefully.** OAuth callbacks and other external redirect allowlists should only include destinations you control. Redirecting users to third-party domains can expose authorization codes, tokens, or sensitive workflow context if those destinations are compromised or misconfigured.
@@ -726,7 +769,7 @@ from the registry. Pull requests run validation only and do not publish images.
 **Do not use `DEBUG_MODE=true` outside local development.** When enabled, the `/auth/status` endpoint exposes your admin username and password in plaintext (including unauthenticated callers). This is intentional for self-hosted debugging but dangerous if the server is accessible to untrusted users.
 
 #### SSH Connections
-The SSH tool uses Paramiko with `AutoAddPolicy`, which accepts any host key without verification. This makes SSH connections vulnerable to man-in-the-middle attacks on first connect. Only use the SSH tool on trusted networks or with hosts you have verified out-of-band.
+Quick-paired SSH connections pin the target's enrolled host keys before authentication. A changed key requires verifying the host and re-pairing. Legacy manual connections without configured host-key pins retain Paramiko's `AutoAddPolicy`, which accepts unknown host keys; verify those hosts out-of-band and use trusted networks.
 
 #### Tool Read-Only Mode
 Tool read-only mode is a guardrail, not complete isolation. Validators reduce common write paths, but they cannot make broad database, SSH, shell, or Odoo credentials safe against every bypass or misconfiguration. Use least-privileged credentials, read-only database roles and transactions, OS/container sandboxing, restricted SSH users, timeouts, audit logs, and network/firewall boundaries for any tool reachable by agents.

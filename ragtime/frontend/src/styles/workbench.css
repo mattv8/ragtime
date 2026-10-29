@@ -26,9 +26,6 @@
   background: var(--color-sash-hover);
   opacity: 0;
   pointer-events: none;
-  /* Set by ResizeHandle's barSegmentSelector to break the bar between adjacent panes. */
-  -webkit-mask-image: var(--resize-handle-bar-mask, none);
-  mask-image: var(--resize-handle-bar-mask, none);
   transition:
     opacity var(--transition-fast),
     background-color var(--transition-fast);
@@ -70,8 +67,7 @@
 
 [data-theme-pack='modern'] .resize-handle:hover::after,
 [data-theme-pack='modern'] .resize-handle:active::after,
-[data-theme-pack='modern'] .resize-handle:focus-visible::after,
-[data-theme-pack='modern'] .resize-handle-collapsed::after {
+[data-theme-pack='modern'] .resize-handle:focus-visible::after {
   opacity: 1;
 }
 
@@ -84,6 +80,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+[data-theme-pack='modern'] .resize-handle-collapsed .resize-handle-grip {
   color: var(--color-text-secondary);
 }
 
@@ -93,12 +92,6 @@
 
 [data-theme-pack='modern'] .resize-handle-collapsed.resize-handle-vertical {
   height: 16px;
-}
-
-[data-theme-pack='modern'] .resize-handle-chevron {
-  position: relative;
-  z-index: 1;
-  pointer-events: none;
 }
 
 /*
@@ -121,20 +114,10 @@
   box-shadow: 0 0 0 1px var(--color-focus);
 }
 
-/* The 8px gutter strip is too narrow for the chevron; the lit sash bar is the restore cue. */
-[data-theme-pack='modern'] .chat-panel > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before'] .resize-handle-chevron,
-[data-theme-pack='modern'] .userspace-content > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before'] .resize-handle-chevron,
-[data-theme-pack='modern'] .userspace-editor-section > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before'] .resize-handle-chevron {
-  display: none;
-}
-
 @media (pointer: coarse) {
-  [data-theme-pack='modern'] .resize-handle::after {
-    opacity: 0.55;
-  }
-
+  [data-theme-pack='modern'] .resize-handle::after,
   [data-theme-pack='modern'] .resize-handle-collapsed::after {
-    opacity: 1;
+    opacity: 0.55;
   }
 }
 
@@ -155,8 +138,6 @@
   [data-theme-pack='modern'] .resize-handle::after {
     background: CanvasText;
     opacity: 1;
-    -webkit-mask-image: none;
-    mask-image: none;
   }
 
   [data-theme-pack='modern'] .resize-handle:focus-visible {

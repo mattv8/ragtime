@@ -1215,6 +1215,14 @@ class UserSpaceRuntimeBridgeStatus(BaseModel):
     revision: int = Field(default=0, ge=0)
 
 
+class UserSpaceRuntimeObservation(BaseModel):
+    state: Literal["observed", "not_found", "unavailable", "not_applicable"]
+    observed_at: datetime | None = None
+    provider_updated_at: datetime | None = None
+    devserver_running: bool | None = None
+    warning: str | None = None
+
+
 class RequestAppRestart(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
     reason: str = Field(default="", max_length=1000)
@@ -1248,6 +1256,10 @@ class UserSpaceRuntimeStatusResponse(BaseModel):
     runtime_operation_phase: RuntimeOperationPhase | None = None
     runtime_operation_started_at: datetime | None = None
     runtime_operation_updated_at: datetime | None = None
+    observation: UserSpaceRuntimeObservation | None = None
+    recorded_last_heartbeat_at: datetime | None = None
+    recorded_idle_expires_at: datetime | None = None
+    recorded_ttl_expires_at: datetime | None = None
 
 
 class UserSpaceWorkspaceTabStateResponse(BaseModel):

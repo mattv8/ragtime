@@ -22,6 +22,17 @@ def build_env_var_turn_hint(env_vars: Sequence[object] | None) -> str:
     return "- Workspace env vars (keys only): " + ", ".join(parts) + suffix + ".\n"
 
 
+def build_runtime_observation_turn_hint(observation: object) -> str:
+    """Render only current runtime evidence, never infer liveness from records."""
+    values = observation if isinstance(observation, Mapping) else {}
+    state = values.get("state")
+    running = values.get("devserver_running")
+    if state == "observed" and isinstance(running, bool):
+        return f"- Runtime observation: devserver is {'running' if running else 'not running'}.\n"
+    warning = values.get("warning")
+    return f"- Runtime observation: {warning}\n" if isinstance(warning, str) and warning else ""
+
+
 _TOOL_TRANSLATIONS = {
     "assay_userspace_code": "`files_list`, `file_read`, and `code_search`",
     "search_userspace_code": "`code_search` (or `files_list` and `file_read`)",

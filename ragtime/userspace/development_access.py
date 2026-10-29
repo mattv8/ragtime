@@ -8,7 +8,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, FrozenSet
+from typing import Any, FrozenSet, Literal
 
 from fastapi import HTTPException, Request, status
 from prisma import Json
@@ -28,9 +28,12 @@ _SECRET_BYTES = 32
 class DevelopmentPrincipal:
     user_id: str
     is_admin: bool
+    general_tools_allowed: bool = False
     credential_id: str | None = None
     workspace_id: str | None = None
     scopes: FrozenSet[str] = frozenset({"read", "write", "exec"})
+    # This is transport-derived authority, not caller-provided tool input.
+    auth_source: Literal["user", "workspace_credential"] | None = None
 
 
 def _unauthorized() -> HTTPException:
@@ -93,12 +96,18 @@ async def resolve_development_principal(request: Request) -> DevelopmentPrincipa
             credential_id=str(credential.id),
             workspace_id=str(credential.workspaceId),
             scopes=scopes,
+            auth_source="workspace_credential",
         )
 
     # Preserve the existing fail-closed session JWT parser for cookie/JWT auth.
     token = request.cookies.get("ragtime_session") or bearer
     user = await get_current_user(token=token)
-    return DevelopmentPrincipal(user_id=str(user.id), is_admin=str(getattr(user, "role", "")) == "admin")
+    return DevelopmentPrincipal(
+        user_id=str(user.id),
+        is_admin=str(getattr(user, "role", "")) == "admin",
+        general_tools_allowed=True,
+        auth_source="user",
+    )
 
 
 async def create_workspace_development_credential(

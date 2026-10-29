@@ -193,6 +193,7 @@ import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageE
 import { AgentAccessSection } from './shared/AgentAccessSection';
 import { ExternalApiAccessSection } from './shared/ExternalApiAccessSection';
 import { ConnectYourAgentPanel } from './shared/ConnectYourAgentPanel';
+import { AccountCodingAgentConnectModal } from './shared/AccountCodingAgentConnectModal';
 import { UserSpaceAgentOnboardingRail } from './shared/UserSpaceAgentOnboardingRail';
 import type { CodingAgentClientId, CodingAgentSelectionRequest } from './shared/codingAgentClients';
 import { ShareLinkModal } from './shared/ShareLinkModal';
@@ -994,6 +995,8 @@ export function UserSpacePanel({
   const [dismissedErrorSignature, setDismissedErrorSignature] = useState<string | null>(null);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  const [showAccountCodingAgentConnectModal, setShowAccountCodingAgentConnectModal] =
+    useState(false);
   const [activeWorkspaceConversationId, setActiveWorkspaceConversationId] = useState<string | null>(
     null,
   );
@@ -1586,6 +1589,10 @@ export function UserSpacePanel({
         el.style.width = `${next}px`;
       }
     }
+    if (next === 0 && prev !== 0) {
+      setSidebarCollapsed(true);
+      setSidebarWidth(0);
+    }
   }, []);
 
   const handleResizeSidebarTo = useCallback((nextValue: number) => {
@@ -1644,6 +1651,19 @@ export function UserSpacePanel({
 
     if (next === 1 && rightPaneRef.current) rightPaneRef.current.style.display = 'none';
     else if (rightPaneRef.current) rightPaneRef.current.style.display = '';
+
+    // Collapse as soon as the threshold is crossed (like the chat sidebar) so the
+    // restore handle immediately takes its collapsed position instead of insetting
+    // the remaining pane until the drag ends.
+    if (next === 0 && prev !== 0) {
+      setRightPaneCollapsed(false);
+      setLeftPaneCollapsed(true);
+      setLeftPaneFraction(0);
+    } else if (next === 1 && prev !== 1) {
+      setLeftPaneCollapsed(false);
+      setRightPaneCollapsed(true);
+      setLeftPaneFraction(1);
+    }
   }, []);
 
   const handleResizeMainSplitTo = useCallback(
@@ -6794,6 +6814,25 @@ export function UserSpacePanel({
     (agentAccessLaunchTriggerRef.current ?? agentAccessButtonRef.current)?.focus();
   }, []);
 
+  const accountCodingAgentConnectToolbarRef = useRef<HTMLButtonElement | null>(null);
+  const accountCodingAgentConnectTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const handleCloseAccountCodingAgentConnectModal = useCallback(() => {
+    setShowAccountCodingAgentConnectModal(false);
+    window.setTimeout(() => {
+      const trigger = accountCodingAgentConnectTriggerRef.current;
+      const fallback = accountCodingAgentConnectToolbarRef.current;
+      if (trigger?.isConnected) {
+        trigger.focus();
+      } else if (fallback?.isConnected) {
+        fallback.focus();
+      }
+    }, 0);
+  }, []);
+  const handleOpenAccountCodingAgentConnectModal = useCallback((trigger: HTMLButtonElement) => {
+    accountCodingAgentConnectTriggerRef.current = trigger;
+    setShowAccountCodingAgentConnectModal(true);
+  }, []);
+
   const handleUpsertAgentGrant = useCallback(
     async (request: UpsertWorkspaceAgentGrantRequest) => {
       if (!activeWorkspace || !canEditWorkspace) return;
@@ -9299,6 +9338,17 @@ export function UserSpacePanel({
               <Plus size={14} />
             )}
           </button>
+          {activeWorkspaceId && (
+            <button
+              ref={accountCodingAgentConnectToolbarRef}
+              type="button"
+              className="btn btn-secondary btn-sm"
+              id="userspace-account-agent-connect-toolbar"
+              onClick={(event) => handleOpenAccountCodingAgentConnectModal(event.currentTarget)}
+            >
+              Connect account agent
+            </button>
+          )}
           {canEditWorkspace && activeWorkspaceId && (
             <button
               className="btn btn-secondary btn-sm"
@@ -9644,6 +9694,23 @@ export function UserSpacePanel({
           </div>
         </div>
       </div>
+
+      {workspaces.length === 0 && !loading && !error && (
+        <section
+          id="userspace-account-agent-connect-empty-state"
+          aria-label="Connect your account agent"
+        >
+          <p>Connect your account agent before you create your first workspace.</p>
+          <button
+            id="userspace-account-agent-connect-empty-state-cta"
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={(event) => handleOpenAccountCodingAgentConnectModal(event.currentTarget)}
+          >
+            Connect account agent
+          </button>
+        </section>
+      )}
 
       {rightPaneCollapsed ? renderUserspaceOverlay(' userspace-status-overlay-root') : null}
 
@@ -12581,6 +12648,14 @@ export function UserSpacePanel({
             />
           }
           openRequest={agentAccessOpenRequest}
+        />
+      )}
+
+      {showAccountCodingAgentConnectModal && (
+        <AccountCodingAgentConnectModal
+          isOpen={showAccountCodingAgentConnectModal}
+          onClose={handleCloseAccountCodingAgentConnectModal}
+          mcpUrl={`${window.location.origin}/mcp`}
         />
       )}
 

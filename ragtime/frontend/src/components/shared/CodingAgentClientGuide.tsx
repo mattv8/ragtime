@@ -17,6 +17,7 @@ import {
   GuideImage,
   GuideNote,
 } from './CodingAgentSetupPrimitives';
+import { CodingAgentOAuthConnection } from './CodingAgentOAuthConnection';
 
 interface Props {
   clientId: CodingAgentClientId;
@@ -104,33 +105,7 @@ function ClaudeGuide({
       </section>
       <section className="coding-agent-guide-section" data-guide-section="claude-connect">
         <h5>Connect Claude Cowork and Desktop</h5>
-        <Steps>
-          <li>
-            Navigate to a connector: personal users choose Customize → Connectors → Add custom
-            connector; organization owners choose Organization settings → Connectors → Add → Custom
-            → Web, if asked.
-          </li>
-          <li>
-            Give it a recognizable name and paste the OAuth MCP endpoint:
-            <CopyableSnippet value={mcpUrl} label="Copy OAuth MCP endpoint" />
-          </li>
-          <li>
-            Under Authentication choose <strong>Sign in now</strong>.
-          </li>
-          <li>
-            Leave <strong>Use Claude's published identity</strong> selected.{' '}
-            <strong>Register automatically</strong> also works if needed.
-          </li>
-          <li>
-            Leave Request headers empty. Do not add a client ID, client secret, or workspace
-            credential.
-          </li>
-          <li>
-            Add the connector, then complete Ragtime sign-in and MFA if prompted (your existing
-            session may finish without requiring another prompt). Enable the connector in + →
-            Connectors.
-          </li>
-        </Steps>
+        <CodingAgentOAuthConnection clientId="claude-desktop" mcpUrl={mcpUrl} />
         <GuideNote>
           <strong>No sign-in means no Claude OAuth,</strong> not disabling Ragtime authentication.
           OAuth uses your signed-in Ragtime user's existing workspace permissions. Workspace
@@ -168,9 +143,10 @@ function ClaudeGuide({
       <Alternative summary="Troubleshooting and changes" disclosure="claude-troubleshooting">
         <p>
           After header or credential changes, remove and re-add the Claude connector and have
-          members reconnect. If you see authentication errors, verify the Ragtime instance has OAuth
-          enabled for the default <code>/mcp</code> route (Settings → Enable MCP Server, Require
-          authentication for default /mcp route, Authentication Method: OAuth2).
+          members reconnect. If OAuth sign-in or workspace tools fail, verify the shared{' '}
+          <code>/mcp</code> route uses OAuth2 (Settings → Enable MCP Server, Require authentication
+          for default /mcp route, Authentication Method: OAuth2) and that the signed-in user already
+          has access to this workspace.
         </p>
       </Alternative>
       <section
@@ -274,24 +250,10 @@ export function CodingAgentClientGuide({ clientId, mcpUrl, workspaceId }: Props)
               on your plan and organization if applicable. No workspace credential is needed.
             </p>
             <h5>Connect</h5>
-            <Steps>
-              <li>
-                Open Settings → Security and login → Developer mode, then enable it if allowed.
-              </li>
-              <li>Open ChatGPT Plugins → plus → create developer app.</li>
-              <li>
-                Choose Authentication: <strong>OAuth</strong>.
-              </li>
-              <li>
-                Paste the MCP endpoint URL:
-                <CopyableSnippet value={mcpUrl} label="Copy OAuth MCP endpoint" />
-              </li>
-              <li>
-                Complete Ragtime sign-in and MFA if prompted, then authorize the app. The default{' '}
-                <code>/mcp</code> route provides development tools; custom routes do not.
-              </li>
-              <li>Enable the app in a conversation and start using development tools.</li>
-            </Steps>
+            <CodingAgentOAuthConnection clientId="chatgpt" mcpUrl={mcpUrl} />
+            <p>
+              The default <code>/mcp</code> route provides development tools; custom routes do not.
+            </p>
           </section>
           <Verify workspaceId={workspaceId} />
           <Alternative summary="Troubleshooting" disclosure="chatgpt-troubleshooting">
@@ -299,7 +261,7 @@ export function CodingAgentClientGuide({ clientId, mcpUrl, workspaceId }: Props)
               If OAuth is unavailable, verify the Ragtime instance has it enabled for the default{' '}
               <code>/mcp</code> route (Settings → Enable MCP Server, Require authentication for
               default /mcp route, Authentication Method: OAuth2) and that your account has the
-              required permissions.
+              existing workspace access required for the development tools you use.
             </p>
           </Alternative>
           <Docs href={docs} />

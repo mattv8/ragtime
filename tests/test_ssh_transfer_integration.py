@@ -383,7 +383,7 @@ class SSHTransferIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     arguments={"source": "inline", "destination": "ssh://docker_1/x", "content": "x", "workspace_id": "w1"},
                 )
             )
-            with mcp_request_context(SimpleNamespace(user_id="u1", credential_id=None, is_admin=False)):
+            with mcp_request_context(SimpleNamespace(user_id="u1", credential_id=None, is_admin=False, general_tools_allowed=True)):
                 await handler(request)
             assert execute_transfer.await_args is not None
             user_kwargs = execute_transfer.await_args.kwargs

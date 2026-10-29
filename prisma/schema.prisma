@@ -457,6 +457,7 @@ enum ToolType {
   influxdb
   odoo_shell
   ssh_shell
+  windows_shell
   filesystem_indexer
   solidworks_pdm
   http_api
@@ -592,9 +593,45 @@ model ToolConfig {
   mountSources UserspaceMountSource[]
   accessPolicy ToolAccessPolicy?
   pdmAutomationState PdmAutomationState?
+  remotePairings RemotePairing[]
 
   @@index([groupId])
   @@map("tool_configs")
+}
+
+enum RemotePairingStatus {
+  pending
+  consumed
+  paired
+  failed
+  expired
+  revoked
+}
+
+model RemotePairing {
+  id                    String              @id @default(uuid())
+  toolId                String              @map("tool_id")
+  tool                  ToolConfig          @relation(fields: [toolId], references: [id], onDelete: Cascade)
+  status                RemotePairingStatus @default(pending)
+  enrollmentTokenHash   String              @unique @map("enrollment_token_hash")
+  enrollmentExpiresAt   DateTime            @map("enrollment_expires_at")
+  enrollmentNonce       String?             @map("enrollment_nonce")
+  encryptedPrivateKey   String              @map("encrypted_private_key")
+  publicKey             String              @map("public_key")
+  tunnelCredentialHash  String              @unique @map("tunnel_credential_hash")
+  encryptedEnrollmentResponse String?       @map("encrypted_enrollment_response")
+  recoveryExpiresAt     DateTime?           @map("recovery_expires_at")
+  isDraft               Boolean             @default(true) @map("is_draft")
+  facts                 Json?               @map("facts")
+  transport             String?             @map("transport")
+  error                 String?
+  lastActivityAt        DateTime            @default(now()) @map("last_activity_at")
+  createdAt             DateTime            @default(now()) @map("created_at")
+  updatedAt             DateTime            @default(now()) @updatedAt @map("updated_at")
+
+  @@index([toolId])
+  @@index([status, lastActivityAt])
+  @@map("remote_pairings")
 }
 
 model ToolAccessPolicy {
@@ -1105,6 +1142,7 @@ model User {
   // Relations
   sessions                             Session[]
   conversations                        Conversation[]
+  queuedMessages                       ChatQueuedMessage[]
   ownedWorkspaces                      Workspace[]                           @relation("WorkspaceOwner")
   workspaceMemberships                 WorkspaceMember[]
   conversationMembers                  ConversationMember[]
@@ -1515,6 +1553,7 @@ model Conversation {
 
   // Relation to background tasks
   tasks                      ChatTask[]
+  queuedMessages             ChatQueuedMessage[]
   providerPromptDebugRecords ProviderPromptDebugRecord[]
 
   // Relation to conversation members, tool selections, and per-tool options
@@ -1538,6 +1577,27 @@ model Conversation {
   @@index([workspaceId, parentConversationId, updatedAt], map: "conversations_workspace_parent_updated_idx")
   @@index([userId, workspaceId, updatedAt])
   @@map("conversations")
+}
+
+/// A durable, server-owned FIFO of messages waiting for a conversation task slot.
+model ChatQueuedMessage {
+  id             String       @id @default(uuid())
+  conversationId String       @map("conversation_id")
+  userId         String?      @map("user_id")
+  workspaceId    String?      @map("workspace_id")
+  message        String
+  segments       Json         @default("[]")
+  requestContext Json         @default("{}") @map("request_context")
+  seq            BigInt       @default(autoincrement())
+  dispatchError  String?      @map("dispatch_error")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, seq])
+  @@map("chat_queued_messages")
 }
 
 model ConversationShare {
@@ -1727,6 +1787,24 @@ model Workspace {
   @@index([ownerUserId])
   @@index([updatedAt])
   @@map("workspaces")
+}
+
+/// Durable idempotency ledger for account-scoped development workspace creates.
+model WorkspaceDevelopmentCreateRequest {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  idempotencyKey String    @map("idempotency_key")
+  payloadHash    String    @map("payload_hash")
+  workspaceId    String    @unique @map("workspace_id")
+  state          String    @default("accepted")
+  errorCode      String?   @map("error_code")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+  completedAt    DateTime? @map("completed_at")
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@map("workspace_development_create_requests")
 }
 
 model WorkspacePublishedEndpoint {

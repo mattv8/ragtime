@@ -1732,6 +1732,7 @@ export type ToolType =
   | 'http_api'
   | 'odoo_shell'
   | 'ssh_shell'
+  | 'windows_shell'
   | 'filesystem_indexer'
   | 'solidworks_pdm';
 
@@ -2034,6 +2035,46 @@ export interface SSHShellConnectionConfig {
   password?: string;
   command_prefix?: string;
   working_directory?: string;
+  shell?: 'posix' | 'powershell';
+  host_keys?: string[] | null;
+  pairing_id?: string | null;
+  transport?: 'direct' | 'tunnel' | null;
+}
+
+export type RemotePairingStatus =
+  | 'pending'
+  | 'consumed'
+  | 'paired'
+  | 'failed'
+  | 'expired'
+  | 'revoked';
+
+export interface RemotePairingFacts {
+  os: 'linux' | 'macos' | 'windows';
+  username: string;
+  hostname: string;
+  addresses: string[];
+  sshd_port: number;
+  host_keys: string[];
+  shared_admin_keyfile: boolean;
+  errors: string[];
+  python_available: boolean;
+}
+
+export interface RemotePairingResponse {
+  id: string;
+  tool_id: string;
+  status: RemotePairingStatus;
+  expires_at: string;
+  facts?: RemotePairingFacts | null;
+  transport?: 'direct' | 'tunnel' | null;
+  error?: string | null;
+  connection_config: SSHShellConnectionConfig;
+}
+
+export interface RemotePairingCreatedResponse extends RemotePairingResponse {
+  public_key: string;
+  commands: Record<'sh' | 'powershell' | 'offline_sh' | 'offline_powershell', string>;
 }
 
 export interface FilesystemConnectionConfig {
@@ -2465,6 +2506,12 @@ export const TOOL_TYPE_INFO: Record<
     name: 'SSH Shell',
     description: 'Connect to a remote server via SSH to run shell commands',
     icon: 'server',
+  },
+  windows_shell: {
+    name: 'Windows Remote',
+    description: 'Connect to a Windows host via SSH and run PowerShell commands',
+    icon: 'terminal',
+    recommended: true,
   },
   filesystem_indexer: {
     name: 'Filesystem Indexer',
@@ -3146,6 +3193,35 @@ export interface SendMessageRequest {
   client_clock?: ClientClockContext;
   ui_theme?: UiThemeContext;
 }
+
+export type QueuedMessageSegment =
+  | { type: 'text'; text: string }
+  | { type: 'ref'; reference: ChatContextReference };
+
+export interface QueuedMessageItem {
+  id: string;
+  conversation_id: string;
+  message: string;
+  segments: QueuedMessageSegment[];
+  request_context: Record<string, unknown>;
+  seq: string;
+  dispatch_error: string | null;
+  created_at: string;
+}
+
+export interface ConversationMessageQueue {
+  items: QueuedMessageItem[];
+  active_task_id: string | null;
+  held: boolean;
+}
+
+export type QueueMessageResponse =
+  | { status: 'started'; task: ChatTask }
+  | { status: 'queued'; item: QueuedMessageItem };
+
+export type QueueDispatchResponse =
+  | { status: 'started'; task: ChatTask }
+  | { status: 'busy' | 'empty' };
 
 export interface ChatContextReference {
   id: string;

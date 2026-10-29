@@ -32,6 +32,7 @@ beforeAll(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   document.body.style.cursor = '';
   document.body.style.userSelect = '';
 });
@@ -176,7 +177,7 @@ describe('ResizeHandle', () => {
     expect(grip).not.toBeNull();
   });
 
-  it('keeps the grip alongside the collapsed chevron', () => {
+  it('renders the grip without a chevron when collapsed', () => {
     const onResize = vi.fn();
     const onResizeTo = vi.fn();
 
@@ -200,7 +201,7 @@ describe('ResizeHandle', () => {
     const chevron = separator.querySelector('.resize-handle-chevron');
 
     expect(grip).not.toBeNull();
-    expect(chevron).not.toBeNull();
+    expect(chevron).toBeNull();
   });
 
   it('flushes pointer resizing and restores body styles when the drag completes', () => {
@@ -239,6 +240,74 @@ describe('ResizeHandle', () => {
     expect(document.body.style.userSelect).toBe('');
   });
 
+  it('cancels a captured drag when the handle collapses and permits a new restore drag', () => {
+    const onResize = vi.fn();
+    const onResizeTo = vi.fn();
+    const onResizeEnd = vi.fn();
+    const frameCallbacks = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 1;
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback) => {
+        const frameId = nextFrameId++;
+        frameCallbacks.set(frameId, callback);
+        return frameId;
+      });
+    const cancelAnimationFrameSpy = vi
+      .spyOn(window, 'cancelAnimationFrame')
+      .mockImplementation((frameId) => {
+        frameCallbacks.delete(frameId);
+      });
+
+    const renderHandle = (collapsed?: 'before') => (
+      <ResizeHandle
+        direction="horizontal"
+        ariaLabel="Resize pane"
+        value={collapsed ? 0 : 200}
+        min={100}
+        max={400}
+        valueUnit="pixels"
+        collapsed={collapsed}
+        collapsible={{ side: 'before', restoreValue: 200 }}
+        onResize={onResize}
+        onResizeTo={onResizeTo}
+        onResizeEnd={onResizeEnd}
+      />
+    );
+    const { rerender } = render(renderHandle());
+    const separator = screen.getByRole('separator', { name: 'Resize pane' });
+
+    fireEvent.pointerDown(separator, { pointerId: 3, clientX: 100 });
+    fireEvent.pointerMove(separator, { pointerId: 3, clientX: 120 });
+    frameCallbacks.get(1)?.(0);
+    fireEvent.pointerMove(separator, { pointerId: 3, clientX: 140 });
+
+    expect(onResize).toHaveBeenCalledTimes(1);
+
+    rerender(renderHandle('before'));
+
+    expect(cancelAnimationFrameSpy).toHaveBeenCalledWith(2);
+    expect(document.body.style.cursor).toBe('');
+    expect(document.body.style.userSelect).toBe('');
+
+    fireEvent.pointerMove(separator, { pointerId: 3, clientX: 180 });
+    fireEvent.pointerUp(separator, { pointerId: 3, clientX: 180 });
+
+    expect(requestAnimationFrameSpy).toHaveBeenCalledTimes(2);
+    expect(onResize).toHaveBeenCalledTimes(1);
+    expect(onResizeEnd).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(separator, { pointerId: 4, clientX: 180 });
+    rerender(renderHandle());
+    fireEvent.pointerMove(separator, { pointerId: 4, clientX: 200 });
+    frameCallbacks.get(3)?.(0);
+    fireEvent.pointerUp(separator, { pointerId: 4, clientX: 200 });
+
+    expect(onResizeTo).toHaveBeenCalledWith(200);
+    expect(onResize).toHaveBeenCalledTimes(2);
+    expect(onResizeEnd).toHaveBeenCalledTimes(1);
+  });
+
   it('cleans up body drag styles when unmounted mid-drag', () => {
     const onResize = vi.fn();
     const onResizeTo = vi.fn();
@@ -266,82 +335,5 @@ describe('ResizeHandle', () => {
 
     expect(document.body.style.cursor).toBe('');
     expect(document.body.style.userSelect).toBe('');
-  });
-
-  it('masks the sash bar with gaps between the panes it runs beside', () => {
-    const rects: Record<string, [number, number]> = {
-      handle: [10, 410],
-      header: [10, 45],
-      messages: [49, 300],
-      composer: [312, 410],
-    };
-    const rectSpy = vi
-      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-      .mockImplementation(function (this: HTMLElement) {
-        const key = this.dataset.rectKey;
-        const [top, bottom] = (key && rects[key]) || [0, 0];
-        return {
-          top,
-          bottom,
-          left: 0,
-          right: 4,
-          width: 4,
-          height: bottom - top,
-          x: 0,
-          y: top,
-          toJSON: () => ({}),
-        } as DOMRect;
-      });
-    const observerCallbacks: Array<() => void> = [];
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        constructor(callback: () => void) {
-          observerCallbacks.push(callback);
-        }
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    );
-    const frames: FrameRequestCallback[] = [];
-    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-
-    try {
-      const { container } = render(
-        <div>
-          <ResizeHandle
-            direction="horizontal"
-            ariaLabel="Resize chat sidebar"
-            value={280}
-            min={180}
-            max={480}
-            valueUnit="pixels"
-            onResize={vi.fn()}
-            onResizeTo={vi.fn()}
-            barSegmentSelector=".pane"
-          />
-          <div className="pane" data-rect-key="header" />
-          <div className="pane" data-rect-key="messages" />
-          <div className="pane" data-rect-key="composer" />
-        </div>,
-      );
-      const separator = screen.getByRole('separator', { name: 'Resize chat sidebar' });
-      separator.dataset.rectKey = 'handle';
-      observerCallbacks.forEach((callback) => callback());
-      frames.splice(0).forEach((callback) => callback(0));
-
-      expect(separator.style.getPropertyValue('--resize-handle-bar-mask')).toBe(
-        'linear-gradient(to bottom, #000 0, #000 35px, transparent 35px, transparent 39px, #000 39px, #000 290px, transparent 290px, transparent 302px, #000 302px, #000 100%)',
-      );
-      expect(container.querySelectorAll('.pane')).toHaveLength(3);
-    } finally {
-      rectSpy.mockRestore();
-      vi.unstubAllGlobals();
-      vi.restoreAllMocks();
-    }
   });
 });

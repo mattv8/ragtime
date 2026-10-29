@@ -2554,6 +2554,13 @@ class IndexerRepository:
                 where={"id": config_id},
                 data=update_data,  # type: ignore[arg-type]
             )
+            if updates.get("enabled") is True:
+                # A pairing draft becomes durable when its tool is first saved.
+                # Keep this marker independent from later enable/disable toggles.
+                await db.execute_raw(
+                    "UPDATE remote_pairings SET is_draft = false, updated_at = CURRENT_TIMESTAMP WHERE tool_id = $1 AND is_draft = true",
+                    config_id,
+                )
             logger.info(f"Updated tool config {config_id}: {list(update_data.keys())}")
             return await self.get_tool_config(config_id)
         except Exception as e:
@@ -2590,6 +2597,15 @@ class IndexerRepository:
         db = await self._get_db()
 
         try:
+            pairing_rows = await db.query_raw(
+                "UPDATE remote_pairings SET status = 'revoked', updated_at = CURRENT_TIMESTAMP WHERE tool_id = $1 AND status <> 'revoked' RETURNING id",
+                config_id,
+            )
+            if pairing_rows:
+                from ragtime.remote_client.relay import relay_manager
+
+                for pairing in pairing_rows:
+                    await relay_manager.revoke(str(pairing["id"]))
             await db.toolconfig.delete(where={"id": config_id})
             logger.info(f"Deleted tool config {config_id}")
             return True
@@ -4065,6 +4081,7 @@ class IndexerRepository:
         error: ContentProtectionError,
         *,
         task_id: str | None = None,
+        suppress_if_task_active: bool = False,
     ) -> Optional[Conversation]:
         """Append one validated server control notice, deduplicated under the branch lock."""
         message = build_denial_message(conversation_id, error, task_id=task_id)
@@ -4076,6 +4093,9 @@ class IndexerRepository:
                 prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                 if not prisma_conv:
                     return None
+                if suppress_if_task_active and await self._conversation_task_is_live(tx, prisma_conv):
+                    logger.info("Skipped content-protection denial notice while conversation task is active: %s", conversation_id)
+                    return None
                 messages = _normalize_message_payloads(prisma_conv.messages)
                 if not any(str(existing.get("message_id") or "") == message_id for existing in messages):
                     messages.append(_sanitize_json_for_postgres(message))
@@ -4086,6 +4106,18 @@ class IndexerRepository:
                     )
 
         return self._prisma_conversation_to_model(prisma_conv)
+
+    @staticmethod
+    async def _conversation_task_is_live(tx: Any, conversation: Any) -> bool:
+        """Return whether the locked conversation currently points to a live task."""
+        active_task_id = getattr(conversation, "activeTaskId", None)
+        if not active_task_id:
+            return False
+        task_table = getattr(tx, "chattask", None)
+        if task_table is None:
+            return False
+        task = await task_table.find_unique(where={"id": active_task_id})
+        return bool(task and task.status in {PrismaChatTaskStatus.pending, PrismaChatTaskStatus.running})
 
     async def update_message_event_output(
         self,
@@ -5838,6 +5870,35 @@ class IndexerRepository:
 
         return self._prisma_task_to_model(prisma_task)
 
+    async def create_chat_task_if_idle(self, conversation_id: str, user_message: str) -> Optional[ChatTask]:
+        """Atomically reserve a task slot for work that must not overlap a chat run."""
+        db = await self._get_db()
+        async with db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
+            conversation = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
+            if conversation is None:
+                return None
+            active_task_id = getattr(conversation, "activeTaskId", None)
+            if active_task_id:
+                active_task = await tx.chattask.find_unique(where={"id": active_task_id})
+                if active_task and active_task.status in {PrismaChatTaskStatus.pending, PrismaChatTaskStatus.running}:
+                    return None
+            task_id = str(uuid.uuid4())
+            prisma_task = await tx.chattask.create(
+                data={
+                    "id": task_id,
+                    "conversationId": conversation_id,
+                    "status": _to_prisma_task_status(ChatTaskStatus.pending),
+                    "userMessage": _sanitize_for_postgres(user_message),
+                }
+            )
+            guard = "active_task_id IS NULL" if active_task_id is None else f"(active_task_id IS NULL OR active_task_id = {_sql_quote_literal(active_task_id)})"
+            claimed = await tx.execute_raw(
+                f"UPDATE conversations SET active_task_id = {_sql_quote_literal(task_id)}, updated_at = NOW() WHERE id = {_sql_quote_literal(conversation_id)} AND {guard}"
+            )
+            if claimed != 1:
+                raise RuntimeError("Conversation task claim lost")
+            return self._prisma_task_to_model(prisma_task)
+
     async def add_user_message_and_create_chat_task_if_idle(
         self,
         conversation_id: str,
@@ -5936,6 +5997,133 @@ class IndexerRepository:
                 raise RuntimeError("Conversation disappeared after claiming conversation task")
 
             return self._prisma_conversation_to_model(updated_conv), self._prisma_task_to_model(prisma_task), True
+
+    async def enqueue_chat_message(
+        self,
+        conversation_id: str,
+        *,
+        user_id: str,
+        workspace_id: Optional[str],
+        message: str,
+        segments: list[dict[str, Any]],
+        request_context: dict[str, Any],
+    ) -> tuple[str, Any]:
+        """Append a message under the conversation lock, or atomically claim an idle slot."""
+        db = await self._get_db()
+        message = _sanitize_for_postgres(message)
+        async with db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
+            conversation = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
+            if conversation is None:
+                return "missing", None
+            active = getattr(conversation, "activeTaskId", None)
+            if active:
+                task = await tx.chattask.find_unique(where={"id": active})
+                if task and task.status in {PrismaChatTaskStatus.pending, PrismaChatTaskStatus.running}:
+                    return "queued", await self._create_queued_message(tx, conversation_id, user_id, workspace_id, message, segments, request_context)
+            queued_count = await tx.chatqueuedmessage.count(where={"conversationId": conversation_id})
+            if queued_count:
+                return "queued", await self._create_queued_message(tx, conversation_id, user_id, workspace_id, message, segments, request_context)
+            task, updated_conversation = await self._claim_message_as_task(tx, conversation_id, message, active)
+            return "started", (self._prisma_conversation_to_model(updated_conversation), self._prisma_task_to_model(task))
+
+    async def _create_queued_message(
+        self,
+        tx: Any,
+        conversation_id: str,
+        user_id: str,
+        workspace_id: Optional[str],
+        message: str,
+        segments: list[dict[str, Any]],
+        request_context: dict[str, Any],
+    ) -> Any:
+        count = await tx.chatqueuedmessage.count(where={"conversationId": conversation_id})
+        if count >= 20:
+            raise HTTPException(status_code=409, detail="QUEUE_FULL")
+        return await tx.chatqueuedmessage.create(
+            data={
+                "id": str(uuid.uuid4()),
+                "conversationId": conversation_id,
+                "userId": user_id,
+                "workspaceId": workspace_id,
+                "message": message,
+                "segments": Json(_sanitize_json_for_postgres(segments)),
+                "requestContext": Json(_sanitize_json_for_postgres(request_context)),
+            }
+        )
+
+    async def _claim_message_as_task(self, tx: Any, conversation_id: str, message: str, stale_active_task_id: Optional[str] = None) -> tuple[Any, Any]:
+        task_id = str(uuid.uuid4())
+        task = await tx.chattask.create(
+            data={"id": task_id, "conversationId": conversation_id, "status": _to_prisma_task_status(ChatTaskStatus.pending), "userMessage": message}
+        )
+        claim_guard = (
+            "active_task_id IS NULL"
+            if stale_active_task_id is None
+            else f"(active_task_id IS NULL OR active_task_id = {_sql_quote_literal(stale_active_task_id)})"
+        )
+        claimed_rows = await tx.execute_raw(
+            f"UPDATE conversations SET active_task_id = {_sql_quote_literal(task_id)}, updated_at = NOW() WHERE id = {_sql_quote_literal(conversation_id)} AND {claim_guard}"
+        )
+        if claimed_rows != 1:
+            raise RuntimeError("Conversation task claim lost")
+        new_message = {"role": "user", "content": message, "timestamp": utc_now().isoformat(), "message_id": str(uuid.uuid4())}
+        token_delta = _estimate_message_tokens(new_message)
+        appended_rows = await tx.execute_raw(
+            f"UPDATE conversations SET messages = COALESCE(messages, '[]'::jsonb) || {_sql_jsonb_literal(new_message)}, total_tokens = total_tokens + {int(token_delta)}, updated_at = NOW() WHERE id = {_sql_quote_literal(conversation_id)} AND active_task_id = {_sql_quote_literal(task_id)}"
+        )
+        if appended_rows != 1:
+            raise RuntimeError("Failed to append claimed queue message")
+        conversation = await tx.conversation.find_unique(where={"id": conversation_id}, include={"user": True})
+        if conversation is None:
+            raise RuntimeError("Conversation disappeared after task claim")
+        return task, conversation
+
+    async def claim_queued_chat_message(self, conversation_id: str, expected_item_id: Optional[str] = None) -> tuple[str, Any]:
+        """Consume exactly the FIFO head while atomically creating its pending task."""
+        db = await self._get_db()
+        async with db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
+            conversation = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
+            if conversation is None:
+                return "missing", None
+            active = getattr(conversation, "activeTaskId", None)
+            if active:
+                task = await tx.chattask.find_unique(where={"id": active})
+                if task and task.status in {PrismaChatTaskStatus.pending, PrismaChatTaskStatus.running}:
+                    return "busy", None
+            item = await tx.chatqueuedmessage.find_first(where={"conversationId": conversation_id}, order={"seq": "asc"})
+            if item is None:
+                return "empty", None
+            if expected_item_id is not None and item.id != expected_item_id:
+                return "changed", None
+            task, updated_conversation = await self._claim_message_as_task(tx, conversation_id, str(item.message), active)
+            deleted = await tx.chatqueuedmessage.delete_many(where={"id": item.id, "conversationId": conversation_id})
+            if deleted != 1:
+                raise RuntimeError("Queue head changed during claim")
+            return "started", (item, self._prisma_conversation_to_model(updated_conversation), self._prisma_task_to_model(task))
+
+    async def list_queued_chat_messages(self, conversation_id: str) -> tuple[list[Any], Optional[str], bool]:
+        """Read a coherent queue snapshot while serializing against queue mutation."""
+        db = await self._get_db()
+        async with db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
+            conversation = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
+            if conversation is None:
+                return [], None, False
+            items = await tx.chatqueuedmessage.find_many(where={"conversationId": conversation_id}, order={"seq": "asc"})
+            active_id = getattr(conversation, "activeTaskId", None)
+            active_task = await tx.chattask.find_unique(where={"id": active_id}) if active_id else None
+            is_active = bool(active_task and active_task.status in {PrismaChatTaskStatus.pending, PrismaChatTaskStatus.running})
+            return items, active_id if is_active else None, bool(items) and not is_active
+
+    async def remove_queued_chat_message(self, conversation_id: str, item_id: str) -> Optional[Any]:
+        db = await self._get_db()
+        async with db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
+            if await self._lock_conversation_for_branch_mutation(tx, conversation_id) is None:
+                return None
+            item = await tx.chatqueuedmessage.find_unique(where={"id": item_id})
+            if item is None or item.conversationId != conversation_id:
+                return None
+            await tx.chatqueuedmessage.delete(where={"id": item_id})
+            return item
 
     async def create_branch_and_start_edit_resend(
         self,
@@ -6253,10 +6441,22 @@ class IndexerRepository:
                     return None
                 prisma_task = await db.chattask.find_unique(where={"id": task_id})
             else:
-                prisma_task = await db.chattask.update(
-                    where={"id": task_id},
-                    data=update_data,  # type: ignore[arg-type]
-                )
+                if status in (ChatTaskStatus.completed, ChatTaskStatus.failed, ChatTaskStatus.cancelled, ChatTaskStatus.interrupted):
+                    updated = await db.chattask.update_many(
+                        where={
+                            "id": task_id,
+                            "OR": [
+                                {"status": _to_prisma_task_status(ChatTaskStatus.pending)},
+                                {"status": _to_prisma_task_status(ChatTaskStatus.running)},
+                            ],
+                        },
+                        data=update_data,  # type: ignore[arg-type]
+                    )
+                    if not updated:
+                        return None
+                    prisma_task = await db.chattask.find_unique(where={"id": task_id})
+                else:
+                    prisma_task = await db.chattask.update(where={"id": task_id}, data=update_data)  # type: ignore[arg-type]
 
             # Clear active task from conversation for terminal states
             if (
@@ -6270,9 +6470,8 @@ class IndexerRepository:
                 and prisma_task
                 and prisma_task.conversationId
             ):
-                await db.conversation.update(
-                    where={"id": prisma_task.conversationId},
-                    data={"activeTaskId": None},
+                await db.execute_raw(
+                    f"UPDATE conversations SET active_task_id = NULL WHERE id = {_sql_quote_literal(prisma_task.conversationId)} AND active_task_id = {_sql_quote_literal(task_id)}"
                 )
 
             return self._prisma_task_to_model(prisma_task)
@@ -6360,24 +6559,35 @@ class IndexerRepository:
         }
 
         try:
-            prisma_task = await db.chattask.update(
-                where={"id": task_id},
-                data={  # type: ignore[arg-type]
-                    "status": _to_prisma_task_status(ChatTaskStatus.completed),
-                    "responseContent": response_content,
-                    "terminationReason": _sanitize_for_postgres(termination_reason) if termination_reason is not None else None,
-                    "outcomeSummary": Json(_sanitize_json_for_postgres(outcome_summary)) if outcome_summary is not None else None,
-                    "streamingState": Json(streaming_state),
-                    "completedAt": utc_now(),
-                    "lastUpdateAt": utc_now(),
+            completion_data: dict[str, Any] = {
+                "status": _to_prisma_task_status(ChatTaskStatus.completed),
+                "responseContent": response_content,
+                "streamingState": Json(streaming_state),
+                "completedAt": utc_now(),
+                "lastUpdateAt": utc_now(),
+            }
+            if termination_reason is not None:
+                completion_data["terminationReason"] = _sanitize_for_postgres(termination_reason)
+            if outcome_summary is not None:
+                completion_data["outcomeSummary"] = Json(_sanitize_json_for_postgres(outcome_summary))
+            updated = await db.chattask.update_many(
+                where={
+                    "id": task_id,
+                    "OR": [
+                        {"status": _to_prisma_task_status(ChatTaskStatus.pending)},
+                        {"status": _to_prisma_task_status(ChatTaskStatus.running)},
+                    ],
                 },
+                data=completion_data,  # type: ignore[arg-type]
             )
 
-            # Clear active task from conversation
+            if not updated:
+                return None
+            prisma_task = await db.chattask.find_unique(where={"id": task_id})
+            # Clear only the slot claimed by this task.
             if prisma_task and prisma_task.conversationId:
-                await db.conversation.update(
-                    where={"id": prisma_task.conversationId},
-                    data={"activeTaskId": None},
+                await db.execute_raw(
+                    f"UPDATE conversations SET active_task_id = NULL WHERE id = {_sql_quote_literal(prisma_task.conversationId)} AND active_task_id = {_sql_quote_literal(task_id)}"
                 )
 
             return self._prisma_task_to_model(prisma_task) if prisma_task else None
@@ -6390,8 +6600,14 @@ class IndexerRepository:
         db = await self._get_db()
 
         try:
-            prisma_task = await db.chattask.update(
-                where={"id": task_id},
+            updated = await db.chattask.update_many(
+                where={
+                    "id": task_id,
+                    "OR": [
+                        {"status": _to_prisma_task_status(ChatTaskStatus.pending)},
+                        {"status": _to_prisma_task_status(ChatTaskStatus.running)},
+                    ],
+                },
                 data={  # type: ignore[arg-type]
                     "status": _to_prisma_task_status(ChatTaskStatus.cancelled),
                     "completedAt": utc_now(),
@@ -6399,11 +6615,13 @@ class IndexerRepository:
                 },
             )
 
-            # Clear active task from conversation
+            if not updated:
+                return None
+            prisma_task = await db.chattask.find_unique(where={"id": task_id})
+            # Clear only the slot claimed by this task.
             if prisma_task and prisma_task.conversationId:
-                await db.conversation.update(
-                    where={"id": prisma_task.conversationId},
-                    data={"activeTaskId": None},
+                await db.execute_raw(
+                    f"UPDATE conversations SET active_task_id = NULL WHERE id = {_sql_quote_literal(prisma_task.conversationId)} AND active_task_id = {_sql_quote_literal(task_id)}"
                 )
 
             return self._prisma_task_to_model(prisma_task) if prisma_task else None
@@ -6435,18 +6653,26 @@ class IndexerRepository:
 
             count = 0
             for task in stale_tasks:
-                await db.chattask.update(
-                    where={"id": task.id},
+                updated = await db.chattask.update_many(
+                    where={
+                        "id": task.id,
+                        "OR": [
+                            {"status": _to_prisma_task_status(ChatTaskStatus.pending)},
+                            {"status": _to_prisma_task_status(ChatTaskStatus.running)},
+                        ],
+                    },
                     data={  # type: ignore[arg-type]
                         "status": _to_prisma_task_status(ChatTaskStatus.failed),
                         "errorMessage": "Task timed out",
                         "completedAt": utc_now(),
                     },
                 )
-                # Clear from conversation
-                if task.conversationId:
-                    await db.conversation.update(where={"id": task.conversationId}, data={"activeTaskId": None})
-                count += 1
+                if updated:
+                    if task.conversationId:
+                        await db.execute_raw(
+                            f"UPDATE conversations SET active_task_id = NULL WHERE id = {_sql_quote_literal(task.conversationId)} AND active_task_id = {_sql_quote_literal(task.id)}"
+                        )
+                    count += 1
 
             if count > 0:
                 logger.info(f"Cleaned up {count} stale chat tasks")

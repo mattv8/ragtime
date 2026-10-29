@@ -73,6 +73,7 @@ export default defineConfig({
   cacheDir: resolve(__dirname, '.vite'),
   test: {
     environment: 'jsdom',
+    maxWorkers: 4,
   },
   resolve: {
     alias: {

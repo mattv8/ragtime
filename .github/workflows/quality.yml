@@ -182,7 +182,7 @@ jobs:
 
   frontend:
     name: Frontend Build
-    needs: scope
+    needs: [scope, backend-analysis]
     runs-on: self-hosted
     outputs: {result: '${{ steps.result.outputs.value }}'}
     steps:

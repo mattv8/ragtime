@@ -133,6 +133,69 @@ class McpOauthPasswordFallbackTests(unittest.IsolatedAsyncioTestCase):
         validate_oauth2.assert_awaited_once_with(scope, "cn=restricted,dc=example,dc=com")
         validate_password.assert_awaited_once_with(scope, "enc::pw", allow_bearer=False)
 
+    async def test_default_validator_admits_valid_group_mismatch_to_development_lane(self) -> None:
+        scope = _build_scope("/mcp", {"authorization": "Bearer oauth-token"})
+        scope["_mcp_oauth_group_mismatch"] = True
+
+        with mock.patch("ragtime.mcp.routes._validate_oauth2_token", mock.AsyncMock(return_value=False)) as validate_oauth2:
+            is_valid, resolved_auth_method, failure_detail = await mcp_routes._validate_oauth2_or_password_fallback(
+                scope,
+                allowed_group_dn="cn=restricted,dc=example,dc=com",
+                encrypted_password="enc::pw",
+                allow_development_only=True,
+            )
+
+        self.assertTrue(is_valid)
+        self.assertEqual(resolved_auth_method, "oauth2_development")
+        self.assertIsNone(failure_detail)
+        validate_oauth2.assert_awaited_once_with(scope, "cn=restricted,dc=example,dc=com")
+
+    async def test_custom_validator_keeps_valid_group_mismatch_rejected(self) -> None:
+        scope = _build_scope("/mcp/custom", {"authorization": "Bearer oauth-token"})
+        scope["_mcp_oauth_group_mismatch"] = True
+
+        with mock.patch("ragtime.mcp.routes._validate_oauth2_token", mock.AsyncMock(return_value=False)):
+            is_valid, resolved_auth_method, failure_detail = await mcp_routes._validate_oauth2_or_password_fallback(
+                scope,
+                allowed_group_dn="cn=restricted,dc=example,dc=com",
+                encrypted_password=None,
+            )
+
+        self.assertFalse(is_valid)
+        self.assertIsNone(resolved_auth_method)
+        self.assertEqual(failure_detail, "OAuth2 token is invalid, expired, or unauthorized.")
+
+    async def test_default_development_lane_fails_closed_when_verified_user_cannot_bind(self) -> None:
+        scope = _build_scope("/mcp", {"authorization": "Bearer oauth-token"})
+
+        with (
+            mock.patch("ragtime.mcp.routes._check_mcp_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch("ragtime.mcp.routes._check_default_route_auth", mock.AsyncMock(return_value=(True, "oauth2", None, "cn=restricted", None))),
+            mock.patch("ragtime.mcp.routes._validate_oauth2_or_password_fallback", mock.AsyncMock(return_value=(True, "oauth2_development", None))),
+            mock.patch("ragtime.mcp.routes._resolve_default_development_principal", mock.AsyncMock(return_value=None)),
+            mock.patch("ragtime.mcp.routes._log_mcp", mock.AsyncMock()),
+        ):
+            messages = await _invoke_endpoint(mcp_routes.MCPTransportEndpoint(), scope)
+
+        self.assertEqual(messages[0]["status"], 401)
+
+    async def test_authenticated_custom_route_marks_general_tool_admission(self) -> None:
+        scope = _build_scope("/mcp/team-tools", {"authorization": "Bearer oauth-token"})
+
+        with (
+            mock.patch("ragtime.mcp.routes._check_mcp_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch(
+                "ragtime.mcp.routes.get_custom_route_server_cached",
+                mock.AsyncMock(return_value=(mock.sentinel.server, True, None, "oauth2", "cn=members", None)),
+            ),
+            mock.patch("ragtime.mcp.routes._validate_oauth2_or_password_fallback", mock.AsyncMock(return_value=(True, "oauth2", None))),
+            mock.patch("ragtime.mcp.routes.handle_filtered_request", mock.AsyncMock()),
+            mock.patch("ragtime.mcp.routes._log_mcp", mock.AsyncMock()),
+        ):
+            await _invoke_endpoint(mcp_routes.MCPCustomRouteEndpoint(), scope)
+
+        self.assertTrue(scope["_mcp_general_tools_allowed"])
+
     async def test_validator_rejects_missing_credentials(self) -> None:
         scope = _build_scope("/mcp")
 

@@ -57,6 +57,8 @@ import type {
   PdmDiscoverRequest,
   PdmDiscoverResponse,
   SSHKeyPairResponse,
+  RemotePairingResponse,
+  RemotePairingCreatedResponse,
   HeartbeatResponse,
   Conversation,
   ConversationMessageWindow,
@@ -66,6 +68,10 @@ import type {
   ConversationCountResponse,
   CreateConversationRequest,
   SendMessageRequest,
+  ConversationMessageQueue,
+  QueueDispatchResponse,
+  QueueMessageResponse,
+  QueuedMessageItem,
   UiThemeContext,
   ChatMessage,
   AvailableModelsResponse,
@@ -2229,6 +2235,46 @@ export const api = {
     return handleResponse<ToolConfig>(response);
   },
 
+  async createRemotePairing(
+    toolType: 'ssh_shell' | 'windows_shell',
+    toolId?: string,
+  ): Promise<RemotePairingCreatedResponse> {
+    const response = await apiFetch(`${API_BASE}/remote/pairings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool_type: toolType, ...(toolId ? { tool_id: toolId } : {}) }),
+    });
+    return handleResponse<RemotePairingCreatedResponse>(response);
+  },
+
+  async getRemotePairing(pairingId: string): Promise<RemotePairingResponse> {
+    const response = await apiFetch(`${API_BASE}/remote/pairings/${encodeURIComponent(pairingId)}`);
+    return handleResponse<RemotePairingResponse>(response);
+  },
+
+  async regenerateRemotePairing(pairingId: string): Promise<RemotePairingCreatedResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/remote/pairings/${encodeURIComponent(pairingId)}/regenerate`,
+      { method: 'POST' },
+    );
+    return handleResponse<RemotePairingCreatedResponse>(response);
+  },
+
+  async completeRemotePairingOffline(
+    pairingId: string,
+    blob: string,
+  ): Promise<RemotePairingResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/remote/pairings/${encodeURIComponent(pairingId)}/complete-offline`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blob }),
+      },
+    );
+    return handleResponse<RemotePairingResponse>(response);
+  },
+
   /**
    * Get a specific tool configuration
    */
@@ -2797,6 +2843,8 @@ export const api = {
         key_path: config.key_path,
         key_content: config.key_content,
         key_passphrase: config.key_passphrase,
+        pairing_id: config.pairing_id,
+        shell: config.shell,
         path,
       }),
     });
@@ -3514,6 +3562,58 @@ export const api = {
       },
     );
     return handleResponse<{ message: ChatMessage; conversation: Conversation }>(response);
+  },
+
+  async getConversationMessageQueue(
+    conversationId: string,
+    workspaceId?: string,
+  ): Promise<ConversationMessageQueue> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/queue`, workspaceId),
+    );
+    return handleResponse<ConversationMessageQueue>(response);
+  },
+
+  async enqueueConversationMessage(
+    conversationId: string,
+    request: SendMessageRequest & { segments?: unknown[] },
+    workspaceId?: string,
+  ): Promise<QueueMessageResponse> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/queue`, workspaceId),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withClientClock(request)),
+      },
+    );
+    return handleResponse<QueueMessageResponse>(response);
+  },
+
+  async deleteConversationMessageQueueItem(
+    conversationId: string,
+    itemId: string,
+    workspaceId?: string,
+  ): Promise<QueuedMessageItem> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/queue/${itemId}`,
+        workspaceId,
+      ),
+      { method: 'DELETE' },
+    );
+    return handleResponse<QueuedMessageItem>(response);
+  },
+
+  async dispatchConversationMessageQueue(
+    conversationId: string,
+    workspaceId?: string,
+  ): Promise<QueueDispatchResponse> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/queue/dispatch`, workspaceId),
+      { method: 'POST' },
+    );
+    return handleResponse<QueueDispatchResponse>(response);
   },
 
   /**

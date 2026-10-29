@@ -39,6 +39,10 @@ const apiMock = vi.hoisted(() => ({
   listAuthGroups: vi.fn(),
   getSettings: vi.fn(),
   checkContainerCapabilities: vi.fn(),
+  createRemotePairing: vi.fn(),
+  getRemotePairing: vi.fn(),
+  regenerateRemotePairing: vi.fn(),
+  completeRemotePairingOffline: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({ api: apiMock }));
@@ -757,6 +761,7 @@ describe('ToolWizard', () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole('button', { name: 'Manual (SSH)' }));
     fireEvent.change(screen.getByPlaceholderText('server.example.com'), {
       target: { value: 'server.example.com' },
     });
@@ -1826,5 +1831,67 @@ describe('ToolWizard', () => {
     );
     expect(payload).not.toHaveProperty('oauth_access_token');
     expect(payload).not.toHaveProperty('oauth_refresh_token');
+  });
+
+  it('saves the paired draft once without browser private credentials and tests its saved config', async () => {
+    const pairing = {
+      id: 'pairing-draft',
+      tool_id: 'paired-tool',
+      status: 'paired' as const,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      connection_config: {
+        host: 'paired.example',
+        user: 'deploy',
+        pairing_id: 'pairing-draft',
+        shell: 'posix' as const,
+        host_keys: ['ssh-ed25519 AAAA'],
+      },
+      public_key: 'ssh-ed25519 AAAA',
+      commands: {
+        sh: 'run-sh',
+        powershell: 'run-ps',
+        offline_sh: 'offline-sh',
+        offline_powershell: 'offline-ps',
+      },
+    };
+    apiMock.createRemotePairing.mockResolvedValue(pairing);
+    apiMock.getRemotePairing.mockResolvedValue(pairing);
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        defaultToolType="ssh_shell"
+      />,
+    );
+
+    await screen.findByText('Connected — target');
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    await waitFor(() =>
+      expect(apiMock.testSavedToolConnection).toHaveBeenCalledWith('paired-tool'),
+    );
+    expect(apiMock.testToolConnection).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production Database, Staging Odoo'), {
+      target: { value: 'Paired shell' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
+
+    await waitFor(() =>
+      expect(apiMock.updateToolConfig).toHaveBeenCalledWith('paired-tool', expect.anything()),
+    );
+    const update = apiMock.updateToolConfig.mock.calls.find(
+      ([toolId]) => toolId === 'paired-tool',
+    )?.[1];
+    expect(update).toEqual(expect.objectContaining({ enabled: true }));
+    expect(update.connection_config).toEqual(
+      expect.objectContaining({ pairing_id: 'pairing-draft' }),
+    );
+    expect(update.connection_config).not.toHaveProperty('key_content');
   });
 });

@@ -18,7 +18,12 @@ from ragtime.rag.prompts import (
     build_workspace_continuity_context,
 )
 from ragtime.userspace.instruction_content import content_protection_refusal_relay_guidance
-from ragtime.userspace.instruction_facts import build_env_var_turn_hint, normalize_facts, translate_internal_tool_references
+from ragtime.userspace.instruction_facts import (
+    build_env_var_turn_hint,
+    build_runtime_observation_turn_hint,
+    normalize_facts,
+    translate_internal_tool_references,
+)
 
 
 def _mapping(value: object) -> dict[str, Any]:
@@ -117,10 +122,14 @@ def build_instruction_bundle(context: dict) -> dict:
     if not env_line:
         env_line = build_env_var_turn_hint(env_vars)
     turn = build_current_user_turn_reminder_line(user.get("username"), user.get("display_name"))
+    runtime_observation = source.get("runtime_observation")
+    runtime_observation_hint = build_runtime_observation_turn_hint(runtime_observation)
+    runtime_blocker_hint = str(source.get("runtime_blocker_line") or "")
+    runtime_turn_hint = str(source.get("runtime_status_reminder_line") or runtime_observation_hint + runtime_blocker_hint)
     turn += build_userspace_turn_reminder_with_env_vars(
         include_sqlite_persistence=sqlite_mode == "include",
         env_var_reminder_line=env_line,
-        runtime_status_reminder_line=str(source.get("runtime_status_reminder_line") or ""),
+        runtime_status_reminder_line=runtime_turn_hint,
         diagnostics_reminder_line=str(source.get("diagnostics_reminder_line") or "")
         or build_userspace_diagnostics_turn_reminder_line(source.get("diagnostics"), available_tool_names=available_tool_names),
     )
@@ -162,7 +171,8 @@ def build_instruction_bundle(context: dict) -> dict:
             "object_storage_buckets": normalize_facts(buckets),
             "shared_sqlite_databases": normalize_facts(shared_sqlite),
             "runtime_status": normalize_facts(source.get("runtime_status")),
-            "runtime_blocker": str(source.get("runtime_status_reminder_line") or ""),
+            "runtime_observation": normalize_facts(runtime_observation),
+            "runtime_blocker": runtime_blocker_hint,
             "diagnostics": normalize_facts(source.get("diagnostics") or []),
             "recent_failure_summaries": [str(value) for value in source.get("recent_failure_summaries", []) if value],
             "access_guidance_revision": _mapping(source.get("access_guidance")).get("guidance_revision"),

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from 'lucide-react';
 
 interface ResizeHandleProps {
   /** 'horizontal' = dragging left/right, 'vertical' = dragging up/down */
@@ -32,130 +31,6 @@ interface ResizeHandleProps {
   };
   /** Called when a drag gesture ends or collapsed handle is activated */
   onResizeEnd?: () => void;
-  /**
-   * Selector, resolved within the handle's parent, for the panes the sash bar runs beside.
-   * Gaps between the matched panes become breaks in the bar. Presentation only; themes opt
-   * in by masking the bar with `--resize-handle-bar-mask`.
-   */
-  barSegmentSelector?: string;
-}
-
-type BarSegment = { start: number; end: number };
-
-function buildBarSegmentMask(
-  handle: HTMLElement,
-  targets: Element[],
-  axis: 'x' | 'y',
-): string | null {
-  const handleRect = handle.getBoundingClientRect();
-  const origin = axis === 'y' ? handleRect.top : handleRect.left;
-  const length = axis === 'y' ? handleRect.height : handleRect.width;
-  if (length <= 0) return null;
-
-  const segments: BarSegment[] = [];
-  for (const target of targets) {
-    const rect = target.getBoundingClientRect();
-    const size = axis === 'y' ? rect.height : rect.width;
-    if (size <= 0) continue;
-    const start = Math.max(0, Math.round((axis === 'y' ? rect.top : rect.left) - origin));
-    const end = Math.min(length, Math.round((axis === 'y' ? rect.bottom : rect.right) - origin));
-    if (end > start) segments.push({ start, end });
-  }
-  segments.sort((a, b) => a.start - b.start);
-
-  const merged: BarSegment[] = [];
-  for (const segment of segments) {
-    const last = merged[merged.length - 1];
-    if (last && segment.start <= last.end) last.end = Math.max(last.end, segment.end);
-    else merged.push({ ...segment });
-  }
-  if (merged.length < 2) return null;
-
-  const stops = ['#000 0'];
-  for (let i = 0; i < merged.length - 1; i += 1) {
-    const gapStart = merged[i].end;
-    const gapEnd = merged[i + 1].start;
-    stops.push(
-      `#000 ${gapStart}px`,
-      `transparent ${gapStart}px`,
-      `transparent ${gapEnd}px`,
-      `#000 ${gapEnd}px`,
-    );
-  }
-  stops.push('#000 100%');
-  return `linear-gradient(to ${axis === 'y' ? 'bottom' : 'right'}, ${stops.join(', ')})`;
-}
-
-/** Keeps `--resize-handle-bar-mask` in sync with the panes matched by `selector`. */
-function useBarSegmentMask(
-  handleRef: React.RefObject<HTMLDivElement | null>,
-  direction: 'horizontal' | 'vertical',
-  selector: string | undefined,
-) {
-  useEffect(() => {
-    const handle = handleRef.current;
-    const root = handle?.parentElement;
-    if (
-      !selector ||
-      !handle ||
-      !root ||
-      typeof ResizeObserver === 'undefined' ||
-      typeof MutationObserver === 'undefined'
-    ) {
-      return;
-    }
-
-    const axis = direction === 'horizontal' ? 'y' : 'x';
-    let targets: Element[] = [];
-    let frame: number | null = null;
-
-    const applyMask = () => {
-      frame = null;
-      const mask = buildBarSegmentMask(handle, targets, axis);
-      if (mask) handle.style.setProperty('--resize-handle-bar-mask', mask);
-      else handle.style.removeProperty('--resize-handle-bar-mask');
-    };
-    const scheduleMask = () => {
-      if (frame === null) frame = window.requestAnimationFrame(applyMask);
-    };
-
-    const resizeObserver = new ResizeObserver(scheduleMask);
-    resizeObserver.observe(handle);
-
-    const refreshTargets = () => {
-      const next = Array.from(root.querySelectorAll(selector));
-      if (next.length === targets.length && next.every((el, i) => el === targets[i])) return;
-      targets.forEach((el) => resizeObserver.unobserve(el));
-      next.forEach((el) => resizeObserver.observe(el));
-      targets = next;
-      scheduleMask();
-    };
-
-    // Streaming content mutates the subtree constantly, so only re-query when a
-    // tracked pane left the DOM or a newly added node could contain one.
-    const mutationObserver = new MutationObserver((records) => {
-      const stale =
-        targets.some((el) => !el.isConnected) ||
-        records.some((record) =>
-          Array.from(record.addedNodes).some(
-            (node) =>
-              node instanceof Element &&
-              (node.matches(selector) || node.querySelector(selector) !== null),
-          ),
-        );
-      if (stale) refreshTargets();
-    });
-    mutationObserver.observe(root, { childList: true, subtree: true });
-
-    refreshTargets();
-
-    return () => {
-      mutationObserver.disconnect();
-      resizeObserver.disconnect();
-      if (frame !== null) window.cancelAnimationFrame(frame);
-      handle.style.removeProperty('--resize-handle-bar-mask');
-    };
-  }, [direction, handleRef, selector]);
 }
 
 export function ResizeHandle({
@@ -171,10 +46,8 @@ export function ResizeHandle({
   collapsed,
   collapsible,
   onResizeEnd,
-  barSegmentSelector,
 }: ResizeHandleProps) {
   const handleRef = useRef<HTMLDivElement>(null);
-  useBarSegmentMask(handleRef, direction, barSegmentSelector);
   const startPos = useRef(0);
   const isDragging = useRef(false);
   const pendingDelta = useRef(0);
@@ -237,7 +110,7 @@ export function ResizeHandle({
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+      if (!isDragging.current || !e.currentTarget.hasPointerCapture(e.pointerId)) return;
       e.preventDefault();
       const pos = direction === 'horizontal' ? e.clientX : e.clientY;
       const delta = pos - startPos.current;
@@ -324,13 +197,6 @@ export function ResizeHandle({
     [collapsible, direction, isCollapsed, max, min, onResize, onResizeEnd, onResizeTo],
   );
 
-  let CollapsedIcon: typeof ChevronLeft | null = null;
-  if (isCollapsed && direction === 'horizontal') {
-    CollapsedIcon = collapsed === 'before' ? ChevronRight : ChevronLeft;
-  } else if (isCollapsed) {
-    CollapsedIcon = collapsed === 'before' ? ChevronDown : ChevronUp;
-  }
-
   return (
     <div
       ref={handleRef}
@@ -358,7 +224,6 @@ export function ResizeHandle({
         <span className="resize-handle-grip-dot" />
         <span className="resize-handle-grip-dot" />
       </span>
-      {CollapsedIcon && <CollapsedIcon size={14} className="resize-handle-chevron" />}
     </div>
   );
 }
