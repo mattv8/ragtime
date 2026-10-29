@@ -650,6 +650,14 @@ See [Creating Indexes](#creating-indexes) for a detailed breakdown of index type
 
 FAISS indexes are loaded into memory at startup; pgvector indexes stay in PostgreSQL and use cosine similarity search. Embedding provider (OpenAI, Ollama, llama.cpp, or LM Studio) is configured once in Settings and applies to all index types. Swapping embedding model or dimensions after initial indexing requires a full re-index.
 
+### OCR indexing
+
+Image OCR can use Ollama, llama.cpp, LM Studio, oMLX, OpenAI, Anthropic API, OpenRouter, Claude Code subscription, or OpenAI Codex subscription. Configure API keys or subscription login in Settings; OCR provider and model settings are saved separately from embedding settings, and an index can inherit or override the saved OCR target. Ollama OCR uses the configured LLM endpoint first and falls back to the embedding endpoint when the LLM endpoint is left at its default.
+
+Vision OCR fails closed: it does not silently switch to Tesseract or publish a clean replacement index after a vision extraction failure. PDFs remain on the separate AnyDoc extraction path. OCR preserves source-image and table structure where providers return it, but provider output and image limits can still constrain table precision or source-image fidelity. No live provider/model quality benchmark was performed for this change.
+
+pgvector uses shared typed vector columns. It cannot automatically preserve existing vectors while changing their dimension, so Ragtime rejects that change while rows exist; deliberately migrate or rebuild the affected pgvector storage first. FAISS indexes keep independent dimensions.
+
 ## Integrations
 
 How to connect external clients and coding assistants to Ragtime.

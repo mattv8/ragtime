@@ -24,11 +24,10 @@ from ragtime.core.file_constants import (
     UNPARSEABLE_BINARY_EXTENSIONS,
 )
 from ragtime.core.logging import get_logger
-from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key, resolve_provider_base_url
+from ragtime.core.ocr_target import OcrTargetError, resolve_ocr_target
 from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
-from ragtime.core.vision_models import OPENAI_DEFAULT_BASE_URL
 from ragtime.indexer.chunking import chunk_documents_parallel, chunk_semantic_segments
-from ragtime.indexer.document_parser import extract_image_structured_async, extract_text_from_file_async
+from ragtime.indexer.document_parser import VisionOcrError, extract_image_structured_async, extract_text_from_file_async
 
 logger = get_logger(__name__)
 
@@ -324,24 +323,6 @@ def _decode_inline_image_part(part: dict[str, Any]) -> tuple[bytes, str] | None:
         return None
 
 
-def _chat_ocr_settings(app_settings: dict[str, Any]) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
-    ocr_mode = str(app_settings.get("default_ocr_mode") or app_settings.get("defaultOcrMode") or "disabled").strip().lower()
-    ocr_provider = str(app_settings.get("default_ocr_provider") or app_settings.get("defaultOcrProvider") or "").strip().lower() or None
-    ocr_vision_model = str(app_settings.get("default_ocr_vision_model") or app_settings.get("defaultOcrVisionModel") or "").strip() or None
-
-    vision_base_url = None
-    vision_api_key = None
-    if ocr_mode == "vision" and ocr_provider:
-        normalized_provider = normalize_provider_name(ocr_provider)
-        vision_base_url = resolve_provider_base_url(app_settings, normalized_provider, "llm")
-        if not vision_base_url and normalized_provider == "openai":
-            vision_base_url = OPENAI_DEFAULT_BASE_URL
-        vision_api_key = resolve_provider_api_key(app_settings, normalized_provider, "llm")
-        ocr_provider = normalized_provider
-
-    return ocr_mode, ocr_provider, ocr_vision_model, vision_base_url, vision_api_key
-
-
 def _format_image_chunk_block(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
     return f"--- Attached image OCR chunk {chunk_index}/{total_chunks} ---\n{chunk_text.strip()}"
 
@@ -372,18 +353,32 @@ async def extract_chat_image_context_from_part(
     image_bytes, suffix = decoded
     image_path = Path(f"{filename}{suffix}")
     metadata = {"source": image_path.name, "source_type": "chat_image"}
-    ocr_mode, ocr_provider, ocr_vision_model, vision_base_url, vision_api_key = _chat_ocr_settings(app_settings)
-
     chunks: list[str] = []
-    if ocr_mode == "vision" and ocr_provider and ocr_vision_model and vision_base_url:
-        structured = await extract_image_structured_async(
-            image_path,
-            content=image_bytes,
-            ocr_provider=ocr_provider,
-            ocr_vision_model=ocr_vision_model,
-            vision_base_url=vision_base_url,
-            vision_api_key=vision_api_key,
-        )
+    ocr_settings = dict(app_settings)
+    for snake_case, camel_case in (
+        ("default_ocr_mode", "defaultOcrMode"),
+        ("default_ocr_provider", "defaultOcrProvider"),
+        ("default_ocr_vision_model", "defaultOcrVisionModel"),
+    ):
+        if snake_case not in ocr_settings and camel_case in ocr_settings:
+            ocr_settings[snake_case] = ocr_settings[camel_case]
+    ocr_mode = str(ocr_settings.get("default_ocr_mode") or "disabled").strip().lower()
+    if ocr_mode == "vision":
+        try:
+            target = resolve_ocr_target(ocr_settings)
+            if target is None:
+                return ""
+            structured = await extract_image_structured_async(
+                image_path,
+                content=image_bytes,
+                ocr_provider=target.provider,
+                ocr_vision_model=target.model,
+                vision_base_url=target.base_url,
+                vision_api_key=None,
+            )
+        except (OcrTargetError, VisionOcrError) as exc:
+            logger.warning("Chat attachment OCR unavailable for %s: %s", filename, exc)
+            return ""
         if structured:
             if structured.raw_text and not structured.extracted_text:
                 chunks = await _chunk_image_text_for_chat(structured.raw_text, metadata)
@@ -399,18 +394,9 @@ async def extract_chat_image_context_from_part(
                     chunks = [doc.page_content.strip() for doc in docs if doc.page_content.strip()]
 
         if not chunks:
-            text = await extract_text_from_file_async(
-                image_path,
-                content=image_bytes,
-                ocr_mode="vision",
-                ocr_provider=ocr_provider,
-                ocr_vision_model=ocr_vision_model,
-                vision_base_url=vision_base_url,
-                vision_api_key=vision_api_key,
-            )
-            chunks = await _chunk_image_text_for_chat(text, metadata)
+            return ""
 
-    if not chunks:
+    if not chunks and ocr_mode != "vision":
         text = await extract_text_from_file_async(
             image_path,
             content=image_bytes,

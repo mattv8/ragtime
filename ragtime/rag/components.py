@@ -139,7 +139,6 @@ from ragtime.core.model_limits import (
 from ragtime.core.model_providers import (
     LLM_PROVIDER_NAMES,
     LOCAL_LLM_PROVIDER_NAMES,
-    OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS,
     get_provider,
     normalize_provider_name,
     providers_equivalent,
@@ -157,7 +156,19 @@ from ragtime.core.ollama import (
     warmup_embedding_model,
     warmup_model,
 )
-from ragtime.core.openai_codex_auth import OPENAI_CODEX_DEFAULT_BASE_URL, OPENAI_CODEX_RESPONSES_ENDPOINT, ensure_openai_codex_token_fresh
+from ragtime.core.openai_codex_auth import OPENAI_CODEX_DEFAULT_BASE_URL, ensure_openai_codex_token_fresh
+from ragtime.core.openai_codex_transport import (
+    OpenAICodexAsyncTransport as _OpenAICodexAsyncTransport,
+)
+from ragtime.core.openai_codex_transport import (
+    OpenAICodexTransport as _OpenAICodexTransport,
+)
+from ragtime.core.openai_codex_transport import (
+    build_codex_responses_request as _build_codex_request,
+)
+from ragtime.core.openai_codex_transport import (
+    codex_response_headers,
+)
 from ragtime.core.openai_compatible import CompatibleProviderError
 from ragtime.core.openai_compatible import get_model as get_compatible_model
 from ragtime.core.openai_compatible_client import CompatibleChatOpenAI, compatible_chat_options
@@ -2619,90 +2630,6 @@ class _CopilotChatOpenAI(ChatOpenAI):
                 raise
 
 
-class _OpenAICodexTransport(httpx.BaseTransport):
-    """Rewrite OpenAI SDK requests to ChatGPT's Codex subscription backend."""
-
-    def __init__(self) -> None:
-        self._delegate = httpx.HTTPTransport()
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        content = request.read()
-        return self._delegate.handle_request(_build_codex_request(request, content))
-
-    def close(self) -> None:
-        self._delegate.close()
-
-
-class _OpenAICodexAsyncTransport(httpx.AsyncBaseTransport):
-    """Async variant of the Codex request rewriting transport."""
-
-    def __init__(self) -> None:
-        self._delegate = httpx.AsyncHTTPTransport()
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        content = await request.aread()
-        return await self._delegate.handle_async_request(_build_codex_request(request, content))
-
-    async def aclose(self) -> None:
-        await self._delegate.aclose()
-
-
-def _strip_codex_input_item_ids(payload: dict[str, Any]) -> None:
-    input_items = payload.get("input")
-    if not isinstance(input_items, list):
-        return
-
-    updated_items: list[Any] = []
-    changed = False
-    for item in input_items:
-        if isinstance(item, dict) and "id" in item:
-            item = dict(item)
-            item.pop("id", None)
-            changed = True
-        updated_items.append(item)
-
-    if changed:
-        payload["input"] = updated_items
-
-
-def _normalize_codex_responses_payload(content: bytes) -> bytes:
-    if not content:
-        return content
-    try:
-        payload = json.loads(content.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return content
-    if not isinstance(payload, dict):
-        return content
-
-    normalized = {key: value for key, value in payload.items() if key in OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS}
-    normalized["store"] = False
-    _strip_codex_input_item_ids(normalized)
-
-    if normalized == payload:
-        return content
-    return json.dumps(normalized, separators=(",", ":")).encode("utf-8")
-
-
-def _build_codex_request(request: httpx.Request, content: bytes) -> httpx.Request:
-    target_url = request.url
-    path = request.url.path.lower()
-    if "/v1/responses" in path or path.endswith("/responses") or "/chat/completions" in path:
-        target_url = httpx.URL(OPENAI_CODEX_RESPONSES_ENDPOINT)
-        content = _normalize_codex_responses_payload(content)
-
-    headers = httpx.Headers(request.headers)
-    headers.pop("host", None)
-    headers.pop("content-length", None)
-    return httpx.Request(
-        request.method,
-        target_url,
-        headers=headers,
-        content=content,
-        extensions=request.extensions,
-    )
-
-
 class _OpenAICodexChatOpenAI(_CopilotChatOpenAI):
     """ChatOpenAI variant that refreshes OpenAI Codex OAuth credentials."""
 
@@ -4105,9 +4032,7 @@ class RAGComponents:
 
             base_url = str(self._app_settings.get("openai_codex_base_url") or OPENAI_CODEX_DEFAULT_BASE_URL).rstrip("/")
             account_id = str(self._app_settings.get("openai_codex_account_id") or "").strip()
-            headers = {"User-Agent": "ragtime"}
-            if account_id:
-                headers["ChatGPT-Account-Id"] = account_id
+            headers = codex_response_headers(account_id)
 
             register_model_supported_endpoints(model, ["/responses"])
             register_model_reasoning_capabilities(

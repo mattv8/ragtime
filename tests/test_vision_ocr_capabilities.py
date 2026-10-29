@@ -193,6 +193,15 @@ class VisionOcrCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([model.name for model in models], ["gpt-4.1", "gpt-4o"])
 
+    async def test_subscription_discovery_accepts_only_route_trusted_image_ids(self) -> None:
+        models = await vision_models.list_provider_vision_models(
+            "claude_code",
+            candidate_models=["untrusted-client-model"],
+            available_image_model_ids={"claude-vision"},
+        )
+
+        self.assertEqual([(model.name, model.provider) for model in models], [("claude-vision", "claude_code")])
+
     async def test_openrouter_vision_discovery_uses_catalog_capabilities_without_live_probe(self) -> None:
         async def fake_list_models(api_key: str, timeout: float = 20.0):
             self.assertEqual(api_key, "sk-or-test")
