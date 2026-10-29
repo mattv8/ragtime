@@ -11,6 +11,8 @@ _OCR_CONTRACT_CONSTANTS = {
     "DEFAULT_JPEG_QUALITY",
     "ANTHROPIC_MAX_ENCODED_IMAGE_BYTES",
     "OPENAI_COMPATIBLE_MAX_ENCODED_IMAGE_BYTES",
+    "OLLAMA_OCR_CONTEXT_LENGTH",
+    "OLLAMA_OCR_THINK",
     "CLASSIFICATION_PROMPT",
     "CLASSIFICATION_SCHEMA",
     "OCR_WITH_CLASSIFICATION_PROMPT",
@@ -25,6 +27,7 @@ _OCR_CONTRACT_FUNCTIONS = {
     "_source_mime_type",
     "_image_mime_type",
     "_prepare_vision_image_content",
+    "_extract_ollama_response_text",
 }
 
 

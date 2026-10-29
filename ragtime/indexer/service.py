@@ -2035,6 +2035,7 @@ class IndexerService:
         Returns a new job that will process the same upload.
         Raises if tmp files no longer exist.
         """
+        config = await self.restore_retry_job_config(failed_job)
         tmp_path = UPLOAD_TMP_DIR / failed_job.id
 
         if not tmp_path.exists():
@@ -2052,7 +2053,7 @@ class IndexerService:
         job = IndexJob(
             id=job_id,
             name=failed_job.name,
-            config=failed_job.config,
+            config=config,
             source_type="upload",
             source_path=archive_path.name,
         )
@@ -2062,7 +2063,7 @@ class IndexerService:
 
         # Create optimistic metadata
         await self._create_optimistic_index_metadata(
-            config=failed_job.config,
+            config=config,
             source_type="upload",
             source=archive_path.name,
         )
@@ -2086,6 +2087,16 @@ class IndexerService:
         self._processing_tasks[job.id] = asyncio.create_task(self._process_upload(job, new_archive_path, new_tmp_dir))
 
         return job
+
+    async def restore_retry_job_config(self, failed_job: IndexJob) -> IndexConfig:
+        """Restore legacy disabled OCR config without overriding known retry intent."""
+        if failed_job.config.ocr_mode is not OcrMode.DISABLED:
+            return failed_job.config.model_copy(deep=True)
+        snapshot = await asyncio.to_thread(load_ocr_job_snapshot, UPLOAD_TMP_DIR / "indexing", failed_job.id)
+        config_data = failed_job.config.model_dump()
+        if snapshot is not None:
+            config_data |= snapshot.config_overrides
+        return IndexConfig.model_validate(config_data)
 
     async def create_index_from_git(
         self,

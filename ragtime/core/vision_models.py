@@ -62,6 +62,9 @@ ANTHROPIC_VERSION = "2023-06-01"
 OCR_OUTPUT_BUDGET_CEILING = 8192
 OCR_FALLBACK_OUTPUT_BUDGET = 4096
 OCR_OUTPUT_BUDGET_CACHE_TTL_SECONDS = MODELS_DEV_VISION_CACHE_TTL_SECONDS
+OLLAMA_OCR_CONTEXT_LENGTH = 16384
+OLLAMA_OCR_THINK = False
+DEFAULT_VISION_OCR_TIMEOUT = 180.0
 # Per-model budgets; memoized so per-page OCR never re-triggers catalog lookups when models.dev is unavailable.
 _ocr_output_budget_cache: dict[str, tuple[float, int]] = {}
 
@@ -1139,12 +1142,7 @@ def _resolve_vision_prompt_and_schema(
 
 
 def _extract_ollama_response_text(data: dict[str, Any]) -> str:
-    response_text = str(data.get("response") or "").strip()
-    thinking_text = str(data.get("thinking") or "").strip()
-    if not response_text and thinking_text:
-        logger.debug("Using 'thinking' field for structured output")
-        response_text = thinking_text
-    return response_text
+    return str(data.get("response") or "").strip()
 
 
 async def _request_vision_response_text(
@@ -1206,7 +1204,12 @@ async def _request_vision_response_once(
                 "prompt": prompt,
                 "images": [image_b64],
                 "stream": False,
-                "options": {"temperature": 0.1, "num_predict": output_budget},
+                "think": OLLAMA_OCR_THINK,
+                "options": {
+                    "temperature": 0.1,
+                    "num_ctx": OLLAMA_OCR_CONTEXT_LENGTH,
+                    "num_predict": output_budget,
+                },
             }
             if schema is not None:
                 request_json["format"] = schema
@@ -1274,7 +1277,7 @@ async def _request_vision_response_once(
 
 
 async def _retry_vision_request(operation: Any, timeout: float) -> str:
-    deadline = time.monotonic() + max(0.1, min(timeout, 60.0))
+    deadline = time.monotonic() + max(0.1, timeout)
     last_error: Exception | None = None
     for attempt in range(3):
         try:
@@ -1622,7 +1625,7 @@ async def extract_text_with_vision(
     model: str,
     provider: str = "ollama",
     api_key: str | None = None,
-    timeout: float = 60.0,
+    timeout: float = DEFAULT_VISION_OCR_TIMEOUT,
     prompt: Optional[str] = None,
     preprocess: bool = True,
     max_dimension: int = DEFAULT_MAX_IMAGE_DIMENSION,
@@ -1792,7 +1795,7 @@ async def extract_text_with_vision_structured(
     model: str,
     provider: str = "ollama",
     api_key: str | None = None,
-    timeout: float = 60.0,
+    timeout: float = DEFAULT_VISION_OCR_TIMEOUT,
     preprocess: bool = True,
     max_dimension: int = DEFAULT_MAX_IMAGE_DIMENSION,
     source_format: str | None = None,

@@ -408,6 +408,7 @@ from ragtime.indexer.visualization_retry import (
 from ragtime.indexer.workspace_state import build_workspace_chat_state, summary_to_conversation_response
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
+from ragtime.remote_client.removal import execute_windows_cleanup, is_windows_pairing_tool, validate_cleanup_request
 from ragtime.remote_client.repository import remote_pairing_repository
 from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
@@ -1310,15 +1311,16 @@ async def retry_failed_job(
             raise HTTPException(status_code=400, detail="Git URL not found in job. Cannot retry.")
 
         try:
-            await _validate_vision_ocr_target(failed_job.config)
+            config = await indexer.restore_retry_job_config(failed_job)
+            await _validate_vision_ocr_target(config)
             new_job = await indexer.create_index_from_git(
                 git_url=failed_job.git_url,
                 branch=failed_job.git_branch,
-                config=failed_job.config,
+                config=config,
                 git_token=git_token,
             )
             return _job_to_response(new_job)
-        except OcrTargetError as e:
+        except (OcrTargetError, ValueError) as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
             logger.exception("Failed to retry indexing job")
@@ -1326,7 +1328,8 @@ async def retry_failed_job(
     elif failed_job.source_type == "upload":
         try:
             # A retry creates a new job. An in-place resume keeps its frozen target.
-            await _validate_vision_ocr_target(failed_job.config)
+            config = await indexer.restore_retry_job_config(failed_job)
+            await _validate_vision_ocr_target(config)
             new_job = await indexer.retry_upload_job(failed_job)
             return _job_to_response(new_job)
         except ValueError as e:
@@ -3135,7 +3138,13 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
 
 
 @router.delete("/tools/{tool_id}", tags=["Tools"])
-async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin)):
+async def delete_tool_config(
+    tool_id: str,
+    request: Request,
+    ssh_cleanup: Literal["disable_ssh", "pairing_only"] | None = Query(default=None),
+    confirm_machine_wide: bool | None = Query(default=None),
+    _user: User = Depends(require_admin),
+):
     """
     Delete a tool configuration. Admin only.
 
@@ -3149,6 +3158,28 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     tool = await repository.get_tool_config(tool_id)
     if tool is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    try:
+        cleanup_mode = validate_cleanup_request(ssh_cleanup, confirm_machine_wide)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    connection_config = tool.connection_config or {}
+    is_windows_pairing = is_windows_pairing_tool(tool.tool_type, connection_config)
+    if cleanup_mode is not None and not is_windows_pairing:
+        raise HTTPException(status_code=400, detail="ssh_cleanup is only available for verified Windows pairings")
+    cleanup = None
+    if cleanup_mode is not None:
+        pairing = await remote_pairing_repository.get(str(connection_config["pairing_id"]))
+        pairing_status = str(getattr(pairing.get("status"), "value", pairing.get("status"))) if pairing else ""
+        if pairing is None or str(pairing["toolId"]) != tool_id or pairing_status != "paired":
+            raise HTTPException(status_code=400, detail="ssh_cleanup is only available for verified Windows pairings")
+        cleanup = await execute_windows_cleanup(
+            connection_config,
+            str(connection_config["pairing_id"]),
+            cleanup_mode,
+            confirm_machine_wide is True,
+            server_url=get_external_origin(request),
+        )
 
     tool_name = safe_tool_name(tool.name)
 
@@ -3189,6 +3220,8 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     # Delete the tool (cascade deletes jobs)
     success = await repository.delete_tool_config(tool_id)
     if not success:
+        if cleanup is not None:
+            raise HTTPException(status_code=404, detail={"message": "Tool configuration not found", "cleanup": cleanup.as_dict()})
         raise HTTPException(status_code=404, detail="Tool configuration not found")
 
     # Cleanup: unmount filesystem for filesystem indexer tools
@@ -3221,7 +3254,10 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     # Notify MCP clients that tools have changed
     notify_tools_changed()
 
-    return {"message": "Tool configuration deleted"}
+    response: dict[str, Any] = {"message": "Tool configuration deleted"}
+    if cleanup is not None:
+        response["cleanup"] = cleanup.as_dict()
+    return response
 
 
 @router.post("/tools/{tool_id}/toggle", tags=["Tools"])
