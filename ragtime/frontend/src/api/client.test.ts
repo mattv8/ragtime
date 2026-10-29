@@ -184,6 +184,41 @@ describe('auth-aware transport', () => {
   });
 });
 
+describe('tool deletion client', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => vi.stubGlobal('fetch', fetchMock));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('serializes Windows cleanup choices without relying on URLSearchParams.size', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+
+    await api.deleteToolConfig('tool id', {
+      sshCleanup: 'disable_ssh',
+      confirmMachineWide: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/tools/tool%20id?ssh_cleanup=disable_ssh&confirm_machine_wide=true',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
+  it('keeps legacy deletion requests free of an empty query string', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+
+    await api.deleteToolConfig('tool id');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/tools/tool%20id',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+});
+
 describe('user management transport contracts', () => {
   const fetchMock = vi.fn<typeof fetch>();
   beforeEach(() => vi.stubGlobal('fetch', fetchMock));
