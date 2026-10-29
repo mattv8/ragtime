@@ -8,14 +8,14 @@ from unittest import mock
 import pytest
 
 from ragtime.core.ocr_target import OcrTarget
+from ragtime.indexer import service
 from ragtime.indexer.document_parser import VisionOcrError
 from ragtime.indexer.models import IndexConfig, IndexJob, IndexStatus, OcrMode
+from ragtime.indexer.ocr_job_snapshot import OcrJobSnapshotError, create_ocr_job_snapshot, load_ocr_job_snapshot
 from ragtime.indexer.service import IndexerService
 
 
 def test_snapshot_is_written_before_extraction_and_contains_no_secret(tmp_path: Path) -> None:
-    from ragtime.indexer.ocr_job_snapshot import create_ocr_job_snapshot
-
     target = OcrTarget(provider="openai", model="gpt-4o-mini", base_url="https://api.openai.com/v1")
     snapshot = create_ocr_job_snapshot(tmp_path, "job-1", target, "pipeline-hash")
 
@@ -27,8 +27,6 @@ def test_snapshot_is_written_before_extraction_and_contains_no_secret(tmp_path: 
 
 
 def test_resume_uses_frozen_target_after_global_defaults_change(tmp_path: Path) -> None:
-    from ragtime.indexer.ocr_job_snapshot import create_ocr_job_snapshot, load_ocr_job_snapshot
-
     original = OcrTarget(provider="openai", model="gpt-4o-mini", base_url="https://api.openai.com/v1")
     create_ocr_job_snapshot(tmp_path, "job-1", original, "pipeline-hash")
 
@@ -45,8 +43,6 @@ def test_resume_uses_frozen_target_after_global_defaults_change(tmp_path: Path) 
 
 
 def test_new_job_uses_its_own_resolved_target(tmp_path: Path) -> None:
-    from ragtime.indexer.ocr_job_snapshot import create_ocr_job_snapshot, load_ocr_job_snapshot
-
     create_ocr_job_snapshot(
         tmp_path,
         "old-job",
@@ -78,8 +74,6 @@ def test_new_job_uses_its_own_resolved_target(tmp_path: Path) -> None:
     ],
 )
 def test_corrupt_snapshot_fails_instead_of_using_current_defaults(tmp_path: Path, payload: str) -> None:
-    from ragtime.indexer.ocr_job_snapshot import OcrJobSnapshotError, load_ocr_job_snapshot
-
     job_root = tmp_path / "job-1"
     job_root.mkdir()
     (job_root / "ocr-target.json").write_text(payload, encoding="utf-8")
@@ -89,9 +83,6 @@ def test_corrupt_snapshot_fails_instead_of_using_current_defaults(tmp_path: Path
 
 
 def test_resume_restores_vision_mode_and_overrides_from_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from ragtime.indexer import service
-    from ragtime.indexer.ocr_job_snapshot import create_ocr_job_snapshot
-
     create_ocr_job_snapshot(
         tmp_path / "indexing",
         "job-1",
@@ -122,8 +113,6 @@ def test_resume_restores_vision_mode_and_overrides_from_snapshot(tmp_path: Path,
 
 
 def test_service_persists_snapshot_before_first_vision_extraction_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from ragtime.indexer import service
-
     source = tmp_path / "source"
     source.mkdir()
     image = source / "scan.png"
