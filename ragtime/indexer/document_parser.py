@@ -29,6 +29,7 @@ import httpx
 from ragtime.core.document_conversion import convert_document_bytes
 from ragtime.core.file_constants import ANYDOC_DOCUMENT_EXTENSIONS, DOCUMENT_EXTENSIONS, OCR_EXTENSIONS, RAW_CAMERA_EXTENSIONS
 from ragtime.core.logging import get_logger
+from ragtime.core.ocr_table_recovery import OllamaOcrIncompleteError
 
 logger = get_logger(__name__)
 
@@ -207,6 +208,14 @@ def _structured_vision_failure_detail(exc: Exception, provider: str) -> str:
         return f"provider={provider}, category=http_status, status={exc.response.status_code}"
     if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
         return f"provider={provider}, category=timeout"
+    if isinstance(exc, OllamaOcrIncompleteError):
+        category = "output_exhausted" if exc.reason == "length" else "incomplete_response"
+        detail = f"provider={provider}, category={category}, reason={exc.reason}"
+        if exc.eval_count is not None:
+            detail += f", eval_count={exc.eval_count}"
+        if exc.prompt_eval_count is not None:
+            detail += f", prompt_eval_count={exc.prompt_eval_count}"
+        return detail
     return f"provider={provider}, category=extraction_failed, error_type={type(exc).__name__}"
 
 

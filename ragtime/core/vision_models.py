@@ -34,6 +34,14 @@ from ragtime.core.file_constants import RAW_CAMERA_EXTENSIONS
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_output_limit, register_model_image_input_capability
 from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key
+from ragtime.core.ocr_table_recovery import (
+    OCR_TABLE_RECOVERY_PROMPT,
+    OCR_TABLE_RECOVERY_SCHEMA,
+    OLLAMA_OCR_RECOVERY_REPEAT_PENALTY,
+    OllamaOcrIncompleteError,
+    recover_ocr_table_blocks,
+    validate_ocr_recovery_response,
+)
 from ragtime.core.ollama import (
     extract_capabilities,
     get_model_details,
@@ -1156,7 +1164,10 @@ async def _request_vision_response_text(
     processed_content: bytes,
     image_mime_type: str,
     timeout: float,
+    recovery_image_content: bytes | None = None,
+    recovery_source_format: str | None = None,
 ) -> str:
+    """Send one OCR request; original recovery bytes retain source preprocessing quality."""
     normalized_provider = normalize_provider_name(provider)
     image_b64 = base64.b64encode(processed_content).decode("utf-8")
 
@@ -1165,20 +1176,48 @@ async def _request_vision_response_text(
     try:
         # Queueing is intentionally outside each page's provider deadline.
         async with asyncio.timeout(timeout):
-            return await _retry_vision_request(
-                lambda: _request_vision_response_once(
-                    normalized_provider=normalized_provider,
+            deadline = time.monotonic() + timeout
+            ollama_output_budget = await _resolve_ocr_output_budget(model) if normalized_provider == "ollama" else None
+            try:
+                return await _retry_vision_request(
+                    lambda: _request_vision_response_once(
+                        normalized_provider=normalized_provider,
+                        base_url=base_url,
+                        model=model,
+                        api_key=api_key,
+                        prompt=prompt,
+                        schema=schema,
+                        image_b64=image_b64,
+                        image_mime_type=image_mime_type,
+                        timeout=_ollama_ocr_remaining_timeout(deadline),
+                        ollama_output_budget=ollama_output_budget,
+                    ),
+                    _ollama_ocr_remaining_timeout(deadline),
+                    deadline=deadline,
+                )
+            except OllamaOcrIncompleteError as exc:
+                if not _ollama_ocr_is_recoverable_contract(normalized_provider, prompt, schema, exc):
+                    raise
+                assert ollama_output_budget is not None
+                logger.info(
+                    "Starting bounded Ollama OCR recovery provider=%s reason=%s eval_count=%s prompt_eval_count=%s",
+                    normalized_provider,
+                    exc.reason,
+                    exc.eval_count,
+                    exc.prompt_eval_count,
+                )
+                return await _ollama_ocr_recover_response_text(
                     base_url=base_url,
                     model=model,
-                    api_key=api_key,
                     prompt=prompt,
                     schema=schema,
-                    image_b64=image_b64,
-                    image_mime_type=image_mime_type,
-                    timeout=timeout,
-                ),
-                timeout,
-            )
+                    processed_content=processed_content,
+                    recovery_image_content=recovery_image_content,
+                    recovery_source_format=recovery_source_format,
+                    include_classification=prompt == OCR_WITH_CLASSIFICATION_PROMPT,
+                    deadline=deadline,
+                    output_budget=ollama_output_budget,
+                )
     finally:
         await limiter.release()
 
@@ -1194,31 +1233,19 @@ async def _request_vision_response_once(
     image_b64: str,
     image_mime_type: str,
     timeout: float,
+    ollama_output_budget: int | None = None,
 ) -> str:
     if normalized_provider == "ollama":
-        ollama_endpoint = _vision_http_endpoint(normalized_provider, base_url)
-        output_budget = await _resolve_ocr_output_budget(model)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            request_json = {
-                "model": model,
-                "prompt": prompt,
-                "images": [image_b64],
-                "stream": False,
-                "think": OLLAMA_OCR_THINK,
-                "options": {
-                    "temperature": 0.1,
-                    "num_ctx": OLLAMA_OCR_CONTEXT_LENGTH,
-                    "num_predict": output_budget,
-                },
-            }
-            if schema is not None:
-                request_json["format"] = schema
-            response = await client.post(
-                f"{ollama_endpoint}/api/generate",
-                json=request_json,
-            )
-            response.raise_for_status()
-            data = response.json()
+        output_budget = ollama_output_budget if ollama_output_budget is not None else await _resolve_ocr_output_budget(model)
+        data = await _ollama_ocr_post_once(
+            base_url=base_url,
+            model=model,
+            prompt=prompt,
+            schema=schema,
+            image_b64=image_b64,
+            timeout=timeout,
+            output_budget=output_budget,
+        )
         _reject_ollama_incomplete_response(data)
         return _extract_ollama_response_text(data)
 
@@ -1276,8 +1303,177 @@ async def _request_vision_response_once(
     raise ValueError(f"Unsupported vision OCR provider: {normalized_provider}")
 
 
-async def _retry_vision_request(operation: Any, timeout: float) -> str:
-    deadline = time.monotonic() + max(0.1, timeout)
+def _ollama_ocr_request_json(
+    *,
+    model: str,
+    prompt: str,
+    schema: dict[str, Any] | None,
+    image_b64: str,
+    output_budget: int,
+    repeat_penalty: float | None = None,
+) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "temperature": 0.1,
+        "num_ctx": OLLAMA_OCR_CONTEXT_LENGTH,
+        "num_predict": output_budget,
+    }
+    if repeat_penalty is not None:
+        options["repeat_penalty"] = repeat_penalty
+    payload: dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "images": [image_b64],
+        "stream": False,
+        "think": OLLAMA_OCR_THINK,
+        "options": options,
+    }
+    if schema is not None:
+        payload["format"] = schema
+    return payload
+
+
+async def _ollama_ocr_post_once(
+    *,
+    base_url: str | None,
+    model: str,
+    prompt: str,
+    schema: dict[str, Any] | None,
+    image_b64: str,
+    timeout: float,
+    output_budget: int,
+    repeat_penalty: float | None = None,
+) -> Any:
+    endpoint = _vision_http_endpoint("ollama", base_url)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            f"{endpoint}/api/generate",
+            json=_ollama_ocr_request_json(
+                model=model,
+                prompt=prompt,
+                schema=schema,
+                image_b64=image_b64,
+                output_budget=output_budget,
+                repeat_penalty=repeat_penalty,
+            ),
+        )
+        response.raise_for_status()
+        data = response.json()
+    return data
+
+
+def _ollama_ocr_remaining_timeout(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Vision OCR page deadline elapsed.")
+    return remaining
+
+
+def _ollama_ocr_is_recoverable_contract(
+    provider: str,
+    prompt: str,
+    schema: dict[str, Any] | None,
+    error: OllamaOcrIncompleteError,
+) -> bool:
+    return (
+        error.reason == "length"
+        and provider == "ollama"
+        and (
+            (prompt == OCR_WITH_CLASSIFICATION_PROMPT and schema == OCR_WITH_CLASSIFICATION_SCHEMA) or (prompt == OCR_ONLY_PROMPT and schema == OCR_ONLY_SCHEMA)
+        )
+    )
+
+
+def _ollama_ocr_table_image_content(
+    image_content: bytes,
+    source_format: str | None,
+) -> tuple[bytes, str]:
+    image, status = _load_image(image_content, source_format)
+    if image is None or status == "raw_error":
+        raise ValueError("Vision OCR recovery image could not be decoded.")
+    if image.mode in {"RGBA", "LA", "P"}:
+        if image.mode == "P":
+            image = image.convert("RGBA")
+        background = Image.new("RGB", image.size, "white")
+        background.paste(image, mask=image.getchannel("A"))
+        image = background
+    elif image.mode != "RGB":
+        image = image.convert("RGB")
+    width, height = image.size
+    scale = min(2, DEFAULT_MAX_IMAGE_DIMENSION / max(width, height))
+    resized = image.resize((max(1, round(width * scale)), max(1, round(height * scale))), Image.Resampling.BICUBIC)
+    output = io.BytesIO()
+    resized.save(output, format="PNG")
+    return _prepare_vision_image_content(
+        output.getvalue(),
+        provider="ollama",
+        preprocess=True,
+        max_dimension=DEFAULT_MAX_IMAGE_DIMENSION,
+        source_format="png",
+    )
+
+
+async def _ollama_ocr_recover_response_text(
+    *,
+    base_url: str | None,
+    model: str,
+    prompt: str,
+    schema: dict[str, Any] | None,
+    processed_content: bytes,
+    recovery_image_content: bytes | None,
+    recovery_source_format: str | None,
+    include_classification: bool,
+    deadline: float,
+    output_budget: int,
+) -> str:
+    if not recovery_image_content:
+        raise ValueError("Vision OCR recovery requires the source image.")
+    if schema is None:
+        raise ValueError("Vision OCR recovery requires a structured schema.")
+
+    async def _ollama_ocr_post(prompt: str, schema: dict[str, Any], image: bytes) -> Any:
+        return await _ollama_ocr_post_once(
+            base_url=base_url,
+            model=model,
+            prompt=prompt,
+            schema=schema,
+            image_b64=base64.b64encode(image).decode("utf-8"),
+            timeout=_ollama_ocr_remaining_timeout(deadline),
+            output_budget=output_budget,
+            repeat_penalty=OLLAMA_OCR_RECOVERY_REPEAT_PENALTY,
+        )
+
+    structured_data = await _retry_vision_request(
+        lambda: _ollama_ocr_post(prompt, schema, processed_content),
+        _ollama_ocr_remaining_timeout(deadline),
+        deadline=deadline,
+    )
+    _reject_ollama_incomplete_response(structured_data, required_reason="stop")
+    structured_text = _extract_ollama_response_text(structured_data)
+    structured_ocr = _ollama_ocr_parse_json_object(structured_text)
+    validate_ocr_recovery_response(structured_ocr, include_classification=include_classification)
+    table_content, _ = _ollama_ocr_table_image_content(recovery_image_content, recovery_source_format)
+    table_data = await _retry_vision_request(
+        lambda: _ollama_ocr_post(OCR_TABLE_RECOVERY_PROMPT, OCR_TABLE_RECOVERY_SCHEMA, table_content),
+        _ollama_ocr_remaining_timeout(deadline),
+        deadline=deadline,
+    )
+    _reject_ollama_incomplete_response(table_data, required_reason="stop")
+    table_payload = _ollama_ocr_parse_json_object(_extract_ollama_response_text(table_data))
+    return json.dumps(recover_ocr_table_blocks(structured_ocr, table_payload, include_classification=include_classification))
+
+
+def _ollama_ocr_parse_json_object(text: str) -> dict[str, Any]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Ollama OCR recovery returned malformed structured output.") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Ollama OCR recovery returned malformed structured output.")
+    return data
+
+
+async def _retry_vision_request(operation: Any, timeout: float, *, deadline: float | None = None) -> Any:
+    deadline = deadline if deadline is not None else time.monotonic() + max(0.1, timeout)
     last_error: Exception | None = None
     for attempt in range(3):
         try:
@@ -1307,9 +1503,35 @@ def _retry_delay(response: httpx.Response, attempt: int) -> float:
         return min(0.5 * (2**attempt), 4.0)
 
 
-def _reject_ollama_incomplete_response(data: Any) -> None:
-    if not isinstance(data, dict) or data.get("done") is False or data.get("done_reason") in {"length", "error", "load"}:
-        raise RuntimeError("Ollama OCR response was incomplete.")
+def _reject_ollama_incomplete_response(data: Any, *, required_reason: str | None = None) -> None:
+    if not isinstance(data, dict):
+        raise OllamaOcrIncompleteError("malformed")
+    done = data.get("done")
+    reason = data.get("done_reason")
+    if required_reason is not None:
+        if done is not True:
+            raise OllamaOcrIncompleteError("incomplete")
+        if reason == "length":
+            raise OllamaOcrIncompleteError(
+                "length",
+                data.get("eval_count"),
+                data.get("prompt_eval_count"),
+            )
+        if reason != required_reason:
+            raise OllamaOcrIncompleteError(reason if reason in {"error", "load"} else "incomplete")
+        return
+    if done is False or (done is not None and done is not True):
+        raise OllamaOcrIncompleteError("incomplete")
+    if reason == "length":
+        if done is not True:
+            raise OllamaOcrIncompleteError("incomplete")
+        raise OllamaOcrIncompleteError(
+            "length",
+            data.get("eval_count"),
+            data.get("prompt_eval_count"),
+        )
+    if reason in {"error", "load"}:
+        raise OllamaOcrIncompleteError(reason)
 
 
 def _reject_openai_incomplete_response(data: Any) -> None:
@@ -1690,6 +1912,8 @@ async def extract_text_with_vision(
             processed_content=processed_content,
             image_mime_type=image_mime_type,
             timeout=timeout,
+            recovery_image_content=image_content,
+            recovery_source_format=source_format,
         )
 
         result = _parse_vision_response_json(
@@ -1853,6 +2077,8 @@ async def extract_text_with_vision_structured(
             processed_content=processed_content,
             image_mime_type=image_mime_type,
             timeout=timeout,
+            recovery_image_content=image_content,
+            recovery_source_format=source_format,
         )
 
         result = _parse_vision_response_json(
