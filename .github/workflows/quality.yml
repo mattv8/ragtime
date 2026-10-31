@@ -132,12 +132,17 @@ jobs:
       - name: Pytest suite
         env:
           CHECK_CONTAINER: ${{ steps.buildx.outputs.builder_name }}-check
+        # CI memory budget: 6 GiB runners (plus 2 GiB swap) must keep RAM for the
+        # Actions runner and Docker daemon. The memory cap reserves ~1 GiB for them
+        # and bounds swap. Run serially: each xdist worker re-collects the full suite
+        # and re-imports heavy modules, so -n multiplies peak memory.
         run: |
           docker run --rm --name "$CHECK_CONTAINER" \
+            --memory=5g --memory-swap=6g \
             -v "$PWD/docker/buildkitd.ci.toml:/ragtime/docker/buildkitd.ci.toml:ro" \
             -v "$PWD/.github/actions:/ragtime/.github/actions:ro" \
             '${{ steps.buildx.outputs.image_tag }}' \
-            sh -c 'mkdir -p "$INDEX_DATA_PATH" && python -m pytest tests -n 8 --dist loadfile'
+            sh -c 'mkdir -p "$INDEX_DATA_PATH" && python -m pytest tests'
       - name: Save mypy cache
         if: always() && steps.mypy-cache.outcome == 'success'
         uses: actions/cache/save@v4

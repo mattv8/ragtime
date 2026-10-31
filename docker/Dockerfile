@@ -187,8 +187,10 @@ ARG MYPY_SCOPE=all
 RUN --mount=type=cache,id=ragtime-mypy-cache,target=/ragtime/.mypy_cache/3.12,sharing=locked python docker/scripts/run_scoped_mypy.py
 FROM python-ci-base AS python-pyright-check
 RUN python -m pyright --pythonpath .venv/bin/python
+# Serial pytest: xdist workers each re-collect the suite and re-import heavy modules,
+# which exhausts 6 GiB CI runners. Keep -n for ample-memory local hosts only.
 FROM python-ci-base AS python-pytest
-RUN mkdir -p "$INDEX_DATA_PATH" && python -m pytest tests -n 8 --dist loadfile
+RUN mkdir -p "$INDEX_DATA_PATH" && python -m pytest tests
 FROM python-ci-base AS python-test
 ARG MYPY_SCOPE=all
 RUN mkdir -p "$INDEX_DATA_PATH" && python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py && \
@@ -197,7 +199,8 @@ RUN mkdir -p "$INDEX_DATA_PATH" && python -m compileall ragtime/userspace/runtim
     python docker/scripts/fix_inline_imports.py ragtime --check && python docker/scripts/fix_inline_imports.py runtime --check && \
     python docker/scripts/fix_inline_imports.py tests --check && jscpd --config .jscpd.json ragtime runtime tests
 RUN --mount=type=cache,id=ragtime-mypy-cache,target=/ragtime/.mypy_cache/3.12,sharing=locked python docker/scripts/run_scoped_mypy.py
-RUN python -m pyright --pythonpath .venv/bin/python && python -m pytest tests -n 8 --dist loadfile
+# Serial, for the same memory reason as python-pytest above.
+RUN python -m pyright --pythonpath .venv/bin/python && python -m pytest tests
 
 # The production assembly intentionally regenerates Prisma after copying the
 # current schema and migrations; production-deps contains no application source.
