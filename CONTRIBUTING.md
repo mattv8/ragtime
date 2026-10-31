@@ -43,7 +43,8 @@ When contributing new features or modifying existing logic, follow the project's
 - **Framework:** The project uses Python's `unittest` (`unittest.IsolatedAsyncioTestCase` for async) and runs them using `pytest`.
 - **Integration over Isolation:** Prefer testing the actual flow with real infrastructure (like the database) over heavily-mocked unit tests. Mock only external boundaries like LLM providers or third-party APIs.
 - **FastAPI Routes:** Test routes using raw `starlette.requests.Request` objects instead of a full ASGI `TestClient` where possible.
-- **Run Tests:** Execute `pytest` or target specific files with `pytest tests/test_file.py`.
+- **Run Tests:** Execute `pytest` or target specific files with `pytest tests/test_file.py`. A bare `pytest` runs serially; `pytest -n auto` (from the `test` extra) is optional.
+- **Parallel CI:** CI uses pytest-xdist with `pytest -n 8 --dist loadfile`. Tests must not share fixed paths or ports. Each test has a 300-second timeout via pytest-timeout.
 
 ## Pull Request Workflow
 
