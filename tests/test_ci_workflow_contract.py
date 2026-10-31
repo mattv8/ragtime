@@ -288,6 +288,13 @@ class CiWorkflowContractTests(unittest.TestCase):
         login = next(step for step in analysis_steps if step.get("uses") == "docker/login-action@v3")
         self.assertEqual(login["if"], "inputs.use_harbor")
 
+    def test_backend_pytest_respects_runner_memory_budget(self) -> None:
+        quality = _load_workflow("quality.yml")
+        pytest_step = next(step for step in quality["jobs"]["backend-analysis"]["steps"] if step.get("name") == "Pytest suite")
+        self.assertTrue(pytest_step["run"].rstrip().endswith("&& python -m pytest tests'"))
+        self.assertIn("--memory=5g", pytest_step["run"])
+        self.assertIn("--memory-swap=6g", pytest_step["run"])
+
     def test_backend_analysis_removes_named_check_container_before_image(self) -> None:
         quality = _load_workflow("quality.yml")
         steps = quality["jobs"]["backend-analysis"]["steps"]

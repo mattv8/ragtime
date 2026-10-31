@@ -18,6 +18,7 @@ from fastapi import FastAPI
 
 from runtime.worker.sqlite_history.api import history_router
 from runtime.worker.sqlite_history.coordinator import SqliteHistoryCoordinator
+from tests.restic_test_support import seed_fast_restic_repository
 
 _RESTIC = Path("/opt/ragtime-backup/bin/restic")
 # Real Restic initialization/verification can exceed 10s on a loaded CI runner.
@@ -49,6 +50,8 @@ class RuntimeSqliteHistoryRouteIntegrationTests(unittest.IsolatedAsyncioTestCase
         self.assertTrue(_RESTIC.is_file(), "runtime image must package Restic at the production path")
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        history = self.root / "_sqlite_history"
+        seed_fast_restic_repository(history / "restic", history / "cache", history / "secrets" / "repository-password", binary=_RESTIC)
         self.workspace_id = "workspace-e2e"
         self.files = self.root / "workspaces" / self.workspace_id / "files"
         self.database_dir = self.files / ".ragtime" / "db"
