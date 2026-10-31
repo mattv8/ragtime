@@ -29,6 +29,7 @@ class VisionOcrRuntimeLimitTests(unittest.IsolatedAsyncioTestCase):
             patch.object(vision_models.httpx, "AsyncClient", return_value=Client()),
             patch.object(vision_models, "get_output_limit", return_value=2048),
         ):
+            vision_models._ocr_output_budget_cache.clear()
             await vision_models._request_vision_response_once(
                 normalized_provider="ollama",
                 base_url="https://ollama.test",
