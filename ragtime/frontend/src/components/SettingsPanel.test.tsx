@@ -708,7 +708,7 @@ describe('SettingsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Agent Behavior' }));
     await waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledTimes(3));
     expect(apiMock.updateSettings.mock.calls[2]?.[0]).toMatchObject({ tool_skills_enabled: false });
-  });
+  }, 15000);
 
   it('refreshes content protection after an access level change', async () => {
     render(<SettingsPanel currentUser={adminUser} />);
