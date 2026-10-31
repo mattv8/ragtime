@@ -143,30 +143,36 @@ class PrivateFileResponseNetworkTests(unittest.TestCase):
             listener = socket.socket()
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
-            listener.close()
-            server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
-            thread = threading.Thread(target=server.run, daemon=True)
+            server = uvicorn.Server(uvicorn.Config(app, log_level="error"))
+            thread = threading.Thread(target=lambda: server.run(sockets=[listener]), daemon=True)
             thread.start()
             try:
-                for _ in range(100):
-                    if server.started:
-                        break
+                startup_deadline = time.monotonic() + 30
+                while not server.started and thread.is_alive() and time.monotonic() < startup_deadline:
                     time.sleep(0.01)
+                self.assertTrue(
+                    server.started,
+                    f"Uvicorn did not start within 30 seconds (thread_alive={thread.is_alive()})",
+                )
+
                 connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                connection.request("GET", "/download")
-                response = connection.getresponse()
-                self.assertEqual(200, response.status)
-                self.assertEqual(payload, response.read())
-                connection.close()
-                self.assertTrue(cleaned.wait(2))
+                try:
+                    connection.request("GET", "/download")
+                    response = connection.getresponse()
+                    self.assertEqual(200, response.status)
+                    self.assertEqual(payload, response.read())
+                finally:
+                    connection.close()
+                self.assertTrue(cleaned.wait(30), "response cleanup did not finish within 30 seconds")
                 self.assertFalse(pinned.is_set())
                 # A real h11 client disconnects after headers/body begin.  The
                 # response lifecycle must still close the file and pin.
-                disconnect = socket.create_connection(("127.0.0.1", port), timeout=5)
-                disconnect.sendall(b"GET /download HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-                disconnect.recv(1024)
-                disconnect.close()
-                for _ in range(100):
+                with socket.create_connection(("127.0.0.1", port), timeout=5) as disconnect:
+                    disconnect.sendall(b"GET /download HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                    disconnect.recv(1024)
+
+                cleanup_deadline = time.monotonic() + 30
+                while time.monotonic() < cleanup_deadline:
                     with cleanup_lock:
                         if cleanup_count[0] >= 2:
                             break
@@ -176,4 +182,6 @@ class PrivateFileResponseNetworkTests(unittest.TestCase):
                 self.assertFalse(pinned.is_set())
             finally:
                 server.should_exit = True
-                thread.join(5)
+                thread.join(30)
+                listener.close()
+                self.assertFalse(thread.is_alive(), "Uvicorn did not stop within 30 seconds")

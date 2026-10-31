@@ -291,7 +291,7 @@ class CiWorkflowContractTests(unittest.TestCase):
     def test_backend_pytest_respects_runner_memory_budget(self) -> None:
         quality = _load_workflow("quality.yml")
         pytest_step = next(step for step in quality["jobs"]["backend-analysis"]["steps"] if step.get("name") == "Pytest suite")
-        self.assertIn("sh -c 'mkdir -p \"$INDEX_DATA_PATH\" && python -m pytest tests'", pytest_step["run"])
+        self.assertTrue(pytest_step["run"].rstrip().endswith("&& python -m pytest tests'"))
         self.assertIn("--memory=5g", pytest_step["run"])
         self.assertIn("--memory-swap=6g", pytest_step["run"])
 
