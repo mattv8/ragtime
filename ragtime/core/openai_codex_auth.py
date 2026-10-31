@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import weakref
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -19,6 +22,8 @@ OPENAI_CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
 OPENAI_CODEX_RESPONSES_ENDPOINT = f"{OPENAI_CODEX_DEFAULT_BASE_URL}/responses"
 OPENAI_CODEX_MODELS_ENDPOINT = f"{OPENAI_CODEX_DEFAULT_BASE_URL}/models"
 OPENAI_CODEX_MODELS_CLIENT_VERSION = "1.0.0"
+_refresh_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
+_refresh_tasks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[int, asyncio.Task[str]]] = weakref.WeakKeyDictionary()
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any]:
@@ -91,47 +96,90 @@ async def ensure_openai_codex_token_fresh(settings: Any | None = None, repositor
 
     if settings is None:
         settings = await repo.get_settings()
+    if _token_is_fresh(settings):
+        return _access_token(settings)
 
-    access_token = str(getattr(settings, "openai_codex_access_token", "") or "").strip()
-    refresh_token = str(getattr(settings, "openai_codex_refresh_token", "") or "").strip()
-    expires_at = getattr(settings, "openai_codex_token_expires_at", None)
-
-    if access_token and isinstance(expires_at, datetime):
-        expires_utc = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
-        if expires_utc > datetime.now(timezone.utc) + timedelta(minutes=5):
-            return access_token
-
-    if not refresh_token:
-        return access_token
-
+    loop = asyncio.get_running_loop()
+    tasks = _refresh_tasks.setdefault(loop, {})
+    repository_key = id(repo)
+    task = tasks.get(repository_key)
+    if task is None or task.done():
+        task = asyncio.create_task(_refresh_openai_codex_token(repo, settings))
+        tasks[repository_key] = task
     try:
-        tokens = await refresh_openai_codex_tokens(refresh_token)
-    except (httpx.HTTPError, ValueError) as exc:
-        detail = f"HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
-        logger.warning("OpenAI Codex token refresh failed (%s). Reconnect OpenAI Codex in Settings.", detail)
-        if access_token and isinstance(expires_at, datetime):
-            expires_utc = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
-            if expires_utc > datetime.now(timezone.utc):
-                return access_token
-        return ""
-    refreshed_access = str(tokens.get("access_token") or "").strip()
-    if not refreshed_access:
-        return access_token
+        return await asyncio.shield(task)
+    finally:
+        if task.done() and tasks.get(repository_key) is task:
+            tasks.pop(repository_key, None)
 
-    refreshed_refresh = str(tokens.get("refresh_token") or refresh_token).strip()
-    expires_in = int(tokens.get("expires_in") or 3600)
-    refreshed_expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(expires_in, 60))
-    account_id = extract_openai_codex_account_id(tokens) or str(getattr(settings, "openai_codex_account_id", "") or "").strip()
 
-    await repo.update_settings(
-        {
+async def _refresh_openai_codex_token(repository: Any, fallback_settings: Any) -> str:
+    loop = asyncio.get_running_loop()
+    lock = _refresh_locks.setdefault(loop, asyncio.Lock())
+    async with lock:
+        settings = await _read_current_settings(repository, fallback_settings)
+        if _token_is_fresh(settings):
+            return _access_token(settings)
+        access_token = _access_token(settings)
+        refresh_token = str(getattr(settings, "openai_codex_refresh_token", "") or "").strip()
+        if not refresh_token:
+            return access_token
+        try:
+            tokens = await refresh_openai_codex_tokens(refresh_token)
+        except (httpx.HTTPError, ValueError) as exc:
+            detail = f"HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
+            logger.warning("OpenAI Codex token refresh failed (%s). Reconnect OpenAI Codex in Settings.", detail)
+            current_settings = await _read_current_settings(repository, settings)
+            return _access_token(current_settings) if _token_is_currently_valid(current_settings) else ""
+
+        current_settings = await _read_current_settings(repository, settings)
+        if str(getattr(current_settings, "openai_codex_refresh_token", "") or "").strip() != refresh_token:
+            return _access_token(current_settings) if _token_is_currently_valid(current_settings) else ""
+        refreshed_access = str(tokens.get("access_token") or "").strip()
+        if not refreshed_access:
+            return _access_token(current_settings)
+
+        refreshed_refresh = str(tokens.get("refresh_token") or refresh_token).strip()
+        refreshed_expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(int(tokens.get("expires_in") or 3600), 60))
+        account_id = extract_openai_codex_account_id(tokens) or str(getattr(current_settings, "openai_codex_account_id", "") or "").strip()
+        updates = {
             "openai_codex_access_token": refreshed_access,
             "openai_codex_refresh_token": refreshed_refresh,
             "openai_codex_token_expires_at": refreshed_expires_at,
             "openai_codex_account_id": account_id,
         }
-    )
-    from ragtime.core.app_settings import invalidate_settings_cache
+        persisted = await repository.rotate_openai_codex_tokens_if_refresh_token_matches(refresh_token, updates)
+        if not persisted:
+            winning_settings = await _read_current_settings(repository, current_settings)
+            return _access_token(winning_settings) if _token_is_currently_valid(winning_settings) else ""
+        from ragtime.core.app_settings import invalidate_settings_cache
 
-    invalidate_settings_cache()
-    return refreshed_access
+        invalidate_settings_cache()
+        return refreshed_access
+
+
+def _access_token(settings: Any) -> str:
+    return str(getattr(settings, "openai_codex_access_token", "") or "").strip()
+
+
+def _token_is_fresh(settings: Any) -> bool:
+    expires_at = getattr(settings, "openai_codex_token_expires_at", None)
+    if not _access_token(settings) or not isinstance(expires_at, datetime):
+        return False
+    expires_utc = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+    return expires_utc > datetime.now(timezone.utc) + timedelta(minutes=5)
+
+
+def _token_is_currently_valid(settings: Any) -> bool:
+    expires_at = getattr(settings, "openai_codex_token_expires_at", None)
+    if not _access_token(settings) or not isinstance(expires_at, datetime):
+        return False
+    expires_utc = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+    return expires_utc > datetime.now(timezone.utc)
+
+
+async def _read_current_settings(repository: Any, fallback: Any) -> Any:
+    get_settings: Callable[[], Awaitable[Any]] | None = getattr(repository, "get_settings", None)
+    if not callable(get_settings):
+        return fallback
+    return await get_settings()

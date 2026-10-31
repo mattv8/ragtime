@@ -11,7 +11,11 @@ import type {
   VectorStoreType,
 } from '@/types';
 import { AnalysisStats } from './AnalysisStats';
-import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
+import {
+  isOcrTargetComplete,
+  OcrVectorStoreFields,
+  OCR_PROVIDER_LABELS,
+} from './OcrVectorStoreFields';
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
@@ -165,6 +169,7 @@ export function GitIndexWizard({
   const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(
     undefined,
   );
+  const [defaultOcrProvider, setDefaultOcrProvider] = useState<OcrProvider | null>(null);
   const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(
     undefined,
   );
@@ -393,6 +398,7 @@ export function GitIndexWizard({
       .then((response) => {
         const settings = response.settings;
         if (settings.default_ocr_provider) {
+          setDefaultOcrProvider(settings.default_ocr_provider);
           setDefaultOcrProviderLabel(
             OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider,
           );
@@ -654,6 +660,10 @@ export function GitIndexWizard({
   }, [indexingJobId, indexingJobStatus, invalidateTokenValidation]);
 
   const handleAnalyze = async () => {
+    if (!isOcrTargetComplete(ocrMode, ocrProvider, ocrVisionModel, defaultOcrProvider)) {
+      setStatus({ type: 'error', message: 'Select a vision model for the overridden provider.' });
+      return;
+    }
     if (guardTokenAction()) return;
     if (!gitUrl) {
       setStatus({ type: 'error', message: 'Please enter a Git URL' });
@@ -691,7 +701,7 @@ export function GitIndexWizard({
         max_file_size_kb: maxFileSizeKb,
         ocr_mode: ocrMode,
         ocr_provider: ocrMode === 'vision' ? ocrProvider : null,
-        ocr_vision_model: ocrVisionModel || undefined,
+        ocr_vision_model: ocrMode === 'vision' ? ocrVisionModel || null : null,
       });
       setAnalysisResult(result);
       setWizardStep('review');
@@ -730,6 +740,10 @@ export function GitIndexWizard({
   };
 
   const handleStartIndexing = async () => {
+    if (!isOcrTargetComplete(ocrMode, ocrProvider, ocrVisionModel, defaultOcrProvider)) {
+      setStatus({ type: 'error', message: 'Select a vision model for the overridden provider.' });
+      return;
+    }
     if (guardTokenAction()) return;
     const parsed = parseGitUrl(gitUrl);
     if (!parsed) {
@@ -769,7 +783,7 @@ export function GitIndexWizard({
           vector_store_type: vectorStoreType,
           ocr_mode: ocrMode,
           ocr_provider: ocrMode === 'vision' ? ocrProvider : null,
-          ocr_vision_model: ocrVisionModel || undefined,
+          ocr_vision_model: ocrMode === 'vision' ? ocrVisionModel || null : null,
           git_clone_timeout_minutes: gitCloneTimeoutMinutes,
           git_history_depth: gitHistoryDepth,
           reindex_interval_hours: reindexIntervalHours,
@@ -892,6 +906,10 @@ export function GitIndexWizard({
    */
   const handleSaveConfig = async () => {
     if (!editIndex) return;
+    if (!isOcrTargetComplete(ocrMode, ocrProvider, ocrVisionModel, defaultOcrProvider)) {
+      setStatus({ type: 'error', message: 'Select a vision model for the overridden provider.' });
+      return;
+    }
     if (guardTokenAction()) return;
 
     setIsLoading(true);
@@ -918,7 +936,7 @@ export function GitIndexWizard({
         max_file_size_kb: maxFileSizeKb,
         ocr_mode: ocrMode,
         ocr_provider: ocrMode === 'vision' ? ocrProvider : null,
-        ocr_vision_model: ocrVisionModel || undefined,
+        ocr_vision_model: ocrMode === 'vision' ? ocrVisionModel || null : null,
         git_clone_timeout_minutes: gitCloneTimeoutMinutes,
         git_history_depth: gitHistoryDepth,
         reindex_interval_hours: reindexIntervalHours,
@@ -1327,6 +1345,7 @@ export function GitIndexWizard({
           setOcrVisionModel={setOcrVisionModel}
           visionOcrAvailable={visionOcrAvailable}
           defaultOcrProviderLabel={defaultOcrProviderLabel}
+          defaultOcrProvider={defaultOcrProvider}
           defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}
@@ -1525,6 +1544,7 @@ export function GitIndexWizard({
           setOcrVisionModel={setOcrVisionModel}
           visionOcrAvailable={visionOcrAvailable}
           defaultOcrProviderLabel={defaultOcrProviderLabel}
+          defaultOcrProvider={defaultOcrProvider}
           defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}
@@ -1628,6 +1648,7 @@ export function GitIndexWizard({
           setOcrVisionModel={setOcrVisionModel}
           visionOcrAvailable={visionOcrAvailable}
           defaultOcrProviderLabel={defaultOcrProviderLabel}
+          defaultOcrProvider={defaultOcrProvider}
           defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}

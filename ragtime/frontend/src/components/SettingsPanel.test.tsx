@@ -84,6 +84,7 @@ const apiMock = vi.hoisted(() => ({
   getCopilotAuthStatus: vi.fn(),
   getOpenAICodexAuthStatus: vi.fn(),
   getClaudeCodeAuthStatus: vi.fn(),
+  getVisionModels: vi.fn().mockResolvedValue({ success: true, models: [], message: '' }),
   startCopilotDeviceFlow: vi.fn(),
   pollCopilotDeviceFlow: vi.fn(),
   clearCopilotAuth: vi.fn(),
@@ -696,7 +697,9 @@ describe('SettingsPanel', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: /Embedding Configuration/ }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Save Embedding Configuration' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Save Embedding and OCR Configuration' }),
+    );
     await waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledTimes(2));
     expect(apiMock.updateSettings.mock.calls[1]?.[0]).toMatchObject({
       openrouter_api_key: 'sk-or-shared-key',
@@ -1922,6 +1925,65 @@ describe('SettingsPanel', () => {
     expect(toastErrorSpy).not.toHaveBeenCalled();
   });
 
+  it('clears the vision OCR provider on blank choice and blocks vision save without a provider', async () => {
+    render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /Embedding Configuration/ }));
+    fireEvent.change(await screen.findByLabelText('Default OCR Mode'), {
+      target: { value: 'vision' },
+    });
+    fireEvent.change(screen.getByLabelText('Vision OCR Provider'), {
+      target: { value: 'openai' },
+    });
+    fireEvent.change(screen.getByLabelText('Vision OCR Provider'), { target: { value: '' } });
+
+    expect((screen.getByLabelText('Vision OCR Provider') as HTMLSelectElement).value).toBe('');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Embedding and OCR Configuration' }));
+
+    expect(toastErrorSpy).toHaveBeenCalledWith(
+      'Choose a vision OCR provider and model before saving vision OCR.',
+    );
+    expect(apiMock.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('blocks vision OCR save when the provider has no vision model', async () => {
+    render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /Embedding Configuration/ }));
+    fireEvent.change(await screen.findByLabelText('Default OCR Mode'), {
+      target: { value: 'vision' },
+    });
+    fireEvent.change(screen.getByLabelText('Vision OCR Provider'), {
+      target: { value: 'openai' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Embedding and OCR Configuration' }));
+
+    expect(toastErrorSpy).toHaveBeenCalledWith(
+      'Choose a vision OCR provider and model before saving vision OCR.',
+    );
+    expect(apiMock.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('renders a failed Claude Code check in the vision OCR provider help', async () => {
+    render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /Embedding Configuration/ }));
+    fireEvent.change(await screen.findByLabelText('Default OCR Mode'), {
+      target: { value: 'vision' },
+    });
+    apiMock.getClaudeCodeAuthStatus.mockRejectedValueOnce(new Error('Claude probe unavailable'));
+    fireEvent.change(screen.getByLabelText('Vision OCR Provider'), {
+      target: { value: 'claude_code' },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole('alert')
+          .some((alert) =>
+            alert.textContent?.includes('Claude Code setup check failed: Claude probe unavailable'),
+          ),
+      ).toBe(true),
+    );
+  });
+
   it('shows an inline error and toast when explicit Claude Code status checking fails with a malformed payload', async () => {
     apiMock.getClaudeCodeAuthStatus.mockResolvedValueOnce({} as never);
 
@@ -2243,7 +2305,7 @@ describe('SettingsPanel', () => {
         model: 'manual-embed',
       }),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Save Embedding Configuration' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Embedding and OCR Configuration' }));
     await waitFor(() =>
       expect(apiMock.updateSettings).toHaveBeenCalledWith(
         expect.objectContaining({

@@ -340,6 +340,29 @@ import type {
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
 
+export type SshCleanupMode = 'disable_ssh' | 'pairing_only';
+export type ToolCleanupStepStatus = 'confirmed' | 'failed' | 'unconfirmed' | 'not_requested';
+
+export interface ToolDeletionCleanup {
+  mode: SshCleanupMode;
+  steps: {
+    pairing_cleanup: ToolCleanupStepStatus;
+    ssh_service: ToolCleanupStepStatus;
+  };
+  warnings: string[];
+  local_removal_command?: string;
+  local_removal_instructions?: string;
+}
+
+export interface DeleteToolConfigOptions {
+  sshCleanup?: SshCleanupMode;
+  confirmMachineWide?: boolean;
+}
+
+export interface DeleteToolConfigResponse {
+  cleanup?: ToolDeletionCleanup;
+}
+
 function encodeFilePath(path: string): string {
   return path
     .split('/')
@@ -2328,14 +2351,25 @@ export const api = {
   /**
    * Delete a tool configuration
    */
-  async deleteToolConfig(toolId: string): Promise<void> {
-    const response = await apiFetch(`${API_BASE}/tools/${toolId}`, {
+  async deleteToolConfig(
+    toolId: string,
+    options: DeleteToolConfigOptions = {},
+  ): Promise<DeleteToolConfigResponse> {
+    const query = new URLSearchParams();
+    if (options.sshCleanup) query.set('ssh_cleanup', options.sshCleanup);
+    if (options.confirmMachineWide !== undefined) {
+      query.set('confirm_machine_wide', String(options.confirmMachineWide));
+    }
+    const queryString = query.toString();
+    const suffix = queryString ? `?${queryString}` : '';
+    const response = await apiFetch(`${API_BASE}/tools/${encodeURIComponent(toolId)}${suffix}`, {
       method: 'DELETE',
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
     }
+    return response.json().catch(() => ({}));
   },
 
   /**

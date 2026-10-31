@@ -28,7 +28,7 @@ from langchain_core.embeddings import Embeddings
 from pydantic import SecretStr
 
 from ragtime.config import settings
-from ragtime.core import openrouter
+from ragtime.core import ocr_contract, openrouter
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.datetimes import utc_now
@@ -45,6 +45,7 @@ from ragtime.core.file_constants import (
 from ragtime.core.git import GIT_AUTH_FAILURE_MESSAGE, is_git_auth_error
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key, resolve_provider_base_url
+from ragtime.core.ocr_target import OcrTarget, OcrTargetError, resolve_ocr_target
 from ragtime.core.openai_compatible import get_model as get_compatible_model
 from ragtime.core.openai_compatible_client import CompatibleChatOpenAI, compatible_chat_options
 from ragtime.core.tokenization import count_tokens
@@ -54,13 +55,14 @@ from ragtime.core.userspace_limits import (
 )
 from ragtime.indexer.chunking import (
     chunk_documents_parallel,
+    chunk_semantic_segments,
     chunking_implementation_fingerprint,
     is_context_length_error,
     pool_manager,
     rechunk_documents_batch,
     rechunk_oversized_content,
 )
-from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async, extract_text_from_file_process_safe
+from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_image_structured_async, extract_text_from_file_async, extract_text_from_file_process_safe
 from ragtime.indexer.embedding_errors import iter_exception_chain
 from ragtime.indexer.faiss_artifacts import prepare_faiss_artifact
 from ragtime.indexer.faiss_serialization import count_faiss_metadata
@@ -102,6 +104,7 @@ from ragtime.indexer.models import (
     OcrProvider,
     VectorStoreType,
 )
+from ragtime.indexer.ocr_job_snapshot import create_ocr_job_snapshot, load_ocr_job_snapshot
 from ragtime.indexer.repository import repository
 from ragtime.indexer.resource_governor import ResourceRequest, resource_governor
 from ragtime.indexer.resource_workers import run_resource_task
@@ -710,6 +713,10 @@ class IndexerService:
     async def _resume_job(self, job: IndexJob) -> None:
         """Resume an interrupted job based on its source type."""
         logger.info(f"Resuming job {job.id} ({job.source_type}): {job.name}")
+
+        snapshot = await asyncio.to_thread(load_ocr_job_snapshot, UPLOAD_TMP_DIR / "indexing", job.id)
+        if snapshot is not None:
+            job.config = IndexConfig.model_validate(job.config.model_dump() | snapshot.config_overrides)
 
         # Reset progress - we'll reprocess from scratch for simplicity
         job.status = IndexStatus.PENDING
@@ -2028,6 +2035,7 @@ class IndexerService:
         Returns a new job that will process the same upload.
         Raises if tmp files no longer exist.
         """
+        config = await self.restore_retry_job_config(failed_job)
         tmp_path = UPLOAD_TMP_DIR / failed_job.id
 
         if not tmp_path.exists():
@@ -2045,7 +2053,7 @@ class IndexerService:
         job = IndexJob(
             id=job_id,
             name=failed_job.name,
-            config=failed_job.config,
+            config=config,
             source_type="upload",
             source_path=archive_path.name,
         )
@@ -2055,7 +2063,7 @@ class IndexerService:
 
         # Create optimistic metadata
         await self._create_optimistic_index_metadata(
-            config=failed_job.config,
+            config=config,
             source_type="upload",
             source=archive_path.name,
         )
@@ -2079,6 +2087,16 @@ class IndexerService:
         self._processing_tasks[job.id] = asyncio.create_task(self._process_upload(job, new_archive_path, new_tmp_dir))
 
         return job
+
+    async def restore_retry_job_config(self, failed_job: IndexJob) -> IndexConfig:
+        """Restore legacy disabled OCR config without overriding known retry intent."""
+        if failed_job.config.ocr_mode is not OcrMode.DISABLED:
+            return failed_job.config.model_copy(deep=True)
+        snapshot = await asyncio.to_thread(load_ocr_job_snapshot, UPLOAD_TMP_DIR / "indexing", failed_job.id)
+        config_data = failed_job.config.model_dump()
+        if snapshot is not None:
+            config_data |= snapshot.config_overrides
+        return IndexConfig.model_validate(config_data)
 
     async def create_index_from_git(
         self,
@@ -2869,9 +2887,29 @@ class IndexerService:
         job.phase = IndexJobPhase.LOADING
         await repository.update_job(job)
         app_settings = await repository.get_settings()
+        ocr_snapshot = await asyncio.to_thread(load_ocr_job_snapshot, UPLOAD_TMP_DIR / "indexing", job.id)
+        ocr_target: OcrTarget | None = None
+        if ocr_snapshot is not None:
+            config = IndexConfig.model_validate(config.model_dump() | ocr_snapshot.config_overrides)
+            job.config = config
+            ocr_target = ocr_snapshot.target
+        elif config.ocr_mode == OcrMode.VISION:
+            resolved_target = resolve_ocr_target(app_settings, config)
+            if resolved_target is None:
+                raise OcrTargetError("OCR target is required when OCR mode is vision")
+            ocr_snapshot = await asyncio.to_thread(
+                create_ocr_job_snapshot,
+                UPLOAD_TMP_DIR / "indexing",
+                job.id,
+                resolved_target,
+                ocr_contract.ocr_pipeline_fingerprint(),
+            )
+            ocr_target = ocr_snapshot.target
 
         def setting(name: str, default: Any = None) -> Any:
             return app_settings.get(name, default) if isinstance(app_settings, dict) else getattr(app_settings, name, default)
+
+        chunking_use_tokens = bool(setting("chunking_use_tokens", True))
 
         def source_snapshot() -> dict[str, Any]:
             files = [
@@ -2896,8 +2934,10 @@ class IndexerService:
                 "provider": setting("embedding_provider"),
                 "model": setting("embedding_model"),
                 "dimensions": setting("embedding_dimensions"),
-                "chunking_use_tokens": setting("chunking_use_tokens", True),
+                "chunking_use_tokens": chunking_use_tokens,
                 "chunking_implementation": chunking_implementation_fingerprint(),
+                "ocr_target": ocr_target.to_snapshot() if ocr_target else None,
+                "ocr_pipeline_fingerprint": ocr_snapshot.pipeline_fingerprint if ocr_snapshot else None,
                 "source": await asyncio.to_thread(source_snapshot),
             },
             sort_keys=True,
@@ -2905,18 +2945,41 @@ class IndexerService:
         )
         spool = await asyncio.to_thread(IndexingSpool.open_attempt, UPLOAD_TMP_DIR / "indexing", job.id, fingerprint)
         pipeline = BoundedIndexingPipeline(spool, job_id=job.id, cancelled=lambda: self._is_cancelled(job.id))
-        vision_base_url = vision_api_key = None
-        effective_ocr_provider = config.ocr_provider.value if config.ocr_provider else None
-        if config.ocr_mode == OcrMode.VISION:
-            runtime_settings = await get_app_settings()
-            effective_ocr_provider = normalize_provider_name(effective_ocr_provider or str(runtime_settings.get("default_ocr_provider") or "ollama"))
-            vision_base_url = resolve_provider_base_url(runtime_settings, effective_ocr_provider, "llm")
-            vision_api_key = runtime_settings.get("openai_api_key" if effective_ocr_provider == "openai" else f"{effective_ocr_provider}_api_key")
-        effective_ocr_vision_model = config.ocr_vision_model or (
-            runtime_settings.get("default_ocr_vision_model") if config.ocr_mode == OcrMode.VISION else None
-        )
+        effective_ocr_provider = ocr_target.provider if ocr_target else None
+        effective_ocr_vision_model = ocr_target.model if ocr_target else None
+        vision_base_url = ocr_target.base_url if ocr_target else None
 
         async def load(path: Path) -> list[LangChainDocument]:
+            if config.ocr_mode == OcrMode.VISION and path.suffix.lower() in OCR_EXTENSIONS:
+                if ocr_target is None:
+                    raise ValueError(f"Vision OCR target is not configured for {path}")
+                request = resource_governor.estimate_request(
+                    job_id=job.id,
+                    stage="loading",
+                    text_bytes=min(path.stat().st_size, MAX_SOURCE_TEXT_BYTES),
+                    record_count=1,
+                    cpu_slots=0,
+                    provider_key=f"ocr:{ocr_target.provider}",
+                )
+                async with resource_governor.acquire(request):
+                    result = await extract_image_structured_async(
+                        path,
+                        ocr_provider=ocr_target.provider,
+                        ocr_vision_model=ocr_target.model,
+                        vision_base_url=ocr_target.base_url,
+                        vision_api_key=None,
+                    )
+                if result is None:
+                    raise RuntimeError(f"Vision OCR failed for {path}")
+                provenance = {
+                    "ocr_provider": ocr_target.provider,
+                    "ocr_model": ocr_target.model,
+                    "ocr_ingestion_version": ocr_contract.OCR_PIPELINE_VERSION,
+                }
+                return [
+                    LangChainDocument(page_content=doc.page_content, metadata=doc.metadata | provenance)
+                    for doc in chunk_semantic_segments(result.get_semantic_segments(), config.chunk_size, config.chunk_overlap, provenance, chunking_use_tokens)
+                ]
             if config.ocr_mode == OcrMode.VISION and (path.suffix.lower() in PARSEABLE_DOCUMENT_EXTENSIONS or path.suffix.lower() in OCR_EXTENSIONS):
                 request = resource_governor.estimate_request(
                     job_id=job.id,
@@ -2933,7 +2996,7 @@ class IndexerService:
                         ocr_provider=effective_ocr_provider,
                         ocr_vision_model=effective_ocr_vision_model,
                         vision_base_url=vision_base_url,
-                        vision_api_key=vision_api_key,
+                        vision_api_key=None,
                     )
                     if len(text.encode("utf-8")) > MAX_SOURCE_TEXT_BYTES:
                         raise ValueError(f"Extracted text for {path} exceeds {MAX_SOURCE_TEXT_BYTES} byte limit")
@@ -2979,7 +3042,7 @@ class IndexerService:
                 await pipeline.stage_chunks(
                     chunk_size=config.chunk_size,
                     chunk_overlap=config.chunk_overlap,
-                    use_tokens=setting("chunking_use_tokens", True),
+                    use_tokens=chunking_use_tokens,
                     max_documents=max(1, resource_governor.batch_document_limit()),
                     progress=chunk_progress,
                 )
@@ -3050,6 +3113,12 @@ class IndexerService:
                     index_name=job.name, documents=sample_documents, source_type=job.source_type, source=job.git_url or job.source_path
                 )
             snapshot = config.model_dump(mode="json")
+            if ocr_target:
+                if ocr_snapshot is None:
+                    raise RuntimeError("OCR target is missing its pipeline snapshot")
+                snapshot["ocr_target"] = ocr_target.to_snapshot()
+                snapshot["ocr_ingestion_version"] = ocr_contract.OCR_PIPELINE_VERSION
+                snapshot["ocr_pipeline_fingerprint"] = ocr_snapshot.pipeline_fingerprint
             existing_snapshot = getattr(existing, "configSnapshot", None) if existing else None
             if isinstance(existing_snapshot, dict):
                 for key in (

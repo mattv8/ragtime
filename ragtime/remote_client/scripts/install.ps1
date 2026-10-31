@@ -9,7 +9,11 @@ param(
     [string]$PairingId,
     [string]$PublicKey,
     [string]$TargetUser,
-    [string]$Uninstall
+    [string]$Uninstall,
+    [string]$CleanupMode,
+    [switch]$ConfirmMachineWide,
+    [switch]$RunFinalizer,
+    [string]$FinalizerContext
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,7 +25,7 @@ function Get-OriginalIdentity([string]$RequestedUser) {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     if ($env:SUDO_USER) { Stop-Install 'sudo is unsupported on Windows; start PowerShell as the target user.' }
     if (-not $RequestedUser -or $RequestedUser -eq $identity.Name) {
-        return [pscustomobject]@{ Name = $identity.Name; Sid = $identity.User.Value; Profile = $env:USERPROFILE }
+        return [pscustomobject]@{ Name = $identity.Name; Sid = $identity.User.Value; Profile = (Get-SidProfile $identity.User.Value) }
     }
     try {
         $sid = ([Security.Principal.NTAccount]$RequestedUser).Translate([Security.Principal.SecurityIdentifier])
@@ -29,8 +33,7 @@ function Get-OriginalIdentity([string]$RequestedUser) {
         $profile = (Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$($sid.Value)" -Name ProfileImagePath -ErrorAction Stop).ProfileImagePath
         $profile = [Environment]::ExpandEnvironmentVariables($profile)
     } catch { Stop-Install "Cannot resolve target account $RequestedUser to a SID and profile." }
-    if (-not [IO.Path]::IsPathRooted($profile)) { Stop-Install "Target account $name has an unsafe profile path." }
-    [pscustomobject]@{ Name = $name; Sid = $sid.Value; Profile = [IO.Path]::GetFullPath($profile) }
+    [pscustomobject]@{ Name = $name; Sid = $sid.Value; Profile = (Get-SidProfile $sid.Value) }
 }
 function Test-HttpsUrl([string]$Url) {
     try { $uri = [Uri]$Url } catch { return $false }
@@ -239,6 +242,7 @@ function Set-SystemOnlyAcl([string]$Path) {
     Set-FileSystemAcl $Path $acl
 }
 function Initialize-SystemDirectory([string]$Path) {
+    Assert-NoReparseAncestors $Path
     if (Test-Path -LiteralPath $Path) {
         $item = Get-Item -LiteralPath $Path -Force
         if (-not $item.PSIsContainer) { Stop-Install "SYSTEM-owned install path is not a directory: $Path" }
@@ -248,29 +252,336 @@ function Initialize-SystemDirectory([string]$Path) {
     }
     Set-SystemOnlyAcl $Path
 }
+function Set-ExactDirectoryAcl([string]$Path, [string]$Sid) {
+    Assert-NoReparseAncestors $Path
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($accountSid in @($Sid, 'S-1-5-18', 'S-1-5-32-544')) {
+        $account = New-Object Security.Principal.SecurityIdentifier($accountSid)
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($account, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    }
+    $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier($Sid)))
+    Set-FileSystemAcl $Path $acl
+}
 function Get-Facts([object]$Identity, [int]$SshdPort, [object]$OpenSsh) {
     $addresses = @([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | ForEach-Object { $_.GetIPProperties().UnicastAddresses.Address } | Where-Object { $_ -and -not $_.IsIPv6LinkLocal -and -not $_.IsIPv6Loopback -and -not $_.IPAddressToString.StartsWith('127.') -and -not $_.IPAddressToString.StartsWith('169.254.') } | ForEach-Object { $_.ToString() } | Select-Object -Unique -First 8)
     $hostKeys = @()
     Get-ChildItem "$env:ProgramData\ssh\ssh_host_*_key.pub" -ErrorAction SilentlyContinue | Select-Object -First 6 | ForEach-Object { $hostKeys += (Get-Content -LiteralPath $_.FullName -Raw).Trim() }
     [ordered]@{ os = 'windows'; username = $Identity.Name; hostname = $env:COMPUTERNAME; addresses = $addresses; sshd_port = $SshdPort; host_keys = $hostKeys; shared_admin_keyfile = $false; errors = @(); python_available = [bool](Get-Command python.exe -ErrorAction SilentlyContinue) }
 }
-function Remove-OwnedInstall([string]$PairingId, [object]$Identity) {
-    $possible = @((Join-Path $Identity.Profile '.ssh\authorized_keys'), (Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'))
-    foreach ($path in $possible) {
-        if (Test-Path -LiteralPath $path) {
-            $kept = Get-Content -LiteralPath $path | Where-Object { $_ -notlike "*$tagPrefix$PairingId*" }
-            [IO.File]::WriteAllText($path, (($kept -join "`n") + $(if ($kept.Count) { "`n" } else { '' })), (New-Object Text.UTF8Encoding($false)))
+function Assert-PairingId([string]$PairingId) {
+    if ($PairingId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z') {
+        Stop-Install 'Uninstall requires a valid UUID pairing ID.'
+    }
+    return $PairingId.ToLowerInvariant()
+}
+function Assert-CleanupMode([string]$Mode) {
+    if ($Mode -notin @('DisableSsh', 'PairingOnly')) { Stop-Install 'CleanupMode must be DisableSsh or PairingOnly.' }
+}
+function Test-InteractiveConsole {
+    return [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+}
+function Test-TaggedKeyLine([string]$Line, [string]$Tag) {
+    $trimmedLine = $Line.TrimEnd()
+    if (-not $trimmedLine.EndsWith($Tag, [StringComparison]::Ordinal)) { return $false }
+    $tagStart = $trimmedLine.Length - $Tag.Length
+    return $tagStart -eq 0 -or [char]::IsWhiteSpace($trimmedLine[$tagStart - 1])
+}
+function Remove-PairingKeyLines([string]$Path, [string]$PairingId) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $tag = "$tagPrefix$PairingId"
+    $lines = @(Get-Content -LiteralPath $Path)
+    $kept = @($lines | Where-Object { -not (Test-TaggedKeyLine $_ $tag) })
+    if ($kept.Count -eq $lines.Count) { return }
+    $content = if ($kept.Count) { ($kept -join "`n") + "`n" } else { '' }
+    [IO.File]::WriteAllText($Path, $content, (New-Object Text.UTF8Encoding($false)))
+}
+function Remove-PairingDirectory([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if (Test-Elevated) { Assert-ProtectedSystemPath $Path }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { Stop-Install "Refusing reparse point in pairing path: $Path" }
+    if ($item.PSIsContainer) {
+        foreach ($child in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
+            Remove-PairingDirectory $child.FullName
         }
     }
-    Stop-ScheduledTask -TaskName "RagtimeRemote-$PairingId" -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA "RagtimeRemote\$PairingId") -Force -Recurse -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath (Join-Path $env:ProgramData "RagtimeRemote\$PairingId") -Force -Recurse -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask -TaskName "RagtimeRemote-$PairingId" -Confirm:$false -ErrorAction SilentlyContinue
-    Write-Output "Removed only Ragtime-owned configuration for pairing $PairingId. sshd was left unchanged."
+    Remove-Item -LiteralPath $Path -Force
+}
+function Assert-NoReparseAncestors([string]$Path) {
+    $current = [IO.Path]::GetFullPath($Path)
+    while ($current) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { Stop-Install "Refusing reparse point in path ancestor: $current" }
+        }
+        $parent = [IO.Path]::GetDirectoryName($current)
+        if ($parent -eq $current) { break }
+        $current = $parent
+    }
+}
+function Assert-ProtectedSystemPath([string]$Path) {
+    Assert-NoReparseAncestors $Path
+    $root = [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'RagtimeRemote'))
+    $current = [IO.Path]::GetFullPath($Path)
+    if ($current -ne $root -and -not $current.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { Stop-Install 'System removal path is outside the protected root.' }
+    while ($current -and $current.Length -ge $root.Length) {
+        if (Test-Path -LiteralPath $current) {
+            $acl = Get-Acl -LiteralPath $current -ErrorAction Stop
+            $trusted = @('S-1-5-18', 'S-1-5-32-544')
+            if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) { Stop-Install "Untrusted owner in system removal path: $current" }
+            foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+                $writes = [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles
+                if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $trusted -and ($rule.FileSystemRights -band $writes)) { Stop-Install "Untrusted write access in system removal path: $current" }
+            }
+        }
+        if ($current -eq $root) { break }
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
+}
+function Get-SidProfile([string]$Sid) {
+    if ($Sid -notmatch '^S-1-[0-9-]+\z') { Stop-Install 'Invalid target SID.' }
+    $profile = (Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$Sid" -Name ProfileImagePath -ErrorAction Stop).ProfileImagePath
+    $profile = [Environment]::ExpandEnvironmentVariables([string]$profile)
+    if ($profile -notmatch '^[A-Za-z]:[\\/]' -or $profile.Contains('..')) { Stop-Install 'Target SID has an unsafe profile path.' }
+    return [IO.Path]::GetFullPath($profile)
+}
+function New-RemovalSteps([string]$Mode) {
+    [ordered]@{ pairing_cleanup = 'confirmed'; ssh_service = $(if ($Mode -eq 'DisableSsh') { 'confirmed' } else { 'not_requested' }) }
+}
+function Set-RemovalStepStatus([Collections.IDictionary]$Steps, [string]$Step, [string]$Status) {
+    $rank = @{ confirmed = 0; not_requested = 0; unconfirmed = 1; failed = 2 }
+    if ($rank[$Status] -gt $rank[$Steps[$Step]]) { $Steps[$Step] = $Status }
+}
+function Write-RemovalResult([Collections.IDictionary]$Steps, [string[]]$Warnings) {
+    Write-Output "Ragtime removal: pairing cleanup $($Steps.pairing_cleanup); SSH service $($Steps.ssh_service)."
+    $result = [ordered]@{ steps = $Steps; warnings = @($Warnings) } | ConvertTo-Json -Compress
+    Write-Output "RAGTIME_REMOVAL_RESULT:$result"
+}
+function Get-RemovalReceiptPath([string]$PairingId, [object]$Identity, [bool]$Elevated) {
+    $root = if ($Elevated) { Join-Path $env:ProgramData 'RagtimeRemote\receipts' } else { Join-Path $Identity.Profile 'AppData\Local\RagtimeRemote\receipts' }
+    return Join-Path $root "$PairingId.json"
+}
+function Write-RemovalReceipt([string]$PairingId, [object]$Identity, [bool]$Elevated, [Collections.IDictionary]$Steps, [string[]]$Warnings) {
+    $receipt = Get-RemovalReceiptPath $PairingId $Identity $Elevated
+    $parent = Split-Path -Parent $receipt
+    Assert-NoReparseAncestors $parent
+    if ($Elevated) { Assert-ProtectedSystemPath $parent; Initialize-SystemDirectory (Split-Path -Parent $parent); Initialize-SystemDirectory $parent }
+    elseif (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    if (-not $Elevated) { Set-ExactDirectoryAcl $parent $Identity.Sid }
+    if (Test-Path -LiteralPath $receipt) {
+        $existing = Get-Item -LiteralPath $receipt -Force
+        if ($existing.PSIsContainer -or (($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { Stop-Install "Unsafe removal receipt path: $receipt" }
+        [IO.File]::Delete($receipt)
+    }
+    $stream = [IO.File]::Open($receipt, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $writer = New-Object IO.StreamWriter($stream, (New-Object Text.UTF8Encoding($false)))
+        try { $writer.Write(([ordered]@{ steps = $Steps; warnings = @($Warnings) } | ConvertTo-Json -Compress)) }
+        finally { $writer.Dispose() }
+    } finally { $stream.Dispose() }
+    if ($Elevated) { Set-SystemOnlyAcl $receipt } else { Set-ExactKeyAcl $receipt $Identity.Sid }
+}
+function Invoke-PairingCleanup([string]$PairingId, [object]$Identity, [Collections.IDictionary]$Steps, [System.Collections.ArrayList]$Warnings) {
+    $elevated = Test-Elevated
+    $operations = @(
+        { Remove-PairingKeyLines (Join-Path $Identity.Profile '.ssh\authorized_keys') $PairingId },
+        {
+            if (-not $elevated) { Stop-Install 'Administrator privileges are required to inspect protected OpenSSH keys and system pairing state.' }
+            Remove-PairingKeyLines (Join-Path $env:ProgramData 'ssh\administrators_authorized_keys') $PairingId
+        },
+        {
+            $taskName = "RagtimeRemote-$PairingId"
+            try { $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop }
+            catch {
+                if ($_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::ObjectNotFound) { return }
+                throw
+            }
+            if ($task) {
+                Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
+                Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+            }
+        },
+        {
+            $profileState = Join-Path $Identity.Profile "AppData\Local\RagtimeRemote\$PairingId"
+            if ($elevated) {
+                if (Test-Path -LiteralPath $profileState) { Stop-Install 'Refusing elevated recursive cleanup of a target-user-controlled pairing directory.' }
+                return
+            }
+            Remove-PairingDirectory $profileState
+        },
+        {
+            if (-not $elevated) { Stop-Install 'Administrator privileges are required to inspect protected system pairing state.' }
+            Assert-ProtectedSystemPath (Join-Path $env:ProgramData "RagtimeRemote\$PairingId")
+            Remove-PairingDirectory (Join-Path $env:ProgramData "RagtimeRemote\$PairingId")
+        }
+    )
+    foreach ($operation in $operations) {
+        try { & $operation } catch {
+            Set-RemovalStepStatus $Steps 'pairing_cleanup' $(if ($_.Exception.Message -match 'Administrator privileges') { 'unconfirmed' } else { 'failed' })
+            [void]$Warnings.Add("Pairing cleanup failed: $($_.Exception.Message)")
+        }
+    }
+}
+function Invoke-SshServiceCleanup([Collections.IDictionary]$Steps, [System.Collections.ArrayList]$Warnings) {
+    if (-not (Test-Elevated)) {
+        Set-RemovalStepStatus $Steps 'ssh_service' 'failed'
+        [void]$Warnings.Add('Administrator privileges are required to disable and stop sshd.')
+        return
+    }
+    try {
+        try { $service = Get-Service sshd -ErrorAction Stop }
+        catch {
+            if ($_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::ObjectNotFound) { [void]$Warnings.Add('sshd is absent; it was already secured.'); return }
+            throw
+        }
+        Set-Service sshd -StartupType Disabled
+        if ($service.Status -ne 'Stopped') { Stop-Service sshd -ErrorAction Stop }
+    } catch {
+        Set-RemovalStepStatus $Steps 'ssh_service' 'failed'
+        [void]$Warnings.Add("Could not disable and stop sshd: $($_.Exception.Message)")
+    }
+}
+function Test-TunnelTaskPresent([string]$PairingId) {
+    return [bool](Get-ScheduledTask -TaskName "RagtimeRemote-$PairingId" -ErrorAction SilentlyContinue)
+}
+function Get-FinalizerIdentity([string]$Context) {
+    if (-not $Context) { Stop-Install 'Finalizer context is required.' }
+    try { $identity = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Context)) | ConvertFrom-Json -ErrorAction Stop }
+    catch { Stop-Install 'Finalizer context is invalid.' }
+    if (-not $identity.Name -or -not $identity.Sid -or -not $identity.Profile -or $identity.Sid -notmatch '^S-1-[0-9-]+\z' -or -not [IO.Path]::IsPathRooted($identity.Profile)) {
+        Stop-Install 'Finalizer context has unsafe target identity paths.'
+    }
+    $registeredProfile = Get-SidProfile $identity.Sid
+    if ($identity.Profile -cne $registeredProfile) { Stop-Install 'Finalizer profile does not match the registered target SID.' }
+    return [pscustomobject]@{ Name = [string]$identity.Name; Sid = [string]$identity.Sid; Profile = $registeredProfile }
+}
+function Start-RemovalFinalizer([string]$PairingId, [string]$Mode, [object]$Identity, [Collections.IDictionary]$Steps, [System.Collections.ArrayList]$Warnings) {
+    $elevated = Test-Elevated
+    $stageRoot = if ($elevated) { Join-Path $env:ProgramData 'RagtimeRemote\removal-payloads' } else { Join-Path $Identity.Profile 'AppData\Local\RagtimeRemote\removal-payloads' }
+    $taskName = "RagtimeRemoteRemoval-$PairingId"
+    $payload = $null
+    try {
+        if ($Identity.Profile -cne (Get-SidProfile $Identity.Sid)) { Stop-Install 'Target profile does not match its registered SID.' }
+        Assert-NoReparseAncestors $stageRoot
+        if ($elevated) { Assert-ProtectedSystemPath $stageRoot; Initialize-SystemDirectory (Split-Path -Parent $stageRoot); Initialize-SystemDirectory $stageRoot }
+        else { New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null; Set-ExactDirectoryAcl $stageRoot $Identity.Sid }
+        $payload = Join-Path $stageRoot "$PairingId.ps1"
+        Remove-Item -LiteralPath "$payload.ready" -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $payload) { Remove-PairingDirectory $payload }
+        if (-not $PSCommandPath) { Stop-Install 'Cannot stage a detached removal finalizer without a script file path.' }
+        Copy-Item -LiteralPath $PSCommandPath -Destination $payload -Force
+        if ($elevated) { Set-SystemOnlyAcl $payload } else { Set-ExactKeyAcl $payload $Identity.Sid }
+        $context = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(([ordered]@{ Name = $Identity.Name; Sid = $Identity.Sid; Profile = $Identity.Profile } | ConvertTo-Json -Compress)))
+        $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$payload`" -Uninstall $PairingId -CleanupMode $Mode -FinalizerContext $context -RunFinalizer"
+        if ($Mode -eq 'DisableSsh') { $arguments += ' -ConfirmMachineWide' }
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
+        $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddSeconds(5))
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+        if ($elevated) { Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -User 'SYSTEM' -RunLevel Highest -Force | Out-Null }
+        else { Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -User $Identity.Name -RunLevel Limited -Force | Out-Null }
+        Set-RemovalStepStatus $Steps 'pairing_cleanup' 'unconfirmed'
+        if ($Mode -eq 'DisableSsh') { Set-RemovalStepStatus $Steps 'ssh_service' 'unconfirmed' }
+        [void]$Warnings.Add('Removal finalizer was launched; inspect the local receipt for its final outcome.')
+        return $true
+    } catch {
+        Set-RemovalStepStatus $Steps 'pairing_cleanup' 'failed'
+        if ($Mode -eq 'DisableSsh') { Set-RemovalStepStatus $Steps 'ssh_service' 'failed' }
+        [void]$Warnings.Add("Could not launch removal finalizer: $($_.Exception.Message)")
+        if ($payload) {
+            Remove-Item -LiteralPath "$payload.ready" -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $payload -Force -ErrorAction SilentlyContinue
+        }
+        return $false
+    }
+}
+function Complete-RemovalFinalizer([string]$PairingId) {
+    $payload = $PSCommandPath
+    try {
+        $validatedId = Assert-PairingId $PairingId
+        $elevated = Test-Elevated
+        $root = if ($elevated) { Join-Path $env:ProgramData 'RagtimeRemote\removal-payloads' }
+        else { Join-Path (Get-OriginalIdentity '').Profile 'AppData\Local\RagtimeRemote\removal-payloads' }
+        if (-not $payload -or [IO.Path]::GetFullPath($payload) -ne [IO.Path]::GetFullPath((Join-Path $root "$validatedId.ps1"))) { return }
+        Assert-NoReparseAncestors $payload
+        if ($elevated) { Assert-ProtectedSystemPath $payload }
+    } catch { return }
+    Remove-Item -LiteralPath "$payload.ready" -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $payload -Force -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName "RagtimeRemoteRemoval-$PairingId" -Confirm:$false -ErrorAction SilentlyContinue
+}
+function Invoke-Removal([string]$PairingId, [string]$Mode, [object]$Identity) {
+    $steps = New-RemovalSteps $Mode
+    $warnings = New-Object System.Collections.ArrayList
+    if ($Mode -eq 'DisableSsh' -and -not (Test-Elevated)) {
+        Set-RemovalStepStatus $steps 'ssh_service' 'failed'
+        [void]$warnings.Add('Administrator privileges are required to disable and stop sshd.')
+    }
+    $defer = -not $RunFinalizer -and ($Mode -eq 'DisableSsh' -or (Test-TunnelTaskPresent $PairingId))
+    if ($defer) {
+        $launched = Start-RemovalFinalizer $PairingId $Mode $Identity $steps $warnings
+        Write-RemovalResult $steps $warnings
+        if ($launched) {
+            [Console]::Out.Flush()
+            $root = if (Test-Elevated) { Join-Path $env:ProgramData 'RagtimeRemote\removal-payloads' } else { Join-Path $Identity.Profile 'AppData\Local\RagtimeRemote\removal-payloads' }
+            [IO.File]::WriteAllText((Join-Path $root "$PairingId.ps1.ready"), 'ready')
+            if (Test-Elevated) { Set-SystemOnlyAcl (Join-Path $root "$PairingId.ps1.ready") }
+            else { Set-ExactKeyAcl (Join-Path $root "$PairingId.ps1.ready") $Identity.Sid }
+        }
+        return
+    }
+    Invoke-PairingCleanup $PairingId $Identity $steps $warnings
+    if ($Mode -eq 'DisableSsh') { Invoke-SshServiceCleanup $steps $warnings }
+    if ($RunFinalizer) {
+        try { Write-RemovalReceipt $PairingId $Identity (Test-Elevated) $steps $warnings }
+        catch {
+            Set-RemovalStepStatus $steps 'pairing_cleanup' 'failed'
+            [void]$warnings.Add("Could not write removal receipt: $($_.Exception.Message)")
+        }
+    }
+    Write-RemovalResult $steps $warnings
+}
+function Invoke-RemovalFinalizer([string]$PairingId, [string]$Mode, [string]$Context) {
+    try {
+        $identity = Get-FinalizerIdentity $Context
+        $expectedRoot = if (Test-Elevated) { Join-Path $env:ProgramData 'RagtimeRemote\removal-payloads' } else { Join-Path $identity.Profile 'AppData\Local\RagtimeRemote\removal-payloads' }
+        if ($PSCommandPath -ne (Join-Path $expectedRoot "$PairingId.ps1")) { Stop-Install 'Finalizer must run from its protected staging path.' }
+        Assert-NoReparseAncestors $PSCommandPath
+        if (Test-Elevated) { Assert-ProtectedSystemPath $PSCommandPath }
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        while (-not (Test-Path -LiteralPath "$PSCommandPath.ready")) {
+            if ([DateTime]::UtcNow -ge $deadline) { Stop-Install 'Finalizer readiness acknowledgement timed out; no cleanup performed.' }
+            Start-Sleep -Milliseconds 200
+        }
+        Invoke-Removal $PairingId $Mode $identity
+    } finally { Complete-RemovalFinalizer $PairingId }
+}
+
+# RAGTIME_INSTALLER_ENTRYPOINT
+if ($Uninstall) {
+    $Uninstall = Assert-PairingId $Uninstall
+    $cleanupModeSupplied = $PSBoundParameters.ContainsKey('CleanupMode')
+    if (-not $CleanupMode) {
+        if (-not (Test-InteractiveConsole)) { Stop-Install 'Noninteractive uninstall requires -CleanupMode.' }
+        $enteredMode = Read-Host 'Cleanup mode: DisableSsh (default) or PairingOnly'
+        $CleanupMode = if ($enteredMode) { $enteredMode } else { 'DisableSsh' }
+    }
+    Assert-CleanupMode $CleanupMode
+    if ($CleanupMode -eq 'PairingOnly' -and $ConfirmMachineWide) { Stop-Install 'ConfirmMachineWide is only valid with DisableSsh.' }
+    if ($CleanupMode -eq 'DisableSsh' -and -not $ConfirmMachineWide) {
+        if ($cleanupModeSupplied -or $RunFinalizer -or -not (Test-InteractiveConsole)) { Stop-Install 'DisableSsh requires -ConfirmMachineWide.' }
+        if ((Read-Host 'This disables SSH for all users. Type YES to continue') -ne 'YES') { Stop-Install 'Machine-wide SSH disablement was not confirmed.' }
+    }
+    if ($RunFinalizer) {
+        Invoke-RemovalFinalizer $Uninstall $CleanupMode $FinalizerContext
+    } else {
+        $identity = Get-OriginalIdentity $TargetUser
+        Invoke-Removal $Uninstall $CleanupMode $identity
+    }
+    exit 0
 }
 
 $identity = Get-OriginalIdentity $TargetUser
-if ($Uninstall) { Remove-OwnedInstall $Uninstall $identity; exit 0 }
 if ($Mode -eq 'offline') {
     if (-not $PairingId -or -not $PublicKey) { Stop-Install 'Offline mode requires -PairingId and -PublicKey.' }
 } else {

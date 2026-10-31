@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import tempfile
@@ -25,6 +26,8 @@ _MAX_SCHEMA_BYTES = 120_000
 _REQUEST_FRAMING = "Answer the latest supplied user message. Use supplied tool schemas for tool-call requests only; never execute tools."
 _REQUEST_LIMIT_TERMINAL_REASONS = {"prompt_too_long", "max_turns", "budget_exhausted", "structured_output_retry_exhausted"}
 _REQUEST_LIMIT_SUBTYPES = {"error_max_budget_usd", "error_max_structured_output_retries", "error_max_turns"}
+_IMAGE_MEDIA_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
+_STRUCTURED_OUTPUT_STOP_REASONS = {"max_tokens", "refusal"}
 
 
 class ClaudeCodeChatModel(BaseChatModel):
@@ -39,6 +42,7 @@ class ClaudeCodeChatModel(BaseChatModel):
     reasoning_effort: str | None = None
     bound_tools: tuple[dict[str, Any], ...] = Field(default_factory=tuple, exclude=True)
     tool_choice: str | None = Field(default=None, exclude=True)
+    ocr_json_schema: dict[str, Any] | None = Field(default=None, exclude=True)
 
     def __init__(
         self,
@@ -71,6 +75,14 @@ class ClaudeCodeChatModel(BaseChatModel):
         tool_names = {tool["function"]["name"] for tool in normalized_tools}
         normalized_choice = self._normalize_tool_choice(tool_choice, tool_names)
         return self.model_copy(update={"bound_tools": normalized_tools, "tool_choice": normalized_choice})
+
+    def with_ocr_json_schema(self, schema: dict[str, Any]) -> ClaudeCodeChatModel:
+        """Request structured OCR output without enabling executable CLI tools."""
+        if self.bound_tools:
+            raise ValueError("OCR JSON schema cannot be combined with bound tools.")
+        if not isinstance(schema, dict):
+            raise ValueError("OCR JSON schema must be an object.")
+        return self.model_copy(update={"ocr_json_schema": schema})
 
     def _generate(
         self,
@@ -156,9 +168,12 @@ class ClaudeCodeChatModel(BaseChatModel):
     def _serialize_messages(self, messages: Sequence[BaseMessage]) -> tuple[bytes, str]:
         serialized: list[dict[str, Any]] = []
         system_messages: list[str] = []
+        image_blocks: list[dict[str, Any]] = []
         for message in messages:
-            content = self._text_content(message.content)
+            content, images = self._content_blocks(message.content)
             if isinstance(message, SystemMessage):
+                if images:
+                    raise ValueError("Claude Code image blocks are supported only in HumanMessage content.")
                 system_messages.append(content)
                 continue
             elif isinstance(message, HumanMessage):
@@ -166,6 +181,8 @@ class ClaudeCodeChatModel(BaseChatModel):
             elif isinstance(message, AIMessage):
                 role = "assistant"
             elif isinstance(message, ToolMessage):
+                if images:
+                    raise ValueError("Claude Code image blocks are supported only in HumanMessage content.")
                 serialized.append({"role": "tool", "content": content, "tool_call_id": message.tool_call_id})
                 continue
             else:
@@ -173,7 +190,11 @@ class ClaudeCodeChatModel(BaseChatModel):
             entry: dict[str, Any] = {"role": role, "content": content}
             if isinstance(message, AIMessage) and message.tool_calls:
                 entry["tool_calls"] = message.tool_calls
+            if images and not isinstance(message, HumanMessage):
+                raise ValueError("Claude Code image blocks are supported only in HumanMessage content.")
             serialized.append(entry)
+            if isinstance(message, HumanMessage):
+                image_blocks.extend(images)
         request: dict[str, Any] = {"instruction": _REQUEST_FRAMING, "messages": serialized}
         if self.bound_tools:
             request["tools"] = [
@@ -185,23 +206,54 @@ class ClaudeCodeChatModel(BaseChatModel):
                 for tool in self.bound_tools
             ]
             request["tool_choice"] = self.tool_choice or "auto"
-        return json.dumps(request, separators=(",", ":")).encode(), "\n\n".join(system_messages) or _REQUEST_FRAMING
+        content_blocks: list[dict[str, Any]] = [{"type": "text", "text": json.dumps(request, separators=(",", ":"))}]
+        content_blocks.extend(image_blocks)
+        event = {"type": "user", "message": {"role": "user", "content": content_blocks}}
+        return (json.dumps(event, separators=(",", ":")) + "\n").encode(), "\n\n".join(system_messages) or _REQUEST_FRAMING
 
     @staticmethod
-    def _text_content(content: Any) -> str:
+    def _content_blocks(content: Any) -> tuple[str, list[dict[str, Any]]]:
         if isinstance(content, str):
-            return content
+            return content, []
         if not isinstance(content, list):
-            raise ValueError("Claude Code adapter supports text-only message content.")
+            raise ValueError("Claude Code message content must be text or supported image blocks.")
         text: list[str] = []
+        images: list[dict[str, Any]] = []
         for block in content:
             if isinstance(block, str):
                 text.append(block)
             elif isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
                 text.append(block["text"])
             else:
-                raise ValueError("Claude Code adapter supports text-only message content.")
-        return "\n".join(text)
+                image = ClaudeCodeChatModel._image_block(block)
+                if image is None:
+                    raise ValueError("Claude Code adapter supports only text and base64 image message content.")
+                images.append(image)
+        return "\n".join(text), images
+
+    @staticmethod
+    def _image_block(block: Any) -> dict[str, Any] | None:
+        if not isinstance(block, dict):
+            return None
+        source = block.get("source") if block.get("type") == "image" else None
+        if isinstance(source, dict) and source.get("type") == "base64":
+            return ClaudeCodeChatModel._validated_image_source(source.get("media_type"), source.get("data"))
+        image_url = block.get("image_url") if block.get("type") == "image_url" else None
+        url = image_url.get("url") if isinstance(image_url, dict) else None
+        if not isinstance(url, str) or not url.startswith("data:image/") or ";base64," not in url:
+            return None
+        prefix, data = url.split(";base64,", 1)
+        return ClaudeCodeChatModel._validated_image_source(prefix[5:], data)
+
+    @staticmethod
+    def _validated_image_source(media_type: Any, data: Any) -> dict[str, Any] | None:
+        if media_type not in _IMAGE_MEDIA_TYPES or not isinstance(data, str):
+            return None
+        try:
+            base64.b64decode(data, validate=True)
+        except ValueError:
+            return None
+        return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
 
     async def _invoke_cli(self, payload: bytes, system_prompt: str) -> dict[str, Any]:
         process: asyncio.subprocess.Process | None = None
@@ -221,8 +273,11 @@ class ClaudeCodeChatModel(BaseChatModel):
                 process = await asyncio.create_subprocess_exec(
                     self.command,
                     "--print",
+                    "--verbose",
                     "--output-format",
-                    "json",
+                    "stream-json",
+                    "--input-format",
+                    "stream-json",
                     "--model",
                     self.model,
                     "--system-prompt-file",
@@ -258,11 +313,11 @@ class ClaudeCodeChatModel(BaseChatModel):
             except OSError as exc:
                 raise RuntimeError("Claude Code CLI is unavailable.") from exc
         try:
-            parsed = json.loads(stdout.decode())
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            parsed = self._final_stream_result(stdout)
+        except RuntimeError:
             if process.returncode not in (0, None):
-                raise RuntimeError("Claude Code request failed.") from exc
-            raise RuntimeError("Claude Code returned an invalid response.") from exc
+                raise RuntimeError("Claude Code request failed.") from None
+            raise
         if not isinstance(parsed, dict):
             raise RuntimeError("Claude Code returned an invalid response.")
         if parsed.get("is_error") is not False or parsed.get("subtype") != "success" or parsed.get("terminal_reason") != "completed":
@@ -270,6 +325,17 @@ class ClaudeCodeChatModel(BaseChatModel):
         if process.returncode not in (0, None):
             raise RuntimeError("Claude Code request failed.")
         return parsed
+
+    @staticmethod
+    def _final_stream_result(stdout: bytes) -> dict[str, Any]:
+        try:
+            events = [json.loads(line) for line in stdout.decode().splitlines() if line.strip()]
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Claude Code returned an invalid response.") from exc
+        for event in reversed(events):
+            if isinstance(event, dict) and event.get("type") == "result":
+                return event
+        raise RuntimeError("Claude Code returned no final result.")
 
     @staticmethod
     def _safe_failure_message(response: dict[str, Any]) -> str:
@@ -285,9 +351,10 @@ class ClaudeCodeChatModel(BaseChatModel):
         return "Claude Code request failed."
 
     def _tool_args(self) -> tuple[str, ...]:
-        if not self.bound_tools:
+        if not self.bound_tools and self.ocr_json_schema is None:
             return ()
-        schema_json = json.dumps(self._tool_response_schema(), separators=(",", ":"))
+        schema = self._tool_response_schema() if self.bound_tools else self.ocr_json_schema
+        schema_json = json.dumps(schema, separators=(",", ":"))
         if len(schema_json.encode()) > _MAX_SCHEMA_BYTES:
             raise ValueError(f"Claude Code tool schema exceeds the {_MAX_SCHEMA_BYTES}-byte CLI argument limit.")
         return ("--json-schema", schema_json)
@@ -328,7 +395,11 @@ class ClaudeCodeChatModel(BaseChatModel):
         }
 
     def _response_message(self, response: dict[str, Any], stop: list[str] | None) -> AIMessage:
-        raw_result = response.get("structured_output") if self.bound_tools else response.get("result", response.get("structured_output"))
+        raw_result: str | dict[str, Any] | None
+        if self.ocr_json_schema is not None:
+            raw_result = self._ocr_structured_output(response)
+        else:
+            raw_result = response.get("structured_output") if self.bound_tools else response.get("result", response.get("structured_output"))
         if not isinstance(raw_result, (str, dict)):
             raise RuntimeError("Claude Code returned an invalid response.")
         if self.bound_tools:
@@ -348,6 +419,15 @@ class ClaudeCodeChatModel(BaseChatModel):
         usage_metadata = self._usage_metadata(response.get("usage"))
         metadata = {key: response[key] for key in ("model", "stop_reason") if response.get(key) is not None}
         return AIMessage(content=content, tool_calls=tool_calls, usage_metadata=usage_metadata, response_metadata=metadata)
+
+    @staticmethod
+    def _ocr_structured_output(response: dict[str, Any]) -> dict[str, Any]:
+        if response.get("stop_reason") in _STRUCTURED_OUTPUT_STOP_REASONS:
+            raise RuntimeError("Claude Code structured output was incomplete or refused.")
+        structured_output = response.get("structured_output")
+        if not isinstance(structured_output, dict):
+            raise RuntimeError("Claude Code returned invalid structured output.")
+        return structured_output
 
     @staticmethod
     def _usage_metadata(usage: Any) -> dict[str, Any] | None:
