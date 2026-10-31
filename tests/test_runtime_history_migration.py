@@ -18,6 +18,7 @@ from runtime.worker.sqlite_history.migration import LegacyHistoryMigration, _dig
 from runtime.worker.sqlite_history.models import RESTIC_IMAGE_PATH, ResticArtifact
 from runtime.worker.sqlite_history.repository import ResticRepository
 from runtime.worker.sqlite_history.service import RuntimeSqliteHistoryService
+from tests.restic_test_support import seed_fast_restic_repository
 
 
 class _Repository:
@@ -218,6 +219,9 @@ class RuntimeHistoryMigrationTests(unittest.IsolatedAsyncioTestCase):
                 password_path=root / "_sqlite_history/secrets/password",
                 binary=binary,
             )
+            seed_fast_restic_repository(
+                root / "_sqlite_history/restic", root / "_sqlite_history/cache", root / "_sqlite_history/secrets/password", binary=binary
+            )
             service = RuntimeSqliteHistoryService(root, Worker(), repository)
 
             def capture(_files, _name, blob_dir, destination_name):
@@ -271,6 +275,9 @@ class RuntimeHistoryMigrationTests(unittest.IsolatedAsyncioTestCase):
                 cache_path=root / "_sqlite_history/cache",
                 password_path=root / "_sqlite_history/secrets/password",
                 binary=binary,
+            )
+            seed_fast_restic_repository(
+                root / "_sqlite_history/restic", root / "_sqlite_history/cache", root / "_sqlite_history/secrets/password", binary=binary
             )
             service = RuntimeSqliteHistoryService(root, Worker(), repository)
             capture_calls = 0
@@ -332,6 +339,9 @@ class RuntimeHistoryMigrationTests(unittest.IsolatedAsyncioTestCase):
                 cache_path=root / "_sqlite_history/cache",
                 password_path=root / "_sqlite_history/secrets/password",
                 binary=binary,
+            )
+            seed_fast_restic_repository(
+                root / "_sqlite_history/restic", root / "_sqlite_history/cache", root / "_sqlite_history/secrets/password", binary=binary
             )
             service = RuntimeSqliteHistoryService(root, Worker(), repository)
             token = "first"

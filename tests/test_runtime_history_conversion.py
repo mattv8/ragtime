@@ -16,6 +16,7 @@ from runtime.worker.sqlite_history.conversion import LegacyHistoryConverter
 from runtime.worker.sqlite_history.models import RESTIC_IMAGE_PATH, ResticArtifact
 from runtime.worker.sqlite_history.repository import ResticRepository
 from runtime.worker.sqlite_history.service import RuntimeSqliteHistoryService
+from tests.restic_test_support import seed_fast_restic_repository
 
 
 class _Repository:
@@ -276,6 +277,9 @@ class RuntimeHistoryConversionTests(unittest.IsolatedAsyncioTestCase):
                 cache_path=root / "_sqlite_history/cache",
                 password_path=root / "_sqlite_history/secrets/password",
                 binary=binary,
+            )
+            seed_fast_restic_repository(
+                root / "_sqlite_history/restic", root / "_sqlite_history/cache", root / "_sqlite_history/secrets/password", binary=binary
             )
             service = RuntimeSqliteHistoryService(root, object(), repository)
             self._manifest(service, history, image)

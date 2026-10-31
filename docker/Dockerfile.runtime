@@ -109,6 +109,7 @@ COPY scripts/ /runtime/scripts/
 
 # Copy only runtime-independent test files (no Ragtime dependencies)
 COPY tests/test_runtime_restic_repository.py /runtime/tests/
+COPY tests/restic_test_support.py /runtime/tests/
 COPY tests/test_runtime_sqlite_history_operations.py /runtime/tests/
 COPY tests/test_runtime_sqlite_history_catalog.py /runtime/tests/
 COPY tests/test_runtime_sqlite_history_core.py /runtime/tests/
@@ -132,7 +133,7 @@ COPY tests/test_runtime_history_bootstrap_cli.py /runtime/tests/
 COPY tests/test_runtime_package_imports.py /runtime/tests/
 COPY tests/test_runtime_history_core_remediation.py /runtime/tests/
 COPY tests/test_runtime_history_coordination_remediation.py /runtime/tests/
-RUN pip install --no-cache-dir pytest pytest-timeout \
+RUN pip install --no-cache-dir pytest cryptography pytest-timeout \
     && /opt/ragtime-backup/bin/restic version | grep -F 'restic 0.19.1 ' \
     && pytest -q tests/test_runtime_restic_repository.py \
               tests/test_runtime_sqlite_history_operations.py \
