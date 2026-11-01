@@ -221,10 +221,7 @@ def _nonroot_linux_commands(keyscan_output: str) -> dict[str, str]:
             'printf \'%s\\n\' "$@" >> "$CALLS"\nprintf \'%s\' \'{"pairing_id":"pair_nonroot","status":"paired","transport":"direct"}\'\n'
         ),
         "ssh-keyscan": (
-            "#!/bin/sh\n"
-            'printf \'%s\\n\' "$*" >> "$KEYSCAN_TRACE"\n'
-            "printf '%s\\n' '# 127.0.0.1:2222 SSH-2.0-OpenSSH_8.0'\n"
-            f"printf '%s\\n' '{keyscan_lines}'\n"
+            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$KEYSCAN_TRACE\"\nprintf '%s\\n' '# 127.0.0.1:2222 SSH-2.0-OpenSSH_8.0'\nprintf '%s\\n' '{keyscan_lines}'\n"
         ),
         "uname": "#!/bin/sh\nprintf 'Linux\\n'\n",
         "id": "#!/bin/sh\ncase \"$1\" in -u) printf '1000\\n';; -un) printf 'user\\n';; *) printf 'user\\n';; esac\n",
@@ -262,7 +259,7 @@ def test_posix_nonroot_ssh_connection_uses_port_address_and_loopback_keys(tmp_pa
         _write_fake_command(bin_dir, name, content)
     _write_fake_command(bin_dir, "ip", "#!/bin/sh\nprintf '1: lo    inet 127.0.0.1/8\\n2: eth0    inet 10.0.0.2/24\\n'\n")
     apt_trace = tmp_path / "apt-trace"
-    _write_fake_command(bin_dir, "apt-get", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$APT_TRACE\"\n")
+    _write_fake_command(bin_dir, "apt-get", '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$APT_TRACE"\n')
     environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
     environment.update({"SSH_CONNECTION": "1.2.3.4 5555 9.9.9.9 2222", "APT_TRACE": str(apt_trace)})
 
@@ -340,7 +337,7 @@ def test_posix_root_without_service_installs_openssh(tmp_path):
     calls = tmp_path / "calls"
     commands = _nonroot_linux_commands("")
     commands["id"] = "#!/bin/sh\ncase \"$1\" in -u) printf '0\\n';; -un) printf 'root\\n';; *) printf 'root\\n';; esac\n"
-    commands["apt-get"] = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$APT_TRACE\"\n"
+    commands["apt-get"] = '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$APT_TRACE"\n'
     commands["systemctl"] = "#!/bin/sh\nexit 0\n"
     for name, content in commands.items():
         _write_fake_command(bin_dir, name, content)
