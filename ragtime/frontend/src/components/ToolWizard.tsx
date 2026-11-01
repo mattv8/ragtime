@@ -3044,7 +3044,7 @@ export function ToolWizard({
       case 'odoo_shell':
         return { ...odooConfig, mode: odooConnectionMode };
       case 'ssh_shell':
-      case 'windows_shell':
+      case 'windows_shell': {
         if (connectionMode === 'quick') {
           const pairedConfig = { ...sshConfig };
           delete pairedConfig.key_path;
@@ -3054,7 +3054,12 @@ export function ToolWizard({
           delete pairedConfig.password;
           return pairedConfig;
         }
-        return sshConfig;
+        const manualConfig = { ...sshConfig };
+        delete manualConfig.pairing_id;
+        delete manualConfig.transport;
+        delete manualConfig.host_keys;
+        return manualConfig;
+      }
       case 'filesystem_indexer':
         // Use the tool name as the index_name (Step 3 Name field)
         return withFilesystemSchedule({

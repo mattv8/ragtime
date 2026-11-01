@@ -1894,4 +1894,67 @@ describe('ToolWizard', () => {
     );
     expect(update.connection_config).not.toHaveProperty('key_content');
   });
+
+  it('tests manual SSH credentials without pairing metadata and preserves the quick pairing', async () => {
+    const pairing = {
+      id: 'pairing-draft',
+      tool_id: 'paired-tool',
+      status: 'paired' as const,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      connection_config: {
+        host: 'paired.example',
+        user: 'deploy',
+        pairing_id: 'pairing-draft',
+        transport: 'direct' as const,
+        shell: 'posix' as const,
+        host_keys: ['ssh-ed25519 AAAA'],
+      },
+      public_key: 'ssh-ed25519 AAAA',
+      commands: {
+        sh: 'run-sh',
+        powershell: 'run-ps',
+        offline_sh: 'offline-sh',
+        offline_powershell: 'offline-ps',
+      },
+    };
+    apiMock.createRemotePairing.mockResolvedValue(pairing);
+    apiMock.getRemotePairing.mockResolvedValue(pairing);
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        defaultToolType="ssh_shell"
+      />,
+    );
+
+    await screen.findByText('Connected — target');
+    fireEvent.click(screen.getByRole('button', { name: 'Manual (SSH)' }));
+    fireEvent.change(screen.getByDisplayValue('deploy'), {
+      target: { value: 'manual-deploy' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Enter SSH password'), {
+      target: { value: 'secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+
+    await waitFor(() =>
+      expect(apiMock.testToolConnection).toHaveBeenCalledWith({
+        tool_type: 'ssh_shell',
+        connection_config: expect.objectContaining({
+          host: 'paired.example',
+          user: 'manual-deploy',
+          password: 'secret',
+        }),
+      }),
+    );
+    const connectionConfig = apiMock.testToolConnection.mock.calls[0][0].connection_config;
+    expect(connectionConfig).not.toHaveProperty('pairing_id');
+    expect(connectionConfig).not.toHaveProperty('transport');
+    expect(connectionConfig).not.toHaveProperty('host_keys');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Quick Connect' }));
+    await screen.findByText('Connected — target');
+  });
 });
