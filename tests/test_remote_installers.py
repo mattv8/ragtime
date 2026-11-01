@@ -80,7 +80,7 @@ def test_posix_openrc_tunnel_install_and_uninstall_generate_owned_unit(tmp_path)
     client.write_text("#!/bin/sh\n")
     client.chmod(0o755)
     environment = {
-        **os.environ,
+        **_installer_environment(),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "HOME": str(tmp_path),
         "XDG_STATE_HOME": str(tmp_path / "state"),
@@ -188,7 +188,7 @@ def test_posix_online_rerun_reuses_nonce_and_adds_one_tagged_key(tmp_path):
     for command in bin_dir.iterdir():
         command.chmod(0o755)
     environment = {
-        **os.environ,
+        **_installer_environment(),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "HOME": str(tmp_path),
         "XDG_STATE_HOME": str(tmp_path / "state"),
@@ -203,6 +203,187 @@ def test_posix_online_rerun_reuses_nonce_and_adds_one_tagged_key(tmp_path):
     assert len(payloads) == 2
     assert payloads[0] == payloads[1]
     assert '"mode":"direct"' in payloads[0]
+
+
+def _write_fake_command(bin_dir: Path, name: str, content: str) -> None:
+    command = bin_dir / name
+    command.write_text(content)
+    command.chmod(0o755)
+
+
+def _nonroot_linux_commands(keyscan_output: str) -> dict[str, str]:
+    keyscan_lines = "\n".join(f"127.0.0.1 {line}" for line in keyscan_output.splitlines())
+    return {
+        "curl": (
+            "#!/bin/sh\n"
+            'for arg in "$@"; do case $arg in *enroll/material) '
+            'printf \'%s\' \'{"pairing_id":"pair_nonroot","public_key":"ssh-ed25519 AAAA test"}\'; exit;; esac; done\n'
+            'printf \'%s\\n\' "$@" >> "$CALLS"\nprintf \'%s\' \'{"pairing_id":"pair_nonroot","status":"paired","transport":"direct"}\'\n'
+        ),
+        "ssh-keyscan": (
+            "#!/bin/sh\n"
+            'printf \'%s\\n\' "$*" >> "$KEYSCAN_TRACE"\n'
+            "printf '%s\\n' '# 127.0.0.1:2222 SSH-2.0-OpenSSH_8.0'\n"
+            f"printf '%s\\n' '{keyscan_lines}'\n"
+        ),
+        "uname": "#!/bin/sh\nprintf 'Linux\\n'\n",
+        "id": "#!/bin/sh\ncase \"$1\" in -u) printf '1000\\n';; -un) printf 'user\\n';; *) printf 'user\\n';; esac\n",
+    }
+
+
+def _installer_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.pop("SSH_CONNECTION", None)
+    environment.pop("SUDO_USER", None)
+    return environment
+
+
+def _nonroot_environment(tmp_path: Path, bin_dir: Path, host_key_dir: Path, calls: Path) -> dict[str, str]:
+    return {
+        **_installer_environment(),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+        "CALLS": str(calls),
+        "KEYSCAN_TRACE": str(tmp_path / "keyscan-trace"),
+        "RAGTIME_SSH_HOST_KEY_DIR": str(host_key_dir),
+        "RAGTIME_SSHD_PATH": "",
+    }
+
+
+def test_posix_nonroot_ssh_connection_uses_port_address_and_loopback_keys(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    host_key_dir = tmp_path / "ssh"
+    host_key_dir.mkdir()
+    calls = tmp_path / "calls"
+    keyscan_output = "ssh-ed25519 AAAAED key\necdsa-sha2-nistp256 AAAAECDSA key"
+    for name, content in _nonroot_linux_commands(keyscan_output).items():
+        _write_fake_command(bin_dir, name, content)
+    _write_fake_command(bin_dir, "ip", "#!/bin/sh\nprintf '1: lo    inet 127.0.0.1/8\\n2: eth0    inet 10.0.0.2/24\\n'\n")
+    apt_trace = tmp_path / "apt-trace"
+    _write_fake_command(bin_dir, "apt-get", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$APT_TRACE\"\n")
+    environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
+    environment.update({"SSH_CONNECTION": "1.2.3.4 5555 9.9.9.9 2222", "APT_TRACE": str(apt_trace)})
+
+    subprocess.run(
+        ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct"],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = next(line for line in calls.read_text().splitlines() if line.startswith('{"nonce"'))
+    assert '"sshd_port":2222' in payload
+    assert '"addresses":["9.9.9.9"' in payload
+    assert '"ssh-ed25519 AAAAED"' in payload
+    assert '"ecdsa-sha2-nistp256 AAAAECDSA"' in payload
+    assert not apt_trace.exists()
+    assert (tmp_path / "keyscan-trace").read_text() == "-T 5 -p 2222 127.0.0.1\n"
+
+
+def test_posix_nonroot_without_service_does_not_create_authorized_keys(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    host_key_dir = tmp_path / "ssh"
+    host_key_dir.mkdir()
+    calls = tmp_path / "calls"
+    for name, content in _nonroot_linux_commands("").items():
+        _write_fake_command(bin_dir, name, content)
+    environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
+
+    result = subprocess.run(
+        ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct"],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "No running SSH service detected" in result.stderr
+    assert not (tmp_path / ".ssh").exists()
+    assert not (tmp_path / "state" / "ragtime-remote").exists()
+
+
+def test_posix_ssh_connection_address_is_kept_before_eight_address_cap(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    host_key_dir = tmp_path / "ssh"
+    host_key_dir.mkdir()
+    calls = tmp_path / "calls"
+    for name, content in _nonroot_linux_commands("ssh-ed25519 AAAAED key").items():
+        _write_fake_command(bin_dir, name, content)
+    ip_output = "".join(f"{index}: eth0    inet 10.0.0.{index}/24\\n" for index in range(1, 10))
+    _write_fake_command(bin_dir, "ip", f"#!/bin/sh\nprintf '{ip_output}'\n")
+    environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
+    environment["SSH_CONNECTION"] = "1.2.3.4 5555 9.9.9.9 2222"
+
+    subprocess.run(
+        ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct"],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = next(line for line in calls.read_text().splitlines() if line.startswith('{"nonce"'))
+    assert '"addresses":["9.9.9.9","10.0.0.1","10.0.0.2","10.0.0.3","10.0.0.4","10.0.0.5","10.0.0.6","10.0.0.7"]' in payload
+
+
+def test_posix_root_without_service_installs_openssh(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    host_key_dir = tmp_path / "ssh"
+    host_key_dir.mkdir()
+    (host_key_dir / "ssh_host_ed25519_key.pub").write_text("ssh-ed25519 AAAAHOST host\n")
+    calls = tmp_path / "calls"
+    commands = _nonroot_linux_commands("")
+    commands["id"] = "#!/bin/sh\ncase \"$1\" in -u) printf '0\\n';; -un) printf 'root\\n';; *) printf 'root\\n';; esac\n"
+    commands["apt-get"] = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$APT_TRACE\"\n"
+    commands["systemctl"] = "#!/bin/sh\nexit 0\n"
+    for name, content in commands.items():
+        _write_fake_command(bin_dir, name, content)
+    apt_trace = tmp_path / "apt-trace"
+    environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
+    environment["APT_TRACE"] = str(apt_trace)
+
+    subprocess.run(
+        ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct"],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "update" in apt_trace.read_text()
+    assert "install -y openssh-server" in apt_trace.read_text()
+
+
+def test_posix_port_mismatch_does_not_trust_loopback_keys_or_create_authorized_keys(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    host_key_dir = tmp_path / "ssh"
+    host_key_dir.mkdir()
+    calls = tmp_path / "calls"
+    for name, content in _nonroot_linux_commands("ssh-ed25519 AAAAED key").items():
+        _write_fake_command(bin_dir, name, content)
+    environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
+    environment["SSH_CONNECTION"] = "1.2.3.4 5555 9.9.9.9 22"
+
+    result = subprocess.run(
+        ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct", "--port", "2200"],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Cannot trust loopback SSH host keys" in result.stderr
+    assert not (tmp_path / "keyscan-trace").exists()
+    assert not calls.exists()
+    assert not (tmp_path / ".ssh").exists()
+    assert not (tmp_path / "state" / "ragtime-remote").exists()
 
 
 def test_posix_auto_without_tunnel_prerequisites_enrolls_direct_instead_of_failing(tmp_path):
@@ -224,7 +405,7 @@ def test_posix_auto_without_tunnel_prerequisites_enrolls_direct_instead_of_faili
     for command in bin_dir.iterdir():
         command.chmod(0o755)
     environment = {
-        **os.environ,
+        **_installer_environment(),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "HOME": str(tmp_path),
         "XDG_STATE_HOME": str(tmp_path / "state"),

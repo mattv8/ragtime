@@ -14,6 +14,10 @@ OFFLINE_PAIRING_ID=
 OFFLINE_PUBLIC_KEY=
 UNINSTALL=0
 TUNNEL_PREREQUISITE_ERROR=
+SSHD_PATH=
+PORT_SOURCE=
+SSH_CONNECTION_SERVER_ADDRESS=
+SSH_CONNECTION_SERVER_PORT=
 
 usage() {
   cat <<'EOF'
@@ -31,6 +35,31 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 need_value() { [ "$#" -gt 1 ] || die "Missing value for $1"; }
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | tr '\n' ' '; }
 valid_port() { case "$1" in ''|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null; }
+
+parse_ssh_connection() {
+  connection_fields=$(printf '%s\n' "${SSH_CONNECTION:-}" | awk '{ for (i = 1; i <= NF; i++) field[++count] = $i } END { if (count == 4) print field[3] "|" field[4] }')
+  [ -n "$connection_fields" ] || return 0
+  IFS='|' read -r SSH_CONNECTION_SERVER_ADDRESS SSH_CONNECTION_SERVER_PORT <<EOF
+$connection_fields
+EOF
+  valid_port "$SSH_CONNECTION_SERVER_PORT" || { SSH_CONNECTION_SERVER_ADDRESS=; SSH_CONNECTION_SERVER_PORT=; return 0; }
+  case "$SSH_CONNECTION_SERVER_ADDRESS" in ''|*[!0-9A-Fa-f:.]*) SSH_CONNECTION_SERVER_ADDRESS=; SSH_CONNECTION_SERVER_PORT=;; esac
+}
+
+find_sshd() {
+  # Test hook: a set-but-empty RAGTIME_SSHD_PATH disables executable lookup.
+  if [ "${RAGTIME_SSHD_PATH+x}" = x ]; then
+    SSHD_PATH=${RAGTIME_SSHD_PATH:-}
+  else
+    SSHD_PATH=$(command -v sshd 2>/dev/null || true)
+    [ -n "$SSHD_PATH" ] || SSHD_PATH=/usr/sbin/sshd
+  fi
+  [ -x "$SSHD_PATH" ]
+}
+
+filter_host_keys() {
+  awk 'NF >= 2 && $1 ~ /^(ssh-|ecdsa-)/ && $2 ~ /^[A-Za-z0-9+\/=]+$/ && !seen[$1 " " $2]++ { print $1 " " $2; if (++count == 6) exit }'
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -247,29 +276,20 @@ fi
 case "$PAIRING_ID" in *[!A-Za-z0-9_-]*|'') die 'Enrollment material returned an unsafe pairing ID';; esac
 case "$PUBLIC_KEY" in 'ssh-'*' '*) ;; *) die 'Enrollment material has an invalid public key';; esac
 
-if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "$(id -un)" ]; then
-  sudo -u "$TARGET_USER" mkdir -p "$SSH_DIR" "$STATE_DIR/$PAIRING_ID"
-else
-  mkdir -p "$SSH_DIR" "$STATE_DIR/$PAIRING_ID"
-fi
-chmod 700 "$SSH_DIR" "$STATE_DIR" "$STATE_DIR/$PAIRING_ID"
-  touch "$KEY_FILE"; chmod 600 "$KEY_FILE"
-  if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "$(id -un)" ]; then chown "$TARGET_USER" "$SSH_DIR" "$KEY_FILE" "$STATE_DIR" "$STATE_DIR/$PAIRING_ID"; fi
-key_tmp=$(mktemp "${TMPDIR:-/tmp}/ragtime-key.XXXXXX")
-awk -v tag="${TAG_PREFIX}$PAIRING_ID" -v key="$PUBLIC_KEY" '$0 ~ tag { if (!done++) print key " " tag; next } {print} END {if (!done) print key " " tag}' "$KEY_FILE" > "$key_tmp"
-cat "$key_tmp" > "$KEY_FILE"; rm -f "$key_tmp"
-command -v restorecon >/dev/null 2>&1 && restorecon "$SSH_DIR" "$KEY_FILE" 2>/dev/null || true
-
 detect_port() {
-  [ -n "$SSHD_PORT" ] && { valid_port "$SSHD_PORT" || die 'Invalid --port'; printf '%s' "$SSHD_PORT"; return; }
-  sshd_path=$(command -v sshd 2>/dev/null || printf /usr/sbin/sshd)
-  if [ -x "$sshd_path" ]; then
-    port=$($sshd_path -T 2>/dev/null | awk '$1 == "port" { print $2; exit }')
-    valid_port "${port:-}" && { printf '%s' "$port"; return; }
+  if [ -n "$SSHD_PORT" ]; then
+    valid_port "$SSHD_PORT" || die 'Invalid --port'
+    PORT_SOURCE=argument
+    return
   fi
-  printf '22'
+  if find_sshd; then
+    port=$("$SSHD_PATH" -T 2>/dev/null | awk '$1 == "port" { print $2; exit }')
+    if valid_port "${port:-}"; then SSHD_PORT=$port; PORT_SOURCE=sshd; return; fi
+  fi
+  if [ -n "$SSH_CONNECTION_SERVER_PORT" ]; then SSHD_PORT=$SSH_CONNECTION_SERVER_PORT; PORT_SOURCE=connection; return; fi
+  SSHD_PORT=22
+  PORT_SOURCE=default
 }
-SSHD_PORT=$(detect_port)
 
 ensure_sshd() {
   if [ "$(uname)" = Darwin ]; then
@@ -279,9 +299,9 @@ ensure_sshd() {
     fi
     return 0
   fi
-  command -v sshd >/dev/null 2>&1 && return 0
-  [ -x /usr/sbin/sshd ] && return 0
-  [ "$(id -u)" -eq 0 ] || die 'OpenSSH server is absent. Re-run with sudo or install/enable it using your OS policy.'
+  find_sshd && return 0
+  [ -n "$SSH_CONNECTION_SERVER_PORT" ] && return 0
+  [ "$(id -u)" -eq 0 ] || die 'No running SSH service detected. Re-run with sudo or install/enable it using your OS policy.'
   if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y openssh-server
   elif command -v dnf >/dev/null 2>&1; then dnf install -y openssh-server
   elif command -v yum >/dev/null 2>&1; then yum install -y openssh-server
@@ -294,7 +314,51 @@ ensure_sshd() {
   else die 'OpenSSH installed but no supported service manager was found; start sshd manually.'; fi
 }
 
+discover_host_keys() {
+  HOST_KEY_DIR=${RAGTIME_SSH_HOST_KEY_DIR:-/etc/ssh}
+  host_keys=$(for file in "$HOST_KEY_DIR"/ssh_host_*_key.pub; do [ -r "$file" ] && cat "$file"; done | filter_host_keys)
+  [ -n "$host_keys" ] && return
+  command -v ssh-keyscan >/dev/null 2>&1 || return
+  # Loopback keys only identify this SSH session when its port, or sshd's config, establishes that link.
+  if ! loopback_keys_trusted; then
+    if [ "$PORT_SOURCE" = argument ] && [ -n "$SSH_CONNECTION_SERVER_PORT" ] && [ "$SSHD_PORT" != "$SSH_CONNECTION_SERVER_PORT" ]; then
+      die 'Cannot trust loopback SSH host keys: --port differs from the current SSH session port.'
+    fi
+    return
+  fi
+  host_keys=$(ssh-keyscan -T 5 -p "$SSHD_PORT" 127.0.0.1 2>/dev/null | awk '$1 !~ /^#/ && NF >= 3 { print $2 " " $3 }' | filter_host_keys)
+}
+
+loopback_keys_trusted() {
+  [ "$PORT_SOURCE" = sshd ] || { [ -n "$SSH_CONNECTION_SERVER_PORT" ] && [ "$SSHD_PORT" = "$SSH_CONNECTION_SERVER_PORT" ]; }
+}
+
+discover_addresses() {
+  discovered_addresses=$( (command -v ip >/dev/null 2>&1 && ip -o addr show 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}') || (command -v ifconfig >/dev/null 2>&1 && ifconfig 2>/dev/null | awk '/inet6? / {print $2}' | sed 's/%.*//') || true )
+  printf '%s\n%s\n' "$SSH_CONNECTION_SERVER_ADDRESS" "$discovered_addresses" | awk '/^[0-9a-fA-F:.]+$/ && $0 !~ /^(127\.|169\.254\.|::1$|0:0:0:0:0:0:0:1$|fe80:)/ && !seen[$0]++ { printf "%s\"%s\"", (n++ ? "," : ""), $0; if (n == 8) exit }'
+}
+
+parse_ssh_connection
+detect_port
 ensure_sshd
+discover_host_keys
+[ -n "$host_keys" ] || die 'No readable or trusted SSH host keys were found; ensure sshd is running, or run from an SSH session on the enrolled port.'
+addresses_json=$(discover_addresses)
+host_keys_json=$(printf '%s\n' "$host_keys" | awk '{ printf "%s\"%s %s\"", (n++ ? "," : ""), $1, $2 }')
+
+if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "$(id -un)" ]; then
+  sudo -u "$TARGET_USER" mkdir -p "$SSH_DIR" "$STATE_DIR/$PAIRING_ID"
+else
+  mkdir -p "$SSH_DIR" "$STATE_DIR/$PAIRING_ID"
+fi
+chmod 700 "$SSH_DIR" "$STATE_DIR" "$STATE_DIR/$PAIRING_ID"
+touch "$KEY_FILE"; chmod 600 "$KEY_FILE"
+if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "$(id -un)" ]; then chown "$TARGET_USER" "$SSH_DIR" "$KEY_FILE" "$STATE_DIR" "$STATE_DIR/$PAIRING_ID"; fi
+key_tmp=$(mktemp "${TMPDIR:-/tmp}/ragtime-key.XXXXXX")
+awk -v tag="${TAG_PREFIX}$PAIRING_ID" -v key="$PUBLIC_KEY" '$0 ~ tag { if (!done++) print key " " tag; next } {print} END {if (!done) print key " " tag}' "$KEY_FILE" > "$key_tmp"
+cat "$key_tmp" > "$KEY_FILE"; rm -f "$key_tmp"
+command -v restorecon >/dev/null 2>&1 && restorecon "$SSH_DIR" "$KEY_FILE" 2>/dev/null || true
+
 EFFECTIVE_MODE=$MODE
 case "$MODE" in
   tunnel) preflight_tunnel_prerequisites || die "$TUNNEL_PREREQUISITE_ERROR" ;;
@@ -306,12 +370,6 @@ case "$MODE" in
     ;;
 esac
 hostname_value=$(hostname 2>/dev/null || printf unknown)
-addresses=$( (command -v ip >/dev/null 2>&1 && ip -o addr show 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}') || (command -v ifconfig >/dev/null 2>&1 && ifconfig 2>/dev/null | awk '/inet6? / {print $2}' | sed 's/%.*//') || true )
-addresses_json=$(printf '%s\n' "$addresses" | awk '/^[0-9a-fA-F:.]+$/ && $0 !~ /^(127\.|169\.254\.|::1$|fe80:)/ { printf "%s\"%s\"", (n++ ? "," : ""), $0; if (n == 8) exit }')
-HOST_KEY_DIR=${RAGTIME_SSH_HOST_KEY_DIR:-/etc/ssh}
-host_keys=$(for file in "$HOST_KEY_DIR"/ssh_host_*_key.pub; do [ -r "$file" ] && cat "$file"; done | head -n 6)
-host_keys_json=$(printf '%s\n' "$host_keys" | awk 'NF >= 2 && $1 ~ /^ssh-/ { printf "%s\"%s %s\"", (n++ ? "," : ""), $1, $2 }')
-[ -n "$host_keys_json" ] || die 'No SSH host keys were found; start/enable sshd and rerun before enrollment.'
 python_available=false; command -v python3 >/dev/null 2>&1 && python_available=true
 tunnel_errors=
 [ -z "$TUNNEL_PREREQUISITE_ERROR" ] || tunnel_errors="\"$(json_escape "$TUNNEL_PREREQUISITE_ERROR")\""
