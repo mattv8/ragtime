@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RemoteClientPairingPanel } from './RemoteClientPairingPanel';
 import type { RemotePairingCreatedResponse } from '@/types';
@@ -375,5 +375,106 @@ describe('RemoteClientPairingPanel', () => {
     await waitFor(() =>
       expect(apiMock.completeRemotePairingOffline).toHaveBeenCalledWith('pairing-1', 'blob'),
     );
+  });
+
+  const targetUserHelpName = 'Choose a Windows SSH account';
+
+  it('offers Windows target-user help beside the command label in online and offline modes', async () => {
+    apiMock.getRemotePairing.mockResolvedValue({ ...createdPairing, status: 'pending' });
+
+    render(
+      <RemoteClientPairingPanel
+        toolType="windows_shell"
+        pairingId="pairing-1"
+        onPairingCreated={vi.fn()}
+        onPairingUpdated={vi.fn()}
+      />,
+    );
+
+    const trigger = await screen.findByRole('button', { name: targetUserHelpName });
+    expect(trigger.id).toBe('rc-target-user-help-trigger');
+    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
+    const label = screen.getByText('Run on the target machine as the account Ragtime should use');
+    expect(label.parentElement?.contains(trigger)).toBe(true);
+    const copyButton = screen.getByRole('button', { name: 'Copy installation command' });
+    expect(label.parentElement?.contains(copyButton)).toBe(false);
+
+    fireEvent.click(screen.getByLabelText('Offline'));
+    expect(screen.getByRole('button', { name: targetUserHelpName })).toBe(trigger);
+  });
+
+  it('omits target-user help from POSIX commands', async () => {
+    apiMock.getRemotePairing.mockResolvedValue({ ...createdPairing, status: 'pending' });
+
+    render(
+      <RemoteClientPairingPanel
+        toolType="ssh_shell"
+        pairingId="pairing-1"
+        onPairingCreated={vi.fn()}
+        onPairingUpdated={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('Waiting for installer to run…');
+    expect(screen.queryByRole('button', { name: targetUserHelpName })).toBeNull();
+    fireEvent.click(screen.getByLabelText('macOS'));
+    expect(screen.queryByRole('button', { name: targetUserHelpName })).toBeNull();
+  });
+
+  it('shows the literal -TargetUser flag in a real dialog and closes it with Escape', async () => {
+    apiMock.getRemotePairing.mockResolvedValue({ ...createdPairing, status: 'pending' });
+
+    render(
+      <RemoteClientPairingPanel
+        toolType="windows_shell"
+        pairingId="pairing-1"
+        onPairingCreated={vi.fn()}
+        onPairingUpdated={vi.fn()}
+      />,
+    );
+
+    const trigger = await screen.findByRole('button', { name: targetUserHelpName });
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const dialog = await screen.findByRole('alertdialog', { name: 'Choose a Windows SSH account' });
+    expect(within(dialog).getByText("-TargetUser 'PCNAME\\username'").tagName).toBe('CODE');
+    expect(dialog.textContent).toMatch(/elevated PowerShell/);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Got it' })),
+    );
+
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+    expect(screen.getByText('run-ps')).toBeTruthy();
+    expect(screen.getByText('Waiting for installer to run…')).toBeTruthy();
+  });
+
+  it('closes target-user help from Got it without changing the command', async () => {
+    apiMock.getRemotePairing.mockResolvedValue({ ...createdPairing, status: 'pending' });
+
+    render(
+      <RemoteClientPairingPanel
+        toolType="windows_shell"
+        pairingId="pairing-1"
+        onPairingCreated={vi.fn()}
+        onPairingUpdated={vi.fn()}
+      />,
+    );
+
+    const trigger = await screen.findByRole('button', { name: targetUserHelpName });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole('alertdialog', { name: 'Choose a Windows SSH account' });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Got it' })),
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Got it' }));
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+    expect(screen.getByText('run-ps')).toBeTruthy();
   });
 });

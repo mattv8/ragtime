@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Info } from 'lucide-react';
 import { api } from '@/api';
 import type { RemotePairingCreatedResponse, RemotePairingResponse, ToolType } from '@/types';
 import { InlineCopyButton } from './shared/InlineCopyButton';
+import { NoticeDialog } from './shared/NoticeDialog';
 
 type TargetOs = 'linux' | 'windows' | 'mac';
 type ConnectivityMode = 'online' | 'offline';
 const POLL_INTERVAL_MS = 2000;
 const RETRY_INTERVAL_MS = 2500;
+const TARGET_USER_FLAG = "-TargetUser 'PCNAME\\username'";
 
 interface RemoteClientPairingPanelProps {
   toolType: Extract<ToolType, 'ssh_shell' | 'windows_shell'>;
@@ -77,6 +80,7 @@ export function RemoteClientPairingPanel({
   const [offlineBlob, setOfflineBlob] = useState('');
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [targetUserHelpOpen, setTargetUserHelpOpen] = useState(false);
 
   useEffect(() => {
     const options = targetOsOptions(toolType);
@@ -306,9 +310,24 @@ export function RemoteClientPairingPanel({
         aria-label="Installation command"
       >
         <div className="rc-command-toolbar">
-          <span className="rc-command-label">
-            Run on the target machine as the account Ragtime should use
-          </span>
+          <div className="rc-command-heading">
+            <span className="rc-command-label">
+              Run on the target machine as the account Ragtime should use
+            </span>
+            {targetOs === 'windows' && (
+              <button
+                id="rc-target-user-help-trigger"
+                type="button"
+                className="btn btn-secondary btn-icon"
+                aria-label="Choose a Windows SSH account"
+                aria-haspopup="dialog"
+                title="Choose a Windows SSH account"
+                onClick={() => setTargetUserHelpOpen(true)}
+              >
+                <Info size={14} aria-hidden="true" />
+              </button>
+            )}
+          </div>
           <InlineCopyButton
             className="btn btn-secondary"
             copyText={command}
@@ -362,6 +381,22 @@ export function RemoteClientPairingPanel({
           </span>
         )}
       </section>
+      {targetOs === 'windows' && targetUserHelpOpen && (
+        <NoticeDialog
+          dialogKey="rc-target-user-help"
+          title="Choose a Windows SSH account"
+          confirmLabel="Got it"
+          onClose={() => setTargetUserHelpOpen(false)}
+          message={
+            <>
+              Append <code className="font-mono">{TARGET_USER_FLAG}</code> to the end of the copied
+              command to select the SSH account. Replace PCNAME with the computer name and username
+              with the account name. Run the command in elevated PowerShell; the account needs a
+              Windows profile (sign in once first).
+            </>
+          }
+        />
+      )}
       {pairing.status === 'failed' && (
         <div
           id="rc-verification-failed"
