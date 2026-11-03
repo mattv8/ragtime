@@ -400,4 +400,8 @@ transport=$(json_optional_field "$response" transport)
 status=$(json_optional_field "$response" status)
   case "$status:$transport" in failed:*|revoked:*|expired:*|consumed:direct|consumed:'') die "Enrollment did not pair the host (status: ${status:-unknown}).";; esac
 [ "$transport" != tunnel ] || install_tunnel_service
-printf 'Paired %s for account %s on SSH port %s. Existing SSH authentication policies were not changed.\n' "$PAIRING_ID" "$TARGET_USER" "$SSHD_PORT"
+if [ "$status" = paired ]; then
+  printf 'Paired %s for account %s on SSH port %s. Existing SSH authentication policies were not changed.\n' "$PAIRING_ID" "$TARGET_USER" "$SSHD_PORT"
+else
+  printf 'Installation complete for %s on SSH port %s; SSH verification is pending. Continue in the Ragtime wizard only after it confirms verified pairing for account %s.\n' "$PAIRING_ID" "$SSHD_PORT" "$TARGET_USER"
+fi
