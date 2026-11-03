@@ -1957,4 +1957,115 @@ describe('ToolWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Quick Connect' }));
     await screen.findByText('Connected — target');
   });
+
+  function windowsPendingCreation() {
+    return {
+      id: 'pairing-windows',
+      tool_id: 'windows-tool',
+      status: 'pending' as const,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      facts: null,
+      connection_config: { shell: 'powershell' as const, pairing_id: 'pairing-windows' },
+      public_key: 'ssh-ed25519 AAAAWIN',
+      commands: {
+        sh: 'run-sh',
+        powershell: 'run-ps',
+        offline_sh: 'offline-sh',
+        offline_powershell: 'offline-ps',
+      },
+    };
+  }
+
+  function windowsQuickPairing(
+    status: 'paired' | 'failed' | 'expired' | 'revoked',
+    error: string | null,
+  ) {
+    return {
+      id: 'pairing-windows',
+      tool_id: 'windows-tool',
+      status,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      error,
+      transport: 'tunnel' as const,
+      facts: {
+        os: 'windows' as const,
+        username: 'VISNOVSKY\\Matt',
+        hostname: 'visnovsky-win',
+        addresses: ['10.0.0.5'],
+        sshd_port: 22,
+        host_keys: ['ssh-ed25519 AAAAWIN'],
+        shared_admin_keyfile: false,
+        errors: [],
+        python_available: false,
+      },
+      connection_config: {
+        host: 'visnovsky-win',
+        user: 'VISNOVSKY\\Matt',
+        pairing_id: 'pairing-windows',
+        transport: 'tunnel' as const,
+        shell: 'powershell' as const,
+        host_keys: ['ssh-ed25519 AAAAWIN'],
+      },
+      public_key: 'ssh-ed25519 AAAAWIN',
+      commands: {
+        sh: 'run-sh',
+        powershell: 'run-ps',
+        offline_sh: 'offline-sh',
+        offline_powershell: 'offline-ps',
+      },
+    };
+  }
+
+  it.each([
+    ['failed', 'SSH authentication failed: Authentication failed: transport shut down or saw EOF'],
+    ['expired', null],
+    ['revoked', null],
+  ] as const)(
+    'keeps quick Windows Continue disabled when reported facts have status %s',
+    async (status, error) => {
+      apiMock.createRemotePairing.mockResolvedValue(windowsPendingCreation());
+      apiMock.getRemotePairing.mockResolvedValue(windowsQuickPairing(status, error));
+
+      render(
+        <ToolWizard
+          existingTool={null}
+          onClose={vi.fn()}
+          onSave={vi.fn()}
+          defaultToolType="windows_shell"
+        />,
+      );
+
+      await screen.findByText('visnovsky-win');
+      expect(apiMock.getRemotePairing).toHaveBeenCalledWith('pairing-windows');
+      expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(true);
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+      expect(screen.getByLabelText('Installation command')).toBeTruthy();
+      expect(screen.queryByText('Max Timeout (seconds)')).toBeNull();
+    },
+  );
+
+  it('advances quick Windows pairing to execution only after status is paired', async () => {
+    apiMock.createRemotePairing.mockResolvedValue(windowsPendingCreation());
+    apiMock.getRemotePairing.mockResolvedValue(windowsQuickPairing('paired', null));
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        defaultToolType="windows_shell"
+      />,
+    );
+
+    await screen.findByText('visnovsky-win');
+    expect(apiMock.getRemotePairing).toHaveBeenCalledWith('pairing-windows');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByText('Max Timeout (seconds)')).toBeTruthy();
+    expect(screen.queryByLabelText('Installation command')).toBeNull();
+  });
 });

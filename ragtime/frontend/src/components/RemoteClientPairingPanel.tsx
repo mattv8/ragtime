@@ -49,6 +49,14 @@ function commandFor(
     : pairing.commands[windows ? 'powershell' : 'sh'];
 }
 
+function isDomainAccount(username: string, hostname: string): boolean {
+  if (username.includes('@')) return true;
+  const [accountDomain, accountName] = username.split('\\', 2);
+  return Boolean(
+    accountDomain && accountName && accountDomain.toLowerCase() !== hostname.toLowerCase(),
+  );
+}
+
 export function RemoteClientPairingPanel({
   toolType,
   pairingId,
@@ -197,6 +205,13 @@ export function RemoteClientPairingPanel({
   const command = commandFor(pairing, targetOs, connectivityMode);
   const osOptions = targetOsOptions(toolType);
   const facts = pairing.facts;
+  const failureTarget = facts?.os ?? targetOs;
+  const windowsEofHint =
+    pairing.status === 'failed' &&
+    failureTarget === 'windows' &&
+    /transport shut down or saw EOF/i.test(pairing.error ?? '');
+  const domainAccountHint =
+    windowsEofHint && facts ? isDomainAccount(facts.username, facts.hostname) : false;
   return (
     <section
       data-wizard-step="connection"
@@ -321,9 +336,7 @@ export function RemoteClientPairingPanel({
             )}
             {pairing.status === 'pending' && 'Waiting for installer to run…'}
             {pairing.status === 'consumed' && 'Installer ran. Probing connection…'}
-            {pairing.status === 'failed' &&
-              (pairing.error ||
-                'The installer could not complete pairing. Generate a new command to try again.')}
+            {pairing.status === 'failed' && 'Pairing failed. Generate a new command to try again.'}
             {pairing.status === 'expired' && 'Generate a new command to continue.'}
             {pairing.status === 'revoked' &&
               'This pairing was revoked. Create a new tool to reconnect.'}
@@ -333,8 +346,12 @@ export function RemoteClientPairingPanel({
             <span className="rc-command-expiry">
               {!expired &&
                 `Expires in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`}
-              <button type="button" className="link-btn" onClick={() => void regenerate()}>
-                {expired ? 'Generate new command' : 'Generate new'}
+              <button
+                type="button"
+                className={pairing.status === 'failed' ? 'btn btn-secondary' : 'link-btn'}
+                onClick={() => void regenerate()}
+              >
+                {expired || pairing.status === 'failed' ? 'Generate new command' : 'Generate new'}
               </button>
             </span>
           )}
@@ -345,6 +362,54 @@ export function RemoteClientPairingPanel({
           </span>
         )}
       </section>
+      {pairing.status === 'failed' && (
+        <div
+          id="rc-verification-failed"
+          data-rc-section="verification-failed"
+          className="tool-access-callout tool-access-callout-warning"
+          style={{ color: 'var(--color-text-primary)' }}
+          role="alert"
+        >
+          <strong>Connection not verified</strong>
+          <p>
+            Ragtime could not confirm the SSH connection, so Continue stays disabled until a pairing
+            succeeds.
+          </p>
+          {facts && (
+            <p>The target details below were reported by the installer and are not verified.</p>
+          )}
+          <p>
+            Server error:{' '}
+            <code className="font-mono">{pairing.error || 'No error detail was reported.'}</code>
+          </p>
+          {windowsEofHint && (
+            <>
+              <p>
+                <strong>
+                  The SSH connection to Windows closed during authentication or verification.
+                </strong>{' '}
+                Possible causes:
+              </p>
+              <ul>
+                <li>
+                  Review Event Viewer › Applications and Services Logs › OpenSSH › Admin for errors.
+                </li>
+                {domainAccountHint && (
+                  <li>
+                    For a domain account, confirm the host can reach a domain controller and
+                    initialize the account.
+                  </li>
+                )}
+              </ul>
+            </>
+          )}
+          <p>
+            Run a new command (<strong>Generate new command</strong> above) while signed in as the
+            account Ragtime should use, or enter credentials in <strong>Manual (SSH)</strong>.
+            Ragtime does not switch accounts for you.
+          </p>
+        </div>
+      )}
       {networkError && (
         <div className="tool-access-callout tool-access-callout-warning" role="alert">
           {networkError}
@@ -364,7 +429,15 @@ export function RemoteClientPairingPanel({
       )}
       {facts && (
         <>
-          <dl data-rc-section="facts" className="rc-facts-list" aria-label="Target details">
+          <dl
+            data-rc-section="facts"
+            className="rc-facts-list"
+            aria-label={
+              pairing.status === 'failed'
+                ? 'Target details reported by installer (not verified)'
+                : 'Target details'
+            }
+          >
             <div>
               <dt>Host</dt>
               <dd>{facts.hostname}</dd>

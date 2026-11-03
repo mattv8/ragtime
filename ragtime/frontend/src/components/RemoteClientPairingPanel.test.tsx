@@ -94,6 +94,152 @@ describe('RemoteClientPairingPanel', () => {
     await waitFor(() => expect(apiMock.createRemotePairing).not.toHaveBeenCalled());
   });
 
+  it('binds a failed verification diagnostic once in an accessible alert', async () => {
+    const diagnostic = 'SSH authentication failed: transport shut down or saw EOF';
+    apiMock.getRemotePairing.mockResolvedValue({
+      ...createdPairing,
+      status: 'failed',
+      error: diagnostic,
+      facts: {
+        os: 'windows',
+        username: 'VISNOVSKY\\Matt',
+        hostname: 'ELFYPCMINI',
+        addresses: [],
+        sshd_port: 22,
+        host_keys: [],
+        shared_admin_keyfile: false,
+        errors: [],
+        python_available: false,
+      },
+    });
+
+    render(
+      <RemoteClientPairingPanel
+        toolType="windows_shell"
+        pairingId="pairing-1"
+        onPairingCreated={vi.fn()}
+        onPairingUpdated={vi.fn()}
+      />,
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.id).toBe('rc-verification-failed');
+    expect(alert.dataset.rcSection).toBe('verification-failed');
+    expect(alert.textContent).toContain(diagnostic);
+    expect(screen.getAllByText(diagnostic)).toHaveLength(1);
+    expect(document.querySelector('[data-rc-section="facts"]')?.getAttribute('aria-label')).toBe(
+      'Target details reported by installer (not verified)',
+    );
+    expect(alert.textContent).toMatch(/Event Viewer/i);
+    expect(alert.textContent).toMatch(/domain controller/i);
+  });
+
+  it('limits Windows EOF guidance to the applicable failed connection', async () => {
+    const localPairing = {
+      ...createdPairing,
+      status: 'failed' as const,
+      error: 'SSH authentication failed',
+      facts: {
+        os: 'windows' as const,
+        username: 'ELFYPCMINI\\admin',
+        hostname: 'ELFYPCMINI',
+        addresses: [],
+        sshd_port: 22,
+        host_keys: [],
+        shared_admin_keyfile: false,
+        errors: [],
+        python_available: false,
+      },
+    };
+    apiMock.getRemotePairing.mockResolvedValue(localPairing);
+
+    const view = render(
+      <RemoteClientPairingPanel
+        toolType="windows_shell"
+        pairingId="pairing-1"
+        onPairingCreated={vi.fn()}
+        onPairingUpdated={vi.fn()}
+      />,
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).not.toMatch(/Event Viewer/i);
+
+    const localDiagnostic = 'SSH connection failed: transport shut down or saw EOF';
+    apiMock.getRemotePairing.mockResolvedValue({ ...localPairing, error: localDiagnostic });
+    view.rerender(
+      <RemoteClientPairingPanel
+        toolType="windows_shell"
+        pairingId="pairing-local"
+        onPairingCreated={vi.fn()}
+        onPairingUpdated={vi.fn()}
+      />,
+    );
+    await screen.findByText(localDiagnostic);
+    expect(screen.getByRole('alert').textContent).toMatch(/Event Viewer/i);
+    expect(screen.getByRole('alert').textContent).not.toMatch(/domain controller/i);
+
+    apiMock.getRemotePairing.mockResolvedValue({
+      ...createdPairing,
+      status: 'failed',
+      error: 'transport shut down or saw EOF',
+      facts: {
+        os: 'linux',
+        username: 'deploy',
+        hostname: 'server-1',
+        addresses: [],
+        sshd_port: 22,
+        host_keys: [],
+        shared_admin_keyfile: false,
+        errors: [],
+        python_available: true,
+      },
+    });
+    view.rerender(
+      <RemoteClientPairingPanel
+        toolType="ssh_shell"
+        pairingId="pairing-2"
+        onPairingCreated={vi.fn()}
+        onPairingUpdated={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('server-1');
+    expect(screen.getByRole('alert').textContent).not.toMatch(/Event Viewer/i);
+  });
+
+  it('clears a failed alert and resumes polling after generating a new command', async () => {
+    apiMock.getRemotePairing
+      .mockResolvedValueOnce({
+        ...createdPairing,
+        status: 'failed',
+        error: 'verification failed',
+      })
+      .mockResolvedValueOnce({ ...createdPairing, id: 'pairing-2', status: 'paired' });
+    apiMock.regenerateRemotePairing.mockResolvedValue({
+      ...createdPairing,
+      id: 'pairing-2',
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    render(
+      <RemoteClientPairingPanel
+        toolType="ssh_shell"
+        pairingId="pairing-1"
+        onPairingCreated={vi.fn()}
+        onPairingUpdated={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole('alert');
+    fireEvent.click(screen.getByRole('button', { name: 'Generate new command' }));
+
+    await waitFor(() => expect(apiMock.regenerateRemotePairing).toHaveBeenCalledWith('pairing-1'));
+    await waitFor(() => expect(apiMock.getRemotePairing).toHaveBeenCalledWith('pairing-2'));
+    await screen.findByText('Connected — target');
+    expect(document.querySelector('#rc-verification-failed')).toBeNull();
+  });
+
   it('stops polling on unmount without cancelling the persisted pairing', async () => {
     apiMock.getRemotePairing.mockResolvedValue({ ...createdPairing, status: 'pending' });
     const view = render(
