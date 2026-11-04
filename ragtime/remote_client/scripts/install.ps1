@@ -557,6 +557,11 @@ function Invoke-RemovalFinalizer([string]$PairingId, [string]$Mode, [string]$Con
     } finally { Complete-RemovalFinalizer $PairingId }
 }
 
+function Get-EnrollmentOutcomeMessage([object]$Response, [string]$PairingId, [string]$AccountName, [object]$SshdPort) {
+    if ($Response.status -eq 'paired') { return "Paired $PairingId for exact account $AccountName on SSH port $SshdPort. Existing SSH policy was not weakened." }
+    return "Installation complete for $PairingId on SSH port $SshdPort; SSH verification is pending. Continue in the Ragtime wizard only after it confirms verified pairing for account $AccountName. Existing SSH policy was not weakened."
+}
+
 # RAGTIME_INSTALLER_ENTRYPOINT
 if ($Uninstall) {
     $Uninstall = Assert-PairingId $Uninstall
@@ -643,7 +648,7 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
             }
             Start-ScheduledTask -TaskName "RagtimeRemote-$($material.pairing_id)"
         }
-        Write-Output "Paired $($material.pairing_id) for exact account $($identity.Name) on SSH port $sshdPort. Existing SSH policy was not weakened."
+        Write-Output (Get-EnrollmentOutcomeMessage $response $material.pairing_id $identity.Name $sshdPort)
         exit 0
     } catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds $attempt }
 }

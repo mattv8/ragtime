@@ -12126,6 +12126,23 @@ fieldset legend.legend-with-status .legend-divider {
   overflow-wrap: anywhere;
 }
 
+.rc-command-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+[data-notice-dialog='rc-target-user-help'] {
+  width: 100vw;
+  height: 100dvh;
+}
+
+[data-notice-dialog='rc-target-user-help'] .modal-footer .btn {
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
+}
+
 .rc-command-block pre {
   max-width: 100%;
   min-width: 0;
@@ -12164,6 +12181,10 @@ fieldset legend.legend-with-status .legend-divider {
 }
 
 @media (pointer: coarse) {
+  #rc-target-user-help-trigger {
+    min-width: 44px;
+  }
+
   .remote-client-pairing .connection-tab,
   .rc-command-toolbar .btn,
   .rc-command-expiry .link-btn {

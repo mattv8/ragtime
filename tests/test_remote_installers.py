@@ -87,13 +87,15 @@ def test_posix_openrc_tunnel_install_and_uninstall_generate_owned_unit(tmp_path)
         "OPENRC_TRACE": str(trace),
         "RAGTIME_SSH_HOST_KEY_DIR": str(host_key_dir),
     }
-    subprocess.run(
+    result = subprocess.run(
         ["sh", str(installer), "--server-url", "https://example", "--token", "token", "--mode", "tunnel", "--tunnel-client", str(client)],
         env=environment,
         check=True,
         capture_output=True,
         text=True,
     )
+    assert "Paired" not in result.stdout
+    assert "pending" in result.stdout
     unit = init_dir / "ragtime-remote-pair_openrc"
     assert "supervisor=supervise-daemon" in unit.read_text()
     subprocess.run(["sh", str(installer), "--uninstall", "pair_openrc"], env=environment, check=True, capture_output=True, text=True)
@@ -197,7 +199,8 @@ def test_posix_online_rerun_reuses_nonce_and_adds_one_tagged_key(tmp_path):
     }
     command = ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct"]
     subprocess.run(command, env=environment, check=True, capture_output=True, text=True)
-    subprocess.run(command, env=environment, check=True, capture_output=True, text=True)
+    result = subprocess.run(command, env=environment, check=True, capture_output=True, text=True)
+    assert result.stdout.startswith("Paired pair_1 ")
     assert (tmp_path / ".ssh" / "authorized_keys").read_text().count("# ragtime-remote:pair_1") == 1
     payloads = [line for line in calls.read_text().splitlines() if line.startswith('{"nonce"')]
     assert len(payloads) == 2
@@ -568,3 +571,29 @@ if ($trace.Count -ne 0) {{ throw 'running service was changed' }}
 """
     )
     subprocess.run([str(pwsh), "-NoProfile", "-File", str(harness)], check=True, capture_output=True, text=True)
+
+
+def _enrollment_outcome(tmp_path: Path, response: str) -> str:
+    pwsh = _pwsh()
+    harness = tmp_path / "outcome-test.ps1"
+    harness.write_text(_installer_functions() + f"\nWrite-Output (Get-EnrollmentOutcomeMessage ({response}) 'pair_win' 'user' 2222)\n")
+    result = subprocess.run([str(pwsh), "-NoProfile", "-File", str(harness)], check=True, capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def test_windows_tunnel_enrollment_before_ssh_verification_is_reported_pending_not_paired(tmp_path):
+    output = _enrollment_outcome(tmp_path, "[pscustomobject]@{ status = 'consumed'; transport = 'tunnel' }")
+    assert not output.startswith("Paired")
+    assert "pending" in output
+    assert "wizard" in output
+
+
+@pytest.mark.parametrize(
+    "response",
+    ["[pscustomobject]@{ status = 'paired'; transport = 'direct' }", "[pscustomobject]@{ status = 'paired'; transport = 'tunnel' }"],
+    ids=["direct", "tunnel"],
+)
+def test_windows_verified_enrollment_keeps_paired_success(tmp_path, response):
+    output = _enrollment_outcome(tmp_path, response)
+    assert output.startswith("Paired pair_win ")
+    assert "pending" not in output
