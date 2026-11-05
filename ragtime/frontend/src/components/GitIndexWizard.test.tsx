@@ -29,6 +29,7 @@ const apiMock = vi.hoisted(() => ({
   renameIndex: vi.fn(),
   updateIndexDescription: vi.fn(),
   updateIndexConfig: vi.fn(),
+  getVisionModels: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({ api: apiMock }));
@@ -39,11 +40,6 @@ vi.mock('./AnalysisStats', () => ({
 
 vi.mock('./IndexConfigFields', () => ({
   IndexConfigFields: () => <div>config fields</div>,
-}));
-
-vi.mock('./OcrVectorStoreFields', () => ({
-  OcrVectorStoreFields: () => <div>ocr fields</div>,
-  OCR_PROVIDER_LABELS: {},
 }));
 
 vi.mock('./FileTypeStatsTable', () => ({

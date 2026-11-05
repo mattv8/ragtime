@@ -22,6 +22,9 @@ NON_GENERATIVE_CALL_EXEMPTIONS = {
     ("ragtime/rag/components.py", "_get_context_from_retrievers_async", "retriever.ainvoke"),
     # Index-description generation belongs to indexing, not Chat or User Space.
     ("ragtime/indexer/service.py", "generate_index_description", "llm.ainvoke"),
+    # Claude Code vision OCR text extraction for indexing and attachment ingestion: no agent tools,
+    # output is extracted text only. Indexing authorization and chat admission/generation gates remain upstream.
+    ("ragtime/core/vision_models.py", "_request_claude_code_vision_response", "client.ainvoke"),
 }
 
 # The classifier has no agent/tools path and only returns the strict verdict schema.

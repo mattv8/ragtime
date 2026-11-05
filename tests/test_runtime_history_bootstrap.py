@@ -20,6 +20,7 @@ from runtime.worker.sqlite_history.coordinator import SqliteHistoryCoordinator
 from runtime.worker.sqlite_history.models import RESTIC_IMAGE_PATH
 from runtime.worker.sqlite_history.repository import ResticRepository
 from runtime.worker.sqlite_history.service import RuntimeSqliteHistoryService
+from tests.restic_test_support import seed_fast_restic_repository
 
 
 class _Repository:
@@ -421,6 +422,12 @@ class BootstrapManagerTests(unittest.IsolatedAsyncioTestCase):
             cache_path=self.root / "_sqlite_history" / "cache",
             password_path=self.root / "_sqlite_history" / "secrets" / "password",
             scratch_path=self.root / "_sqlite_history" / "scratch",
+            binary=binary,
+        )
+        seed_fast_restic_repository(
+            self.root / "_sqlite_history" / "restic",
+            self.root / "_sqlite_history" / "cache",
+            self.root / "_sqlite_history" / "secrets" / "password",
             binary=binary,
         )
         service = RuntimeSqliteHistoryService(self.root, object(), repository)

@@ -49,6 +49,16 @@
   }
 }
 
+/* Paired Windows deletion dialog */
+@media (pointer: coarse) {
+  #tool-delete-dialog .modal-close,
+  #tool-delete-dialog .tool-delete-dialog-radio-label,
+  #tool-delete-dialog .tool-delete-dialog-checkbox-label,
+  #tool-delete-dialog .btn {
+    min-height: var(--control-height);
+  }
+}
+
 /* Narrow desktop breakpoint (1250px and below) — collapse user-menu to avatar only */
 @media (max-width: 1250px) {
   .user-menu-name,
@@ -76,6 +86,29 @@
 
 /* Tablet breakpoint (768px and below) */
 @media (max-width: 768px) {
+  #tool-delete-dialog .modal-body {
+    padding: var(--space-md);
+  }
+
+  #tool-delete-dialog [data-tool-delete-cleanup-options] {
+    display: grid;
+    gap: var(--space-xs);
+  }
+
+  #tool-delete-dialog .tool-delete-dialog-radio-label,
+  #tool-delete-dialog .tool-delete-dialog-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  #tool-delete-dialog [data-tool-delete-recovery-command] pre {
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
   body {
     padding: var(--space-sm);
   }

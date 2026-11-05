@@ -7,6 +7,7 @@ import { UploadForm } from './UploadForm';
 
 const apiMock = vi.hoisted(() => ({
   getSettings: vi.fn(),
+  getVisionModels: vi.fn(),
   analyzeUpload: vi.fn(),
   uploadAndIndex: vi.fn(),
 }));
@@ -27,10 +28,6 @@ vi.mock('./shared/FileDropZone', () => ({
 vi.mock('./DescriptionField', () => ({ DescriptionField: () => null }));
 vi.mock('./AnalysisStats', () => ({ AnalysisStats: () => null }));
 vi.mock('./IndexConfigFields', () => ({ IndexConfigFields: () => null }));
-vi.mock('./OcrVectorStoreFields', () => ({
-  OcrVectorStoreFields: () => null,
-  OCR_PROVIDER_LABELS: {},
-}));
 vi.mock('./FileTypeStatsTable', () => ({ FileTypeStatsTable: () => null }));
 vi.mock('./SuggestedExclusionsBanner', () => ({ SuggestedExclusionsBanner: () => null }));
 vi.mock('./WarningsBanner', () => ({ WarningsBanner: () => null }));

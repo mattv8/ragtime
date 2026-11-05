@@ -159,7 +159,13 @@ vi.mock('./DeleteConfirmButton', () => ({
     className?: string;
     title?: string;
   }) => (
-    <button type="button" className={className} title={title} onClick={onDelete}>
+    <button
+      type="button"
+      className={className}
+      title={title}
+      data-delete-confirm-button
+      onClick={onDelete}
+    >
       Delete
     </button>
   ),
@@ -269,6 +275,19 @@ const httpApiTool: ToolConfig = {
   last_test_error: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
+};
+
+const pairedWindowsTool: ToolConfig = {
+  ...ungroupedTool,
+  id: 'tool-windows-paired',
+  name: 'Paired Windows Tool',
+  tool_type: 'windows_shell',
+  connection_config: {
+    host: 'windows.example.org',
+    user: 'administrator',
+    port: 22,
+    pairing_id: 'a0a0a0a0-0000-4000-8000-000000000000',
+  },
 };
 
 const toolGroup: ToolGroup = {
@@ -577,6 +596,28 @@ describe('ToolsPanel', () => {
     await waitFor(() => {
       expect(apiMock.deleteToolConfig).toHaveBeenCalledWith('tool-ungrouped');
     });
+  });
+
+  it('opens Windows cleanup confirmation from both tool deletion entrypoints', async () => {
+    const user = userEvent.setup();
+    apiMock.getSettings.mockResolvedValue({
+      settings: { show_tool_card_footer_actions: true },
+    });
+    apiMock.listToolConfigs.mockResolvedValue([pairedWindowsTool]);
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Paired Windows Tool');
+    await user.click(screen.getByTitle('Delete tool'));
+    expect(await screen.findByRole('heading', { name: 'Delete paired Windows tool' })).toBeTruthy();
+    expect(apiMock.deleteToolConfig).not.toHaveBeenCalled();
+    expect(document.querySelector('[title="Delete tool"][data-delete-confirm-button]')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.contextMenu(screen.getByText('Paired Windows Tool'));
+    const contextDeleteButtons = await screen.findAllByRole('button', { name: /^Delete$/ });
+    await user.click(contextDeleteButtons[contextDeleteButtons.length - 1]);
+    expect(await screen.findByRole('heading', { name: 'Delete paired Windows tool' })).toBeTruthy();
   });
 
   it('shows write badge on the card when write access is enabled', async () => {

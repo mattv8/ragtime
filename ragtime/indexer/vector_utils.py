@@ -41,6 +41,7 @@ logger = get_logger(__name__)
 
 PGVECTOR_MAX_INDEX_DIM = 2000
 _PGVECTOR_VALIDATED = False
+FILESYSTEM_STAGING_PREFIX = "__filesystem_staging__"
 
 # Default column sets for common embedding tables
 # Base columns shared across all embedding tables
@@ -693,6 +694,10 @@ async def search_pgvector_embeddings(
 
         # Build WHERE clause components
         where_parts = []
+        if table_name == "filesystem_embeddings":
+            if index_name and index_name.startswith(FILESYSTEM_STAGING_PREFIX):
+                raise ValueError("Filesystem staging indexes cannot be searched")
+            where_parts.append(f"LEFT(index_name, {len(FILESYSTEM_STAGING_PREFIX)}) <> '{FILESYSTEM_STAGING_PREFIX}'")
         if index_name:
             # Escape single quotes to prevent SQL injection
             safe_index_name = index_name.replace("'", "''")

@@ -151,9 +151,16 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
             activation = Path(temp) / "_userspace" / "sqlite-history-runtime-activation-v2.json"
             activation.parent.mkdir()
             activation.write_text("{}")
-            service._worker_task = asyncio.create_task(service._run_claimed(job))
-            await get_started.wait()
-            await service.stop()
+            worker = asyncio.create_task(service._run_claimed(job))
+            service._worker_task = worker
+            started = asyncio.create_task(get_started.wait())
+            done, _pending = await asyncio.wait({started, worker}, timeout=30, return_when=asyncio.FIRST_COMPLETED)
+            if started not in done:
+                started.cancel()
+                if worker in done:
+                    worker.result()
+                self.fail("claimed job never reached the initial job read")
+            await asyncio.wait_for(service.stop(), timeout=30)
 
         self.assertFalse(store.finished)
         capture.assert_not_awaited()

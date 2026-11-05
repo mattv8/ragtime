@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path as _Path
 from pathlib import PurePosixPath
@@ -125,6 +125,7 @@ class SSHConfig:
     host_keys: list[str] | None = None
     pairing_id: str | None = None
     transport: Literal["direct", "tunnel"] | None = None
+    total_timeout: float | None = None
 
     @property
     def auth_method(self) -> SSHAuthMethod:
@@ -284,6 +285,13 @@ def _create_ssh_client(
     _configure_host_key_policy(client, config, host, port)
     if on_client_created is not None:
         on_client_created(client)
+    connection_deadline_timer = None
+    connection_deadline = None
+    if config.total_timeout is not None and config.total_timeout > 0:
+        connection_deadline = time.monotonic() + config.total_timeout
+        connection_deadline_timer = threading.Timer(config.total_timeout, client.close)
+        connection_deadline_timer.daemon = True
+        connection_deadline_timer.start()
     logger.debug(f"SSH connecting to {config.user}@{host}:{port} using {config.auth_method.value}")
     try:
         connect_kwargs = _build_connect_kwargs(config)
@@ -291,6 +299,12 @@ def _create_ssh_client(
         connect_kwargs["port"] = port
         if tcp_connect_timeout is not None:
             connect_kwargs["timeout"] = tcp_connect_timeout
+        if connection_deadline is not None:
+            remaining = connection_deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("SSH total deadline expired before connection")
+            for timeout_key in ("timeout", "banner_timeout", "auth_timeout", "channel_timeout"):
+                connect_kwargs[timeout_key] = min(connect_kwargs[timeout_key], remaining)
         client.connect(**connect_kwargs)
     except Exception:
         try:
@@ -298,6 +312,9 @@ def _create_ssh_client(
         except Exception:
             pass
         raise
+    finally:
+        if connection_deadline_timer is not None:
+            connection_deadline_timer.cancel()
     return client
 
 
@@ -398,15 +415,17 @@ def _wrap_powershell_command(timeout_seconds: int | float) -> str:
     on Windows, and emits an explicit timeout sentinel. A native exit code of
     124 is therefore never mistaken for a timeout.
     """
-    timeout_literal = str(max(0, int(timeout_seconds)))
+    timeout_value = max(0.0, float(timeout_seconds))
+    timeout_literal = str(int(timeout_value)) if timeout_value.is_integer() else str(timeout_value)
     script = f"""$ErrorActionPreference = 'Stop'
 $utf8NoBom = [Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = $utf8NoBom
 [Console]::OutputEncoding = $utf8NoBom
 $OutputEncoding = $utf8NoBom
+$deadlineSeconds = {timeout_literal}
+$deadline = if ($deadlineSeconds -gt 0) {{ [DateTime]::UtcNow.AddSeconds($deadlineSeconds) }} else {{ $null }}
 $payload = [Console]::In.ReadLine()
 if ([string]::IsNullOrWhiteSpace($payload)) {{ [Console]::Error.WriteLine('Missing PowerShell payload'); exit 1 }}
-$deadlineSeconds = {timeout_literal}
 $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
 $processInfo.FileName = 'powershell.exe'
 $processInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $payload
@@ -417,6 +436,7 @@ $processInfo.RedirectStandardError = $true
 $processInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
 $processInfo.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
 $stdinPayload = [Console]::In.ReadToEnd()
+if ($deadline -and [DateTime]::UtcNow -ge $deadline) {{ [Console]::Error.WriteLine('{POWERSHELL_TIMEOUT_SENTINEL}'); exit 1 }}
 $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $processInfo
 [void]$process.Start()
@@ -430,7 +450,6 @@ if ($stdinPayload.Length -gt 0) {{
 }}
 $process.StandardInput.Close()
 $timedOut = $false
-$deadline = if ($deadlineSeconds -gt 0) {{ [DateTime]::UtcNow.AddSeconds($deadlineSeconds) }} else {{ $null }}
 while (-not $process.HasExited) {{
     if ($deadline -and [DateTime]::UtcNow -ge $deadline) {{
         $timedOut = $true
@@ -477,36 +496,74 @@ def execute_ssh_command(
     """
     config.validate()
     client = None
+    command_deadline_timer = None
+    deadline = time.monotonic() + config.total_timeout if config.total_timeout and config.total_timeout > 0 else None
+
+    def remaining_timeout() -> float:
+        if deadline is None:
+            return float(config.timeout)
+        return deadline - time.monotonic()
+
+    def check_deadline() -> None:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise socket.timeout("SSH total deadline expired")
+
+    def bounded_timeout() -> float:
+        check_deadline()
+        if deadline is None:
+            return float(config.timeout)
+        remaining = remaining_timeout()
+        return min(float(config.timeout), remaining) if config.timeout > 0 else remaining
 
     try:
-        client = _create_ssh_client(config)
+        connection_config = replace(config, timeout=bounded_timeout(), total_timeout=remaining_timeout()) if deadline is not None else config
+        client = _create_ssh_client(connection_config)
 
-        powershell_payload = _encode_powershell_payload(command) if config.shell == "powershell" else None
-        wrapped_command = _wrap_powershell_command(config.timeout) if powershell_payload else _wrap_command_with_timeout(command, config.timeout)
+        command_config = replace(config, timeout=bounded_timeout()) if deadline is not None else config
+        if deadline is not None:
+            command_deadline_timer = threading.Timer(remaining_timeout(), client.close)
+            command_deadline_timer.daemon = True
+            command_deadline_timer.start()
+
+        powershell_payload = _encode_powershell_payload(command) if command_config.shell == "powershell" else None
+        wrapped_command = (
+            _wrap_powershell_command(command_config.timeout) if powershell_payload else _wrap_command_with_timeout(command, command_config.timeout)
+        )
 
         # Execute command
-        stdin, stdout, stderr = client.exec_command(wrapped_command, timeout=config.timeout if config.timeout > 0 else None)
+        exec_timeout = bounded_timeout()
+        stdin, stdout, stderr = client.exec_command(wrapped_command, timeout=exec_timeout if exec_timeout > 0 else None)
+        check_deadline()
 
         # Always close remote stdin after the optional payload. The PowerShell
         # supervisor forwards this EOF to its child; leaving it open would keep
         # the stdin relay alive after otherwise-complete commands.
         if powershell_payload:
+            check_deadline()
+            if deadline is not None:
+                stdin.channel.settimeout(remaining_timeout())
             stdin.write(f"{powershell_payload}\n")
         if input_data:
+            check_deadline()
+            if deadline is not None:
+                stdin.channel.settimeout(remaining_timeout())
             stdin.write(input_data)
+        check_deadline()
         stdin.channel.shutdown_write()
 
         # Read output with total timeout
         channel = stdout.channel
-        start_time = time.time()
+        start_time = time.monotonic() if deadline is not None else time.time()
         stdout_chunks = []
         stderr_chunks = []
         timed_out = False
 
         while True:
             # check timeout
-            if config.timeout and (time.time() - start_time > config.timeout):
-                logger.warning(f"SSH command execution timed out after {config.timeout}s")
+            timeout_reached = deadline is not None and time.monotonic() >= deadline
+            timeout_reached = bool(timeout_reached or (deadline is None and command_config.timeout and time.time() - start_time > command_config.timeout))
+            if timeout_reached:
+                logger.warning(f"SSH command execution timed out after {command_config.timeout}s")
                 timed_out = True
                 channel.close()
                 break
@@ -522,7 +579,7 @@ def execute_ssh_command(
                 stderr_chunks.append(channel.recv_stderr(4096))
 
             # Small sleep to yield CPU and prevent tight loop
-            time.sleep(0.1)
+            time.sleep(min(0.1, max(0.0, remaining_timeout())) if deadline is not None else 0.1)
 
         # Drain any remaining buffered data
         _drain_channel(channel, stdout_chunks, stderr_chunks)
@@ -535,13 +592,13 @@ def execute_ssh_command(
 
         exit_code = -1 if timed_out else channel.recv_exit_status()
 
-        remote_timeout = config.shell == "posix" and exit_code in {124, 137}
-        powershell_timeout = config.shell == "powershell" and POWERSHELL_TIMEOUT_SENTINEL in stderr_data
+        remote_timeout = command_config.shell == "posix" and exit_code in {124, 137}
+        powershell_timeout = command_config.shell == "powershell" and POWERSHELL_TIMEOUT_SENTINEL in stderr_data
         if powershell_timeout:
             stderr_data = stderr_data.replace(POWERSHELL_TIMEOUT_SENTINEL, "").strip()
             exit_code = -1
         if timed_out or remote_timeout or powershell_timeout:
-            timeout_msg = f"[Command execution timed out after {config.timeout} seconds]"
+            timeout_msg = f"[Command execution timed out after {command_config.timeout} seconds]"
             if timeout_msg not in stderr_data:
                 stderr_data = f"{stderr_data}\n{timeout_msg}" if stderr_data else timeout_msg
 
@@ -565,6 +622,8 @@ def execute_ssh_command(
         logger.error(f"SSH error: {e}")
         return _error_result(f"SSH error: {e}")
     finally:
+        if command_deadline_timer is not None:
+            command_deadline_timer.cancel()
         if client:
             client.close()
 

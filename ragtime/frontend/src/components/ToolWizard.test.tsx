@@ -1894,4 +1894,178 @@ describe('ToolWizard', () => {
     );
     expect(update.connection_config).not.toHaveProperty('key_content');
   });
+
+  it('tests manual SSH credentials without pairing metadata and preserves the quick pairing', async () => {
+    const pairing = {
+      id: 'pairing-draft',
+      tool_id: 'paired-tool',
+      status: 'paired' as const,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      connection_config: {
+        host: 'paired.example',
+        user: 'deploy',
+        pairing_id: 'pairing-draft',
+        transport: 'direct' as const,
+        shell: 'posix' as const,
+        host_keys: ['ssh-ed25519 AAAA'],
+      },
+      public_key: 'ssh-ed25519 AAAA',
+      commands: {
+        sh: 'run-sh',
+        powershell: 'run-ps',
+        offline_sh: 'offline-sh',
+        offline_powershell: 'offline-ps',
+      },
+    };
+    apiMock.createRemotePairing.mockResolvedValue(pairing);
+    apiMock.getRemotePairing.mockResolvedValue(pairing);
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        defaultToolType="ssh_shell"
+      />,
+    );
+
+    await screen.findByText('Connected — target');
+    fireEvent.click(screen.getByRole('button', { name: 'Manual (SSH)' }));
+    fireEvent.change(screen.getByDisplayValue('deploy'), {
+      target: { value: 'manual-deploy' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Enter SSH password'), {
+      target: { value: 'secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+
+    await waitFor(() =>
+      expect(apiMock.testToolConnection).toHaveBeenCalledWith({
+        tool_type: 'ssh_shell',
+        connection_config: expect.objectContaining({
+          host: 'paired.example',
+          user: 'manual-deploy',
+          password: 'secret',
+        }),
+      }),
+    );
+    const connectionConfig = apiMock.testToolConnection.mock.calls[0][0].connection_config;
+    expect(connectionConfig).not.toHaveProperty('pairing_id');
+    expect(connectionConfig).not.toHaveProperty('transport');
+    expect(connectionConfig).not.toHaveProperty('host_keys');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Quick Connect' }));
+    await screen.findByText('Connected — target');
+  });
+
+  function windowsPendingCreation() {
+    return {
+      id: 'pairing-windows',
+      tool_id: 'windows-tool',
+      status: 'pending' as const,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      facts: null,
+      connection_config: { shell: 'powershell' as const, pairing_id: 'pairing-windows' },
+      public_key: 'ssh-ed25519 AAAAWIN',
+      commands: {
+        sh: 'run-sh',
+        powershell: 'run-ps',
+        offline_sh: 'offline-sh',
+        offline_powershell: 'offline-ps',
+      },
+    };
+  }
+
+  function windowsQuickPairing(
+    status: 'paired' | 'failed' | 'expired' | 'revoked',
+    error: string | null,
+  ) {
+    return {
+      id: 'pairing-windows',
+      tool_id: 'windows-tool',
+      status,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      error,
+      transport: 'tunnel' as const,
+      facts: {
+        os: 'windows' as const,
+        username: 'VISNOVSKY\\Matt',
+        hostname: 'visnovsky-win',
+        addresses: ['10.0.0.5'],
+        sshd_port: 22,
+        host_keys: ['ssh-ed25519 AAAAWIN'],
+        shared_admin_keyfile: false,
+        errors: [],
+        python_available: false,
+      },
+      connection_config: {
+        host: 'visnovsky-win',
+        user: 'VISNOVSKY\\Matt',
+        pairing_id: 'pairing-windows',
+        transport: 'tunnel' as const,
+        shell: 'powershell' as const,
+        host_keys: ['ssh-ed25519 AAAAWIN'],
+      },
+      public_key: 'ssh-ed25519 AAAAWIN',
+      commands: {
+        sh: 'run-sh',
+        powershell: 'run-ps',
+        offline_sh: 'offline-sh',
+        offline_powershell: 'offline-ps',
+      },
+    };
+  }
+
+  it.each([
+    ['failed', 'SSH authentication failed: Authentication failed: transport shut down or saw EOF'],
+    ['expired', null],
+    ['revoked', null],
+  ] as const)(
+    'keeps quick Windows Continue disabled when reported facts have status %s',
+    async (status, error) => {
+      apiMock.createRemotePairing.mockResolvedValue(windowsPendingCreation());
+      apiMock.getRemotePairing.mockResolvedValue(windowsQuickPairing(status, error));
+
+      render(
+        <ToolWizard
+          existingTool={null}
+          onClose={vi.fn()}
+          onSave={vi.fn()}
+          defaultToolType="windows_shell"
+        />,
+      );
+
+      await screen.findByText('visnovsky-win');
+      expect(apiMock.getRemotePairing).toHaveBeenCalledWith('pairing-windows');
+      expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(true);
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+      expect(screen.getByLabelText('Installation command')).toBeTruthy();
+      expect(screen.queryByText('Max Timeout (seconds)')).toBeNull();
+    },
+  );
+
+  it('advances quick Windows pairing to execution only after status is paired', async () => {
+    apiMock.createRemotePairing.mockResolvedValue(windowsPendingCreation());
+    apiMock.getRemotePairing.mockResolvedValue(windowsQuickPairing('paired', null));
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        defaultToolType="windows_shell"
+      />,
+    );
+
+    await screen.findByText('visnovsky-win');
+    expect(apiMock.getRemotePairing).toHaveBeenCalledWith('pairing-windows');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByText('Max Timeout (seconds)')).toBeTruthy();
+    expect(screen.queryByLabelText('Installation command')).toBeNull();
+  });
 });

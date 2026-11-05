@@ -63,7 +63,18 @@ Check the target's service/task state and outbound HTTPS connectivity. Reconnect
 
 ## Remove access
 
-Revoke the pairing or delete the tool in Ragtime to stop its managed transport. Use the installer's uninstall option on the target to remove the installation's tagged key, task/service, and local configuration. Revocation cannot remove a key file on a machine that is offline. Shared OpenSSH installations and unrelated keys must remain intact.
+Revoke the pairing or delete the tool in Ragtime to stop its managed transport. Revocation cannot remove a key file on a machine that is offline. Shared OpenSSH installations and unrelated keys remain intact.
+
+For a Windows Remote pairing, choose one of these removal modes:
+
+- **Remove Ragtime only:** removes the pairing's exact tagged key, its Ragtime task, and its pairing files. It leaves the Windows OpenSSH service running.
+- **Remove and disable SSH:** performs the same pairing cleanup, then disables startup and stops `sshd`. This affects every SSH user and every other Ragtime connection on that machine. Confirm this mode explicitly.
+
+The deletion result can include a credential-free local Administrator command for a host that could not be reached. The command uses `-CleanupMode PairingOnly`, or `-CleanupMode DisableSsh -ConfirmMachineWide` for the machine-wide option. Do not add `-ConfirmMachineWide` to pairing-only removal.
+
+When removing a tunnel or disabling SSH could sever the current connection, the installer launches a one-shot finalizer. Its launch only means removal is pending, not confirmed. Check the protected credential-free receipt at `%ProgramData%\RagtimeRemote\receipts\<pairing-id>.json` for elevated removal, or the target account's local-app-data `RagtimeRemote\receipts\<pairing-id>.json` for user-scoped removal. The receipt is retained for troubleshooting; the finalizer removes its own temporary task and payload.
+
+Elevated removal does not recursively delete account-controlled profile state directories. If such a directory remains, the result reports a partial failure; remove that pairing's local-app-data directory under the original account after its tunnel task has stopped. User-scoped removal cannot confirm cleanup of protected machine-wide resources without Administrator access.
 
 ## Execution boundaries
 

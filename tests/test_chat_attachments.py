@@ -12,7 +12,9 @@ from unittest import mock
 from fastapi import HTTPException, UploadFile
 from starlette.datastructures import Headers
 
+from ragtime.core.ocr_target import OcrTargetError
 from ragtime.indexer import chat_attachments
+from ragtime.indexer.document_parser import VisionOcrError
 from ragtime.indexer.models import AppSettings, UpdateSettingsRequest
 
 
@@ -199,6 +201,88 @@ class ChatAttachmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Quarterly revenue", text)
         self.assertIn("Attached image OCR chunk 2/2", text)
         self.assertIn("Tags: finance", text)
+
+    async def test_extract_chat_image_context_returns_empty_when_target_is_misconfigured(self) -> None:
+        payload = base64.b64encode(b"image-bytes").decode("ascii")
+        part = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{payload}"}}
+
+        with (
+            mock.patch.object(chat_attachments, "resolve_ocr_target", side_effect=OcrTargetError("missing target")),
+            mock.patch.object(chat_attachments, "extract_image_structured_async", new=mock.AsyncMock()) as extract,
+        ):
+            text = await chat_attachments.extract_chat_image_context_from_part(
+                part,
+                app_settings={"default_ocr_mode": "vision"},
+            )
+
+        self.assertEqual(text, "")
+        extract.assert_not_awaited()
+
+    async def test_extract_chat_image_context_returns_empty_after_one_provider_failure(self) -> None:
+        payload = base64.b64encode(b"image-bytes").decode("ascii")
+        part = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{payload}"}}
+
+        with mock.patch.object(
+            chat_attachments,
+            "extract_image_structured_async",
+            new=mock.AsyncMock(side_effect=VisionOcrError("provider unavailable")),
+        ) as extract:
+            text = await chat_attachments.extract_chat_image_context_from_part(
+                part,
+                app_settings={
+                    "default_ocr_mode": "vision",
+                    "default_ocr_provider": "openai",
+                    "default_ocr_vision_model": "gpt-4o-mini",
+                },
+            )
+
+        self.assertEqual(text, "")
+        extract.assert_awaited_once()
+
+    async def test_extract_chat_image_context_keeps_valid_blank_ocr_empty_after_one_call(self) -> None:
+        payload = base64.b64encode(b"image-bytes").decode("ascii")
+        part = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{payload}"}}
+        blank_result = SimpleNamespace(raw_text="", extracted_text=[], get_semantic_segments=lambda: [])
+
+        with mock.patch.object(
+            chat_attachments,
+            "extract_image_structured_async",
+            new=mock.AsyncMock(return_value=blank_result),
+        ) as extract:
+            text = await chat_attachments.extract_chat_image_context_from_part(
+                part,
+                app_settings={
+                    "default_ocr_mode": "vision",
+                    "default_ocr_provider": "openai",
+                    "default_ocr_vision_model": "gpt-4o-mini",
+                },
+            )
+
+        self.assertEqual(text, "")
+        extract.assert_awaited_once()
+
+    async def test_extract_chat_image_context_accepts_legacy_camel_case_ocr_settings(self) -> None:
+        payload = base64.b64encode(b"image-bytes").decode("ascii")
+        part = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{payload}"}}
+        blank_result = SimpleNamespace(raw_text="", extracted_text=[], get_semantic_segments=lambda: [])
+
+        with mock.patch.object(
+            chat_attachments,
+            "extract_image_structured_async",
+            new=mock.AsyncMock(return_value=blank_result),
+        ) as extract:
+            text = await chat_attachments.extract_chat_image_context_from_part(
+                part,
+                app_settings={
+                    "defaultOcrMode": "vision",
+                    "defaultOcrProvider": "openai",
+                    "defaultOcrVisionModel": "gpt-4o-mini",
+                },
+            )
+
+        self.assertEqual(text, "")
+        assert extract.await_args is not None
+        self.assertEqual(extract.await_args.kwargs["ocr_provider"], "openai")
 
     async def test_cleanup_expired_chat_attachments_removes_old_directories(
         self,

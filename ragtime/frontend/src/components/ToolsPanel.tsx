@@ -46,6 +46,7 @@ import {
 import { PasswordRequirementsChecklist } from './shared/PasswordRequirementsChecklist';
 import { Popover } from './Popover';
 import { ToolAccessModal } from './ToolAccessModal';
+import { ToolDeleteDialog } from './ToolDeleteDialog';
 import type { ToolAccessPolicy } from '@/types';
 import { contentProtectionApi, type ContentProtectionConfig } from '@/api/contentProtection';
 
@@ -81,6 +82,14 @@ function getToolWorkingDirectory(tool: ToolConfig): string | null {
   }
 
   return (tool.connection_config as { working_directory?: string })?.working_directory || null;
+}
+
+function isPairedWindowsTool(tool: ToolConfig): boolean {
+  return (
+    tool.tool_type === 'windows_shell' &&
+    typeof (tool.connection_config as { pairing_id?: unknown }).pairing_id === 'string' &&
+    (tool.connection_config as { pairing_id: string }).pairing_id.length > 0
+  );
 }
 
 function formatMountSourceInterval(seconds: number): string {
@@ -273,7 +282,7 @@ interface ToolCardProps {
   heartbeat: HeartbeatStatus | null;
   showFooterActions: boolean;
   onEdit: (tool: ToolConfig) => void;
-  onDelete: (toolId: string) => void;
+  onDelete: (tool: ToolConfig) => void;
   onTest: (toolId: string) => void;
   testing: boolean;
   onPdmReindex?: (toolId: string, fullReindex: boolean) => void;
@@ -697,11 +706,22 @@ function ToolCard({
             <button type="button" className="btn btn-sm" onClick={() => onEdit(tool)}>
               Edit
             </button>
-            <DeleteConfirmButton
-              onDelete={() => onDelete(tool.id)}
-              className="btn btn-sm btn-danger"
-              title="Delete tool"
-            />
+            {isPairedWindowsTool(tool) ? (
+              <button
+                type="button"
+                className="btn btn-sm btn-danger"
+                onClick={() => onDelete(tool)}
+                title="Delete tool"
+              >
+                Delete
+              </button>
+            ) : (
+              <DeleteConfirmButton
+                onDelete={() => onDelete(tool)}
+                className="btn btn-sm btn-danger"
+                title="Delete tool"
+              />
+            )}
           </div>
         </div>
       )}
@@ -779,12 +799,14 @@ export function ToolsPanel({
   } | null>(null);
   const [writeConfirmTool, setWriteConfirmTool] = useState<ToolConfig | null>(null);
   const [deleteConfirmTool, setDeleteConfirmTool] = useState<ToolConfig | null>(null);
+  const [windowsDeleteTool, setWindowsDeleteTool] = useState<ToolConfig | null>(null);
   const [clearConfirmTool, setClearConfirmTool] = useState<ToolConfig | null>(null);
   const [toolContextMenu, setToolContextMenu] = useState<{
     toolId: string;
     x: number;
     y: number;
   } | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const toolContextMenuRef = useRef<HTMLDivElement>(null);
   const [toolAccessModalTool, setToolAccessModalTool] = useState<ToolConfig | null>(null);
   const [toolAccessPolicy, setToolAccessPolicy] = useState<ToolAccessPolicy | null>(null);
@@ -818,6 +840,7 @@ export function ToolsPanel({
     disableConfirmation ||
     writeConfirmTool ||
     deleteConfirmTool ||
+    windowsDeleteTool ||
     clearConfirmTool ||
     toolPasswordModal ||
     toolAccessModalTool,
@@ -1310,24 +1333,35 @@ export function ToolsPanel({
     [groups, startEditingGroup],
   );
 
-  const handleDeleteTool = async (toolId: string) => {
-    try {
-      await api.deleteToolConfig(toolId);
-      setTools((current) => current.filter((tool) => tool.id !== toolId));
-      setHeartbeats((current) => {
-        const next = { ...current };
-        delete next[toolId];
-        return next;
-      });
-      setSchemaStats((current) => {
-        const next = { ...current };
-        delete next[toolId];
-        return next;
-      });
-      toast.success('Tool deleted successfully');
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete tool');
+  const handleDeleteTool = async (
+    toolId: string,
+    options?: Parameters<typeof api.deleteToolConfig>[1],
+  ) => {
+    const response = options
+      ? await api.deleteToolConfig(toolId, options)
+      : await api.deleteToolConfig(toolId);
+    setTools((current) => current.filter((tool) => tool.id !== toolId));
+    setHeartbeats((current) => {
+      const next = { ...current };
+      delete next[toolId];
+      return next;
+    });
+    setSchemaStats((current) => {
+      const next = { ...current };
+      delete next[toolId];
+      return next;
+    });
+    return response;
+  };
+
+  const requestToolDeletion = (tool: ToolConfig) => {
+    if (isPairedWindowsTool(tool)) {
+      setWindowsDeleteTool(tool);
+      return;
     }
+    void handleDeleteTool(tool.id)
+      .then(() => toast.success('Tool deleted successfully'))
+      .catch((err) => toast.error(err instanceof Error ? err.message : 'Failed to delete tool'));
   };
 
   const handleToggleTool = async (toolId: string, enabled: boolean) => {
@@ -2361,7 +2395,7 @@ export function ToolsPanel({
           heartbeat={heartbeats[tool.id] || null}
           showFooterActions={showFooterActions}
           onEdit={handleEditTool}
-          onDelete={handleDeleteTool}
+          onDelete={requestToolDeletion}
           onTest={handleTestTool}
           testing={testingToolId === tool.id}
           onPdmReindex={handlePdmReindex}
@@ -2413,7 +2447,7 @@ export function ToolsPanel({
   };
 
   return (
-    <div className="tools-panel">
+    <div ref={panelRef} id="tools-panel" className="tools-panel" tabIndex={-1}>
       <div className="card" id="tools-connections">
         <div className="card-header">
           <h2>Tool Connections</h2>
@@ -2568,7 +2602,11 @@ export function ToolsPanel({
                         icon: 'trash',
                         onSelect: () => {
                           setToolContextMenu(null);
-                          setDeleteConfirmTool(contextTool);
+                          if (isPairedWindowsTool(contextTool)) {
+                            setWindowsDeleteTool(contextTool);
+                          } else {
+                            setDeleteConfirmTool(contextTool);
+                          }
                         },
                       },
                     ]}
@@ -3167,7 +3205,11 @@ export function ToolsPanel({
                 onClick={() => {
                   const toolId = deleteConfirmTool.id;
                   setDeleteConfirmTool(null);
-                  void handleDeleteTool(toolId);
+                  void handleDeleteTool(toolId)
+                    .then(() => toast.success('Tool deleted successfully'))
+                    .catch((err) =>
+                      toast.error(err instanceof Error ? err.message : 'Failed to delete tool'),
+                    );
                 }}
               >
                 Delete Tool
@@ -3175,6 +3217,14 @@ export function ToolsPanel({
             </div>
           </div>
         </div>
+      )}
+      {windowsDeleteTool && (
+        <ToolDeleteDialog
+          toolName={windowsDeleteTool.name}
+          fallbackFocusRef={panelRef}
+          onClose={() => setWindowsDeleteTool(null)}
+          onDelete={(options) => handleDeleteTool(windowsDeleteTool.id, options)}
+        />
       )}
       {/* Tool Export/Import Password Modal */}
 

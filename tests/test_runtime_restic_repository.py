@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 
 from runtime.worker.sqlite_history.models import RESTIC_IMAGE_PATH
 from runtime.worker.sqlite_history.repository import ResticRepository, ResticRepositoryError
+from tests.restic_test_support import seed_fast_restic_repository
 
 
 class ResticRepositoryContractTests(unittest.IsolatedAsyncioTestCase):
@@ -40,6 +41,9 @@ class ResticRepositoryContractTests(unittest.IsolatedAsyncioTestCase):
             scratch_path=self.root / "scratch",
             binary=self.binary,
         )
+
+    def _seed_fast_repository(self) -> None:
+        seed_fast_restic_repository(self.root / "repository", self.root / "cache", self.root / "secrets" / "repository-password", binary=self.binary)
 
     def _image(self) -> tuple[Path, str, int]:
         image = self.root / "fixture.sqlite3"
@@ -75,12 +79,14 @@ class ResticRepositoryContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(finished.is_set())
 
     async def test_existing_repository_rejects_a_missing_key(self) -> None:
+        self._seed_fast_repository()
         await self.repository.initialize()
         (self.root / "secrets" / "repository-password").unlink()
         with self.assertRaisesRegex(ResticRepositoryError, "key is unavailable"):
             await self._new_repository().initialize()
 
     async def test_ingest_ls_dump_and_forget_shared_content_are_byte_exact(self) -> None:
+        self._seed_fast_repository()
         image, digest, size = self._image()
         first = await self.repository.ingest(image, workspace_id="w1", operation_id="a" * 32, sha256=digest, size_bytes=size)
         second = await self.repository.ingest(image, workspace_id="w2", operation_id="b" * 32, sha256=digest, size_bytes=size)
@@ -98,6 +104,7 @@ class ResticRepositoryContractTests(unittest.IsolatedAsyncioTestCase):
         await self.repository.check(read_data=True)
 
     async def test_artifact_repository_identity_is_checked_before_dump(self) -> None:
+        self._seed_fast_repository()
         image, digest, size = self._image()
         artifact = await self.repository.ingest(image, workspace_id="w1", operation_id="c" * 32, sha256=digest, size_bytes=size)
         forged = artifact.__class__("0" * 64, artifact.snapshot_id, artifact.path, artifact.size_bytes, artifact.sha256)
@@ -105,6 +112,7 @@ class ResticRepositoryContractTests(unittest.IsolatedAsyncioTestCase):
             await self.repository.materialize(forged, self.root / "forged.sqlite3")
 
     async def test_streamed_verification_checks_bytes_without_creating_an_image(self) -> None:
+        self._seed_fast_repository()
         image, digest, size = self._image()
         artifact = await self.repository.ingest(image, workspace_id="w1", operation_id="e" * 32, sha256=digest, size_bytes=size)
         await self.repository.verify(artifact)
@@ -115,12 +123,14 @@ class ResticRepositoryContractTests(unittest.IsolatedAsyncioTestCase):
             await self.repository.verify(replace(artifact, size_bytes=size - 1))
 
     async def test_operation_lookup_requires_both_workspace_and_operation_tags(self) -> None:
+        self._seed_fast_repository()
         image, digest, size = self._image()
         first = await self.repository.ingest(image, workspace_id="w1", operation_id="f" * 32, sha256=digest, size_bytes=size)
         await self.repository.ingest(image, workspace_id="w1", operation_id="a" * 32, sha256=digest, size_bytes=size)
         self.assertEqual([first.snapshot_id], await self.repository.list_operation_snapshot_ids(workspace_id="w1", operation_id="f" * 32))
 
     async def test_rejects_untrusted_tags_and_bad_image_digest(self) -> None:
+        self._seed_fast_repository()
         image, digest, size = self._image()
         with self.assertRaisesRegex(ResticRepositoryError, "operation metadata"):
             await self.repository.ingest(image, workspace_id="w1 --option", operation_id="d" * 32, sha256=digest, size_bytes=size)

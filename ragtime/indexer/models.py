@@ -184,6 +184,9 @@ class OcrProvider(str, Enum):
 
     OLLAMA = "ollama"
     OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    CLAUDE_CODE = "claude_code"
+    OPENAI_CODEX = "openai_codex"
     OPENROUTER = "openrouter"
     OMLX = "omlx"
     LMSTUDIO = "lmstudio"

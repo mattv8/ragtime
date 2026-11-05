@@ -4,7 +4,11 @@ import type { IndexJob, IndexAnalysisResult, OcrMode, OcrProvider, VectorStoreTy
 import { DescriptionField } from './DescriptionField';
 import { AnalysisStats } from './AnalysisStats';
 import { IndexConfigFields } from './IndexConfigFields';
-import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
+import {
+  isOcrTargetComplete,
+  OcrVectorStoreFields,
+  OCR_PROVIDER_LABELS,
+} from './OcrVectorStoreFields';
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
@@ -75,6 +79,7 @@ export function UploadForm({
   const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(
     undefined,
   );
+  const [defaultOcrProvider, setDefaultOcrProvider] = useState<OcrProvider | null>(null);
   const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(
     undefined,
   );
@@ -111,6 +116,7 @@ export function UploadForm({
       .then((response) => {
         const settings = response.settings;
         if (settings.default_ocr_provider) {
+          setDefaultOcrProvider(settings.default_ocr_provider);
           setDefaultOcrProviderLabel(
             OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider,
           );
@@ -137,6 +143,10 @@ export function UploadForm({
   const handleAnalyze = async () => {
     if (!file) {
       setStatus({ type: 'error', message: 'Please select a file first' });
+      return;
+    }
+    if (!isOcrTargetComplete(ocrMode, ocrProvider, ocrVisionModel, defaultOcrProvider)) {
+      setStatus({ type: 'error', message: 'Select a vision model for the overridden provider.' });
       return;
     }
 
@@ -207,6 +217,10 @@ export function UploadForm({
       setStatus({ type: 'error', message: 'Please enter an index name' });
       return;
     }
+    if (!isOcrTargetComplete(ocrMode, ocrProvider, ocrVisionModel, defaultOcrProvider)) {
+      setStatus({ type: 'error', message: 'Select a vision model for the overridden provider.' });
+      return;
+    }
 
     setWizardStep('indexing');
     setIsLoading(true);
@@ -273,6 +287,7 @@ export function UploadForm({
         setOcrVisionModel={setOcrVisionModel}
         visionOcrAvailable={visionOcrAvailable}
         defaultOcrProviderLabel={defaultOcrProviderLabel}
+        defaultOcrProvider={defaultOcrProvider}
         defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
         vectorStoreType={vectorStoreType}
         setVectorStoreType={setVectorStoreType}

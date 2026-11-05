@@ -27,6 +27,7 @@ from runtime.worker.sqlite_history.export import RuntimeHistoryExporter
 from runtime.worker.sqlite_history.repository import ResticRepository
 from runtime.worker.sqlite_history.storage import AsyncRepositoryGate
 from runtime.worker.sqlite_history.transfer import RuntimeHistoryTransfers
+from tests.restic_test_support import seed_fast_restic_repository
 
 RESTIC_BINARY = Path("/opt/ragtime-backup/bin/restic")
 
@@ -549,6 +550,8 @@ class RuntimeHistoryTransferRoundtripTests(unittest.IsolatedAsyncioTestCase):
 
     async def _stage_source(self, root: Path):
         root.mkdir(parents=True, exist_ok=True)
+        history = root / "_sqlite_history"
+        seed_fast_restic_repository(history / "restic", history / "cache", history / "secrets" / "repository-password", binary=RESTIC_BINARY)
         coordinator = _ServiceCoordinator(root)
         transfers = RuntimeHistoryTransfers(coordinator)
         image, digest, size = self._fixture_database()
@@ -580,11 +583,14 @@ class RuntimeHistoryTransferRoundtripTests(unittest.IsolatedAsyncioTestCase):
     async def _stage_active_coordinator_source(self, root: Path):
         """Create a real active coordinator and a keyed portable source bundle."""
         root.mkdir(parents=True, exist_ok=True)
+        history = root / "_sqlite_history"
+        seed_fast_restic_repository(history / "restic", history / "cache", history / "secrets" / "repository-password", binary=RESTIC_BINARY)
         coordinator = SqliteHistoryCoordinator(root, object())
         self._coordinators.append(coordinator)
         await coordinator.start()
         self.assertFalse(coordinator.capability())
         coordinator.activate()
+        await self._wait_for_initial_repository_maintenance(coordinator)
         repository = coordinator._service().repository
         image, digest, size = self._fixture_database()
         artifact = await repository.ingest(
@@ -622,6 +628,27 @@ class RuntimeHistoryTransferRoundtripTests(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
         return coordinator, artifact, digest, image
+
+    async def _wait_for_initial_repository_maintenance(self, coordinator: SqliteHistoryCoordinator) -> None:
+        """Wait for the first exclusive prune/check pass before another writer starts."""
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        deadline = started_at + 60
+        while loop.time() < deadline:
+            maintenance = coordinator._maintenance
+            if maintenance is not None:
+                task = maintenance._task
+                if task is not None and task.done():
+                    elapsed = loop.time() - started_at
+                    try:
+                        task.result()
+                    except BaseException as error:
+                        self.fail(f"initial repository maintenance failed after {elapsed:.2f}s: {error!r}")
+                    self.fail(f"initial repository maintenance stopped after {elapsed:.2f}s before completing")
+                if maintenance._next_repository_prune != 0:
+                    return
+            await asyncio.sleep(0.01)
+        self.fail(f"initial repository maintenance did not finish after {loop.time() - started_at:.2f}s")
 
     async def _run_export(self, transfers: RuntimeHistoryTransfers, include_key: bool):
         receipt = await transfers.accept_export(include_repository_key=include_key)

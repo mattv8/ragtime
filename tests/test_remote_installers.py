@@ -80,20 +80,22 @@ def test_posix_openrc_tunnel_install_and_uninstall_generate_owned_unit(tmp_path)
     client.write_text("#!/bin/sh\n")
     client.chmod(0o755)
     environment = {
-        **os.environ,
+        **_installer_environment(),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "HOME": str(tmp_path),
         "XDG_STATE_HOME": str(tmp_path / "state"),
         "OPENRC_TRACE": str(trace),
         "RAGTIME_SSH_HOST_KEY_DIR": str(host_key_dir),
     }
-    subprocess.run(
+    result = subprocess.run(
         ["sh", str(installer), "--server-url", "https://example", "--token", "token", "--mode", "tunnel", "--tunnel-client", str(client)],
         env=environment,
         check=True,
         capture_output=True,
         text=True,
     )
+    assert "Paired" not in result.stdout
+    assert "pending" in result.stdout
     unit = init_dir / "ragtime-remote-pair_openrc"
     assert "supervisor=supervise-daemon" in unit.read_text()
     subprocess.run(["sh", str(installer), "--uninstall", "pair_openrc"], env=environment, check=True, capture_output=True, text=True)
@@ -188,7 +190,7 @@ def test_posix_online_rerun_reuses_nonce_and_adds_one_tagged_key(tmp_path):
     for command in bin_dir.iterdir():
         command.chmod(0o755)
     environment = {
-        **os.environ,
+        **_installer_environment(),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "HOME": str(tmp_path),
         "XDG_STATE_HOME": str(tmp_path / "state"),
@@ -197,12 +199,191 @@ def test_posix_online_rerun_reuses_nonce_and_adds_one_tagged_key(tmp_path):
     }
     command = ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct"]
     subprocess.run(command, env=environment, check=True, capture_output=True, text=True)
-    subprocess.run(command, env=environment, check=True, capture_output=True, text=True)
+    result = subprocess.run(command, env=environment, check=True, capture_output=True, text=True)
+    assert result.stdout.startswith("Paired pair_1 ")
     assert (tmp_path / ".ssh" / "authorized_keys").read_text().count("# ragtime-remote:pair_1") == 1
     payloads = [line for line in calls.read_text().splitlines() if line.startswith('{"nonce"')]
     assert len(payloads) == 2
     assert payloads[0] == payloads[1]
     assert '"mode":"direct"' in payloads[0]
+
+
+def _write_fake_command(bin_dir: Path, name: str, content: str) -> None:
+    command = bin_dir / name
+    command.write_text(content)
+    command.chmod(0o755)
+
+
+def _nonroot_linux_commands(keyscan_output: str) -> dict[str, str]:
+    keyscan_lines = "\n".join(f"127.0.0.1 {line}" for line in keyscan_output.splitlines())
+    return {
+        "curl": (
+            "#!/bin/sh\n"
+            'for arg in "$@"; do case $arg in *enroll/material) '
+            'printf \'%s\' \'{"pairing_id":"pair_nonroot","public_key":"ssh-ed25519 AAAA test"}\'; exit;; esac; done\n'
+            'printf \'%s\\n\' "$@" >> "$CALLS"\nprintf \'%s\' \'{"pairing_id":"pair_nonroot","status":"paired","transport":"direct"}\'\n'
+        ),
+        "ssh-keyscan": (
+            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$KEYSCAN_TRACE\"\nprintf '%s\\n' '# 127.0.0.1:2222 SSH-2.0-OpenSSH_8.0'\nprintf '%s\\n' '{keyscan_lines}'\n"
+        ),
+        "uname": "#!/bin/sh\nprintf 'Linux\\n'\n",
+        "id": "#!/bin/sh\ncase \"$1\" in -u) printf '1000\\n';; -un) printf 'user\\n';; *) printf 'user\\n';; esac\n",
+    }
+
+
+def _installer_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.pop("SSH_CONNECTION", None)
+    environment.pop("SUDO_USER", None)
+    return environment
+
+
+def _nonroot_environment(tmp_path: Path, bin_dir: Path, host_key_dir: Path, calls: Path) -> dict[str, str]:
+    return {
+        **_installer_environment(),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+        "CALLS": str(calls),
+        "KEYSCAN_TRACE": str(tmp_path / "keyscan-trace"),
+        "RAGTIME_SSH_HOST_KEY_DIR": str(host_key_dir),
+        "RAGTIME_SSHD_PATH": "",
+    }
+
+
+def test_posix_nonroot_ssh_connection_uses_port_address_and_loopback_keys(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    host_key_dir = tmp_path / "ssh"
+    host_key_dir.mkdir()
+    calls = tmp_path / "calls"
+    keyscan_output = "ssh-ed25519 AAAAED key\necdsa-sha2-nistp256 AAAAECDSA key"
+    for name, content in _nonroot_linux_commands(keyscan_output).items():
+        _write_fake_command(bin_dir, name, content)
+    _write_fake_command(bin_dir, "ip", "#!/bin/sh\nprintf '1: lo    inet 127.0.0.1/8\\n2: eth0    inet 10.0.0.2/24\\n'\n")
+    apt_trace = tmp_path / "apt-trace"
+    _write_fake_command(bin_dir, "apt-get", '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$APT_TRACE"\n')
+    environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
+    environment.update({"SSH_CONNECTION": "1.2.3.4 5555 9.9.9.9 2222", "APT_TRACE": str(apt_trace)})
+
+    subprocess.run(
+        ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct"],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = next(line for line in calls.read_text().splitlines() if line.startswith('{"nonce"'))
+    assert '"sshd_port":2222' in payload
+    assert '"addresses":["9.9.9.9"' in payload
+    assert '"ssh-ed25519 AAAAED"' in payload
+    assert '"ecdsa-sha2-nistp256 AAAAECDSA"' in payload
+    assert not apt_trace.exists()
+    assert (tmp_path / "keyscan-trace").read_text() == "-T 5 -p 2222 127.0.0.1\n"
+
+
+def test_posix_nonroot_without_service_does_not_create_authorized_keys(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    host_key_dir = tmp_path / "ssh"
+    host_key_dir.mkdir()
+    calls = tmp_path / "calls"
+    for name, content in _nonroot_linux_commands("").items():
+        _write_fake_command(bin_dir, name, content)
+    environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
+
+    result = subprocess.run(
+        ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct"],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "No running SSH service detected" in result.stderr
+    assert not (tmp_path / ".ssh").exists()
+    assert not (tmp_path / "state" / "ragtime-remote").exists()
+
+
+def test_posix_ssh_connection_address_is_kept_before_eight_address_cap(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    host_key_dir = tmp_path / "ssh"
+    host_key_dir.mkdir()
+    calls = tmp_path / "calls"
+    for name, content in _nonroot_linux_commands("ssh-ed25519 AAAAED key").items():
+        _write_fake_command(bin_dir, name, content)
+    ip_output = "".join(f"{index}: eth0    inet 10.0.0.{index}/24\\n" for index in range(1, 10))
+    _write_fake_command(bin_dir, "ip", f"#!/bin/sh\nprintf '{ip_output}'\n")
+    environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
+    environment["SSH_CONNECTION"] = "1.2.3.4 5555 9.9.9.9 2222"
+
+    subprocess.run(
+        ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct"],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = next(line for line in calls.read_text().splitlines() if line.startswith('{"nonce"'))
+    assert '"addresses":["9.9.9.9","10.0.0.1","10.0.0.2","10.0.0.3","10.0.0.4","10.0.0.5","10.0.0.6","10.0.0.7"]' in payload
+
+
+def test_posix_root_without_service_installs_openssh(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    host_key_dir = tmp_path / "ssh"
+    host_key_dir.mkdir()
+    (host_key_dir / "ssh_host_ed25519_key.pub").write_text("ssh-ed25519 AAAAHOST host\n")
+    calls = tmp_path / "calls"
+    commands = _nonroot_linux_commands("")
+    commands["id"] = "#!/bin/sh\ncase \"$1\" in -u) printf '0\\n';; -un) printf 'root\\n';; *) printf 'root\\n';; esac\n"
+    commands["apt-get"] = '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$APT_TRACE"\n'
+    commands["systemctl"] = "#!/bin/sh\nexit 0\n"
+    for name, content in commands.items():
+        _write_fake_command(bin_dir, name, content)
+    apt_trace = tmp_path / "apt-trace"
+    environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
+    environment["APT_TRACE"] = str(apt_trace)
+
+    subprocess.run(
+        ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct"],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "update" in apt_trace.read_text()
+    assert "install -y openssh-server" in apt_trace.read_text()
+
+
+def test_posix_port_mismatch_does_not_trust_loopback_keys_or_create_authorized_keys(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    host_key_dir = tmp_path / "ssh"
+    host_key_dir.mkdir()
+    calls = tmp_path / "calls"
+    for name, content in _nonroot_linux_commands("ssh-ed25519 AAAAED key").items():
+        _write_fake_command(bin_dir, name, content)
+    environment = _nonroot_environment(tmp_path, bin_dir, host_key_dir, calls)
+    environment["SSH_CONNECTION"] = "1.2.3.4 5555 9.9.9.9 22"
+
+    result = subprocess.run(
+        ["sh", str(SCRIPTS / "install.sh"), "--server-url", "https://example", "--token", "token", "--mode", "direct", "--port", "2200"],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Cannot trust loopback SSH host keys" in result.stderr
+    assert not (tmp_path / "keyscan-trace").exists()
+    assert not calls.exists()
+    assert not (tmp_path / ".ssh").exists()
+    assert not (tmp_path / "state" / "ragtime-remote").exists()
 
 
 def test_posix_auto_without_tunnel_prerequisites_enrolls_direct_instead_of_failing(tmp_path):
@@ -224,7 +405,7 @@ def test_posix_auto_without_tunnel_prerequisites_enrolls_direct_instead_of_faili
     for command in bin_dir.iterdir():
         command.chmod(0o755)
     environment = {
-        **os.environ,
+        **_installer_environment(),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "HOME": str(tmp_path),
         "XDG_STATE_HOME": str(tmp_path / "state"),
@@ -260,10 +441,16 @@ def _pwsh() -> Path:
     return pwsh
 
 
+def _installer_functions() -> str:
+    installer = (SCRIPTS / "install.ps1").read_text()
+    functions, marker, _ = installer.partition("# RAGTIME_INSTALLER_ENTRYPOINT")
+    assert marker, "install.ps1 must delimit its function library from its entrypoint"
+    return functions
+
+
 def test_powershell_key_replacement_function_preserves_unrelated_key_layouts(tmp_path):
     pwsh = _pwsh()
-    installer = (SCRIPTS / "install.ps1").read_text()
-    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    functions = _installer_functions()
     target = tmp_path / "authorized_keys"
     harness = tmp_path / "key-test.ps1"
     for initial, expected in [
@@ -283,8 +470,7 @@ def test_powershell_key_replacement_function_preserves_unrelated_key_layouts(tmp
 
 def test_powershell_admin_membership_handles_deny_only_sid_and_blocks_profile_fallback(tmp_path):
     pwsh = _pwsh()
-    installer = (SCRIPTS / "install.ps1").read_text()
-    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    functions = _installer_functions()
     profile = tmp_path / "profile"
     program_data = tmp_path / "program-data"
     harness = tmp_path / "deny-only-test.ps1"
@@ -318,8 +504,7 @@ if ((Get-NonElevatedAuthorizedKeyPath $identity $normal) -ne [IO.Path]::GetFullP
 
 def test_windows_openssh_bootstrap_starts_before_refreshing_configuration(tmp_path):
     pwsh = _pwsh()
-    installer = (SCRIPTS / "install.ps1").read_text()
-    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    functions = _installer_functions()
     sshd = tmp_path / "sshd"
     sshd.write_text('#!/bin/sh\nif [ "$1" = -T ]; then printf \'port %s\\n\' "${RAGTIME_TEST_PORT:-22}"; fi\n')
     sshd.chmod(0o755)
@@ -345,8 +530,7 @@ if ($configuration.Port -ne 2222) {{ throw "configuration was not refreshed afte
 
 def test_windows_native_configuration_probe_handles_stderr_without_changing_stop_preference(tmp_path):
     pwsh = _pwsh()
-    installer = (SCRIPTS / "install.ps1").read_text()
-    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    functions = _installer_functions()
     sshd = tmp_path / "sshd"
     sshd.write_text("#!/bin/sh\nprintf 'missing sshd_config\\n' >&2\nexit 1\n")
     sshd.chmod(0o755)
@@ -365,8 +549,7 @@ if ($ErrorActionPreference -ne 'Stop') {{ throw "caller preference was changed t
 
 def test_windows_openssh_discovery_uses_system32_fallback_and_running_service_is_unchanged(tmp_path):
     pwsh = _pwsh()
-    installer = (SCRIPTS / "install.ps1").read_text()
-    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    functions = _installer_functions()
     fallback = tmp_path / "Windows" / "System32" / "OpenSSH" / "sshd.exe"
     fallback.parent.mkdir(parents=True)
     fallback.write_text("#!/bin/sh\nexit 0\n")
@@ -388,3 +571,29 @@ if ($trace.Count -ne 0) {{ throw 'running service was changed' }}
 """
     )
     subprocess.run([str(pwsh), "-NoProfile", "-File", str(harness)], check=True, capture_output=True, text=True)
+
+
+def _enrollment_outcome(tmp_path: Path, response: str) -> str:
+    pwsh = _pwsh()
+    harness = tmp_path / "outcome-test.ps1"
+    harness.write_text(_installer_functions() + f"\nWrite-Output (Get-EnrollmentOutcomeMessage ({response}) 'pair_win' 'user' 2222)\n")
+    result = subprocess.run([str(pwsh), "-NoProfile", "-File", str(harness)], check=True, capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def test_windows_tunnel_enrollment_before_ssh_verification_is_reported_pending_not_paired(tmp_path):
+    output = _enrollment_outcome(tmp_path, "[pscustomobject]@{ status = 'consumed'; transport = 'tunnel' }")
+    assert not output.startswith("Paired")
+    assert "pending" in output
+    assert "wizard" in output
+
+
+@pytest.mark.parametrize(
+    "response",
+    ["[pscustomobject]@{ status = 'paired'; transport = 'direct' }", "[pscustomobject]@{ status = 'paired'; transport = 'tunnel' }"],
+    ids=["direct", "tunnel"],
+)
+def test_windows_verified_enrollment_keeps_paired_success(tmp_path, response):
+    output = _enrollment_outcome(tmp_path, response)
+    assert output.startswith("Paired pair_win ")
+    assert "pending" not in output

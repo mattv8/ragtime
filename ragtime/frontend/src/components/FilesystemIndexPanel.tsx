@@ -8,6 +8,7 @@ import { IndexCard } from './IndexCard';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
 import { IndexingPill } from './IndexingPill';
+import { OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 
 // Polling interval for active jobs (2 seconds)
 const ACTIVE_JOB_POLL_INTERVAL = 2000;
@@ -85,7 +86,7 @@ function FilesystemIndexCard({
         <span className="meta-pill" title="OCR configuration">
           {config.ocr_mode === 'tesseract'
             ? 'OCR: Tesseract'
-            : `OCR: ${config.ocr_provider || 'default'}${config.ocr_vision_model ? `/${config.ocr_vision_model}` : ''}`}
+            : `OCR: ${config.ocr_provider ? OCR_PROVIDER_LABELS[config.ocr_provider as keyof typeof OCR_PROVIDER_LABELS] || config.ocr_provider : 'Default'}${config.ocr_vision_model ? `/${config.ocr_vision_model}` : ''}`}
         </span>
       )}
       {stats && stats.embedding_count > 0 && (

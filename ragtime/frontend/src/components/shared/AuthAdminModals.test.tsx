@@ -135,6 +135,45 @@ describe('Group modal child Escape handling', () => {
   );
 });
 
+// Advances the 3-second DeleteConfirmButton countdown on fake timers and leaves
+// real timers restored, so the caller can keep using waitFor/findBy afterwards.
+function advanceDeleteCountdown(row: HTMLElement, deleteButton: HTMLElement) {
+  vi.useFakeTimers();
+  try {
+    act(() => {
+      deleteButton.focus();
+    });
+    fireEvent.click(deleteButton);
+    const countingButton = within(row).getByRole('button', { name: /Confirm\? \(3\)/ });
+    expect(countingButton.getAttribute('data-delete-state')).toBe('confirming');
+
+    // Each tick is rescheduled from a useEffect, so advance one second per act().
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(within(row).getByRole('button', { name: /Confirm\? \(2\)/ }).textContent).toBe(
+      'Confirm? (2)',
+    );
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    act(() => {
+      vi.advanceTimersByTime(999);
+    });
+    expect(within(row).getByRole('button', { name: /Confirm\? \(1\)/ }).textContent).toBe(
+      'Confirm? (1)',
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    const readyButton = within(row).getByRole('button', { name: 'Confirm?' });
+    expect(readyButton.getAttribute('data-delete-state')).toBe('confirming');
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((res) => {
@@ -702,16 +741,7 @@ describe('AuthAdminModalHost protection state guards', () => {
     const row = document.querySelector('[data-group-detail-controls]') as HTMLElement;
     const deleteButton = within(row).getByRole('button', { name: 'Delete' });
     expect(deleteButton.getAttribute('data-delete-state')).toBe('idle');
-    await user.click(deleteButton);
-    await waitFor(
-      () => {
-        const confirmButton = within(row).getByRole('button', { name: 'Confirm?' });
-        expect(confirmButton.getAttribute('data-delete-state')).toBe('confirming');
-      },
-      {
-        timeout: 4000,
-      },
-    );
+    advanceDeleteCountdown(row, deleteButton);
     await user.click(within(row).getByRole('button', { name: 'Confirm?' }));
 
     expect(await screen.findByRole('alertdialog', { name: 'Unsaved changes' })).toBeTruthy();
@@ -733,13 +763,7 @@ describe('AuthAdminModalHost protection state guards', () => {
     await user.type(within(panel).getByLabelText('Name'), ' edited');
 
     const row = document.querySelector('[data-group-detail-controls]') as HTMLElement;
-    await user.click(within(row).getByRole('button', { name: 'Delete' }));
-    await waitFor(
-      () => expect(within(row).getByRole('button', { name: 'Confirm?' })).toBeTruthy(),
-      {
-        timeout: 4000,
-      },
-    );
+    advanceDeleteCountdown(row, within(row).getByRole('button', { name: 'Delete' }));
     await user.click(within(row).getByRole('button', { name: 'Confirm?' }));
     await user.click(await screen.findByRole('button', { name: 'Discard and continue' }));
 

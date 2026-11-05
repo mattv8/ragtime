@@ -30,7 +30,11 @@ import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO, HTTP_API_SECRET_FIELDS } from '@/types
 import { DisabledPopover } from './Popover';
 import { Icon, getToolIconType } from './Icon';
 import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
-import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
+import {
+  isOcrTargetComplete,
+  OcrVectorStoreFields,
+  OCR_PROVIDER_LABELS,
+} from './OcrVectorStoreFields';
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
@@ -2745,6 +2749,7 @@ export function ToolWizard({
   const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(
     undefined,
   );
+  const [defaultOcrProvider, setDefaultOcrProvider] = useState<OcrProvider | null>(null);
   const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(
     undefined,
   );
@@ -2758,6 +2763,7 @@ export function ToolWizard({
           const settings = response.settings;
           setVisionOcrAvailable(true);
           if (settings.default_ocr_provider) {
+            setDefaultOcrProvider(settings.default_ocr_provider);
             setDefaultOcrProviderLabel(
               OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider,
             );
@@ -3038,7 +3044,7 @@ export function ToolWizard({
       case 'odoo_shell':
         return { ...odooConfig, mode: odooConnectionMode };
       case 'ssh_shell':
-      case 'windows_shell':
+      case 'windows_shell': {
         if (connectionMode === 'quick') {
           const pairedConfig = { ...sshConfig };
           delete pairedConfig.key_path;
@@ -3048,7 +3054,12 @@ export function ToolWizard({
           delete pairedConfig.password;
           return pairedConfig;
         }
-        return sshConfig;
+        const manualConfig = { ...sshConfig };
+        delete manualConfig.pairing_id;
+        delete manualConfig.transport;
+        delete manualConfig.host_keys;
+        return manualConfig;
+      }
       case 'filesystem_indexer':
         // Use the tool name as the index_name (Step 3 Name field)
         return withFilesystemSchedule({
@@ -4167,6 +4178,16 @@ export function ToolWizard({
         return Boolean(sshConfig.host && sshConfig.user && hasSshAuth);
       }
       case 'filesystem_indexer':
+        if (
+          !isOcrTargetComplete(
+            filesystemConfig.ocr_mode || 'disabled',
+            filesystemConfig.ocr_provider ?? null,
+            filesystemConfig.ocr_vision_model || '',
+            defaultOcrProvider,
+          )
+        ) {
+          return false;
+        }
         // Validate based on mount type
         if (filesystemConfig.mount_type === 'docker_volume') {
           return Boolean(filesystemConfig.base_path);
@@ -6677,10 +6698,11 @@ export function ToolWizard({
               }
               ocrVisionModel={filesystemConfig.ocr_vision_model || ''}
               setOcrVisionModel={(model) =>
-                setFilesystemConfig((prev) => ({ ...prev, ocr_vision_model: model || undefined }))
+                setFilesystemConfig((prev) => ({ ...prev, ocr_vision_model: model || null }))
               }
               visionOcrAvailable={visionOcrAvailable}
               defaultOcrProviderLabel={defaultOcrProviderLabel}
+              defaultOcrProvider={defaultOcrProvider}
               defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
               vectorStoreType={filesystemConfig.vector_store_type || 'pgvector'}
               setVectorStoreType={(type) =>

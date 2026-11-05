@@ -189,6 +189,7 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         supports_embeddings=True,
         openai_compatible_chat=True,
         openai_compatible_embeddings=True,
+        supports_vision_ocr=True,
         responses_payload_keys=OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS,
     ),
     "anthropic": ModelProvider(
@@ -196,12 +197,14 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         label="Anthropic",
         llm_api_key_field="anthropic_api_key",
         supports_llm=True,
+        supports_vision_ocr=True,
     ),
     "claude_code": ModelProvider(
         name="claude_code",
         label="Claude Code",
         aliases=("claude-code",),
         supports_llm=True,
+        supports_vision_ocr=True,
         local=True,
     ),
     "openrouter": ModelProvider(

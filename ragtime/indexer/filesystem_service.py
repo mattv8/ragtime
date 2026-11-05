@@ -10,6 +10,7 @@ This service handles:
 """
 
 import asyncio
+import hashlib
 import json
 import mimetypes
 import os
@@ -25,8 +26,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncContextManager, AsyncIterator, Callable, Dict, List, Optional
+from typing import Any, AsyncContextManager, AsyncIterator, Callable, Dict, List, Optional, Sequence
 
+from langchain_core.documents import Document
 from prisma.enums import FilesystemIndexStatus as PrismaFilesystemIndexStatus
 from prisma.errors import TableNotFoundError
 
@@ -39,17 +41,18 @@ from ragtime.core.file_constants import (
     get_embedding_safety_margin,
 )
 from ragtime.core.logging import get_logger
-from ragtime.core.model_providers import normalize_provider_name, resolve_provider_base_url
+from ragtime.core.ocr_contract import OCR_PIPELINE_VERSION, ocr_pipeline_fingerprint
+from ragtime.core.ocr_target import OcrTarget, OcrTargetError, resolve_ocr_target
 from ragtime.indexer.chunking import (
     _chunk_with_chonkie_code,
     _chunk_with_recursive,
     chunk_semantic_segments,
     is_context_length_error,
     is_recursive_fallback_error,
-    rechunk_oversized_text,
-    rechunk_texts_batch,
+    rechunk_documents_batch,
 )
 from ragtime.indexer.document_parser import (
+    VisionOcrError,
     extract_image_structured_async,
     extract_text_from_file_async,
 )
@@ -76,6 +79,7 @@ from ragtime.indexer.models import (
 )
 from ragtime.indexer.repository import IndexerRepository, repository
 from ragtime.indexer.vector_backends import (
+    FILESYSTEM_STAGING_PREFIX,
     VectorStoreBackend,
     get_backend,
     get_faiss_backend,
@@ -105,6 +109,17 @@ class MountInfo:
     mounted_at: datetime = field(default_factory=utc_now)
     last_accessed: datetime = field(default_factory=utc_now)
     reference_count: int = 0  # Number of active jobs using this mount
+
+
+class _FilesystemChunk(str):
+    """Text payload retaining the source Document metadata until backend insertion."""
+
+    metadata: dict[str, Any]
+
+    def __new__(cls, text: str, metadata: dict[str, Any]):
+        value = super().__new__(cls, text)
+        value.metadata = metadata
+        return value
 
 
 class FilesystemIndexerService:
@@ -1071,6 +1086,41 @@ class FilesystemIndexerService:
             db = await get_db()
             await db.filesystemembedding.delete_many(where={"indexName": index_name, "filePath": file_path})
 
+    @staticmethod
+    def _refuse_lossy_embedding_fallback(
+        config: FilesystemConnectionConfig,
+        full_reindex: bool,
+        documents: Sequence[Document],
+    ) -> None:
+        """Raise instead of running the truncating per-chunk fallback when fidelity matters.
+
+        Full replacements, vision OCR output, and semantic table rows must not be
+        stored truncated or as placeholder vectors. Non-vision incremental content
+        without tables keeps the legacy fallback for compatibility.
+        """
+        if full_reindex:
+            reason = "this is a full replacement index"
+            at_risk = list(documents)
+        elif config.ocr_mode == OcrMode.VISION:
+            reason = "vision OCR output must not be truncated"
+            at_risk = list(documents)
+        else:
+            at_risk = [document for document in documents if document.metadata.get("segment_type") == "table"]
+            if not at_risk:
+                return
+            reason = "semantic table rows must not be truncated"
+
+        sources = sorted({str(document.metadata.get("source", "unknown")) for document in at_risk})
+        shown = ", ".join(sources[:5])
+        if len(sources) > 5:
+            shown += f" (+{len(sources) - 5} more)"
+        raise RuntimeError(
+            "Embedding context limit could not be met after re-chunking, and the lossy per-chunk "
+            f"truncation fallback was refused because {reason}. Affected source(s): {shown}. "
+            "The existing index was preserved. Reduce chunk_size, use an embedding model with a "
+            "larger context window, then re-run the index."
+        )
+
     async def _embed_chunks_with_fallback(
         self,
         embeddings,
@@ -1150,7 +1200,7 @@ class FilesystemIndexerService:
         self,
         index_name: str,
         file_path: str,
-        chunks: List[str],
+        chunks: Sequence[str],
         embeddings: List[List[float]],
         metadata: Dict[str, Any],
         backend: Optional[VectorStoreBackend] = None,
@@ -1169,7 +1219,14 @@ class FilesystemIndexerService:
             Number of embeddings inserted
         """
         if backend:
-            return await backend.store_embeddings(index_name, file_path, chunks, embeddings, metadata)
+            return await backend.store_embeddings(
+                index_name,
+                file_path,
+                list(chunks),
+                embeddings,
+                metadata,
+                [dict(getattr(chunk, "metadata", {})) for chunk in chunks],
+            )
 
         # Legacy pgvector path (backward compatibility)
         db = await get_db()
@@ -1230,6 +1287,10 @@ class FilesystemIndexerService:
         full_reindex: bool,
     ) -> None:
         """Process filesystem indexing job."""
+        backend: VectorStoreBackend | None = None
+        staging_index_name: str | None = None
+        target: OcrTarget | None = None
+        tracking_dimension: int | None = None
         try:
             job.status = FilesystemIndexStatus.INDEXING
             job.started_at = utc_now()
@@ -1262,6 +1323,7 @@ class FilesystemIndexerService:
 
             # Initialize embeddings
             embeddings = await self._get_embeddings(app_settings)
+            chunking_use_tokens = bool(app_settings.get("chunking_use_tokens", True))
 
             # Get embedding model context limit for chunk validation
             # (same as document indexer to ensure oversized chunks are truncated)
@@ -1281,18 +1343,19 @@ class FilesystemIndexerService:
             vector_store_type = getattr(config, "vector_store_type", VectorStoreType.PGVECTOR)
             backend = get_backend(vector_store_type)
             logger.info(f"Using {vector_store_type.value} backend for index '{config.index_name}'")
+            if full_reindex:
+                staging_index_name = f"{FILESYSTEM_STAGING_PREFIX}{job.id}"
 
             # Mount filesystem if needed (SMB/NFS) and process files
             async with self._mount_filesystem(config, job.tool_config_id) as effective_path:
-                # Resolve OCR vision model - use config value if set, otherwise global default
-                resolved_ocr_provider = config.ocr_provider.value if config.ocr_provider else None
-                resolved_ocr_vision_model = config.ocr_vision_model
+                # Freeze the non-secret target once for the whole job. Request-time
+                # credential lookup remains in the OCR transport.
                 if config.ocr_mode == OcrMode.VISION:
-                    if not resolved_ocr_provider:
-                        resolved_ocr_provider = str(app_settings.get("default_ocr_provider") or "ollama")
-                    resolved_ocr_provider = normalize_provider_name(resolved_ocr_provider)
-                if not resolved_ocr_vision_model and config.ocr_mode == OcrMode.VISION:
-                    resolved_ocr_vision_model = app_settings.get("default_ocr_vision_model")
+                    target = resolve_ocr_target(app_settings, config)
+                    if target is None:
+                        raise VisionOcrError("Vision OCR target is not configured")
+                resolved_ocr_provider = target.provider if target else None
+                resolved_ocr_vision_model = target.model if target else None
 
                 # Log OCR mode being used
                 if config.ocr_mode == OcrMode.VISION and resolved_ocr_vision_model:
@@ -1314,10 +1377,17 @@ class FilesystemIndexerService:
                     chunk_overlap=config.chunk_overlap,
                     max_file_size_mb=config.max_file_size_mb,
                     max_total_files=config.max_total_files,
+                    vector_store_type=config.vector_store_type,
                     ocr_mode=config.ocr_mode,
                     ocr_provider=OcrProvider(resolved_ocr_provider) if resolved_ocr_provider else None,
                     ocr_vision_model=resolved_ocr_vision_model,
                 )
+                target_fingerprint = ""
+                if target:
+                    target_fingerprint = json.dumps(
+                        {"target": target.to_snapshot(), "pipeline": ocr_pipeline_fingerprint()},
+                        sort_keys=True,
+                    )
 
                 # Collect files to process - run in thread to avoid blocking on network filesystems
                 logger.info(f"Collecting files from {effective_path}...")
@@ -1377,6 +1447,8 @@ class FilesystemIndexerService:
                 await asyncio.sleep(0.05)
 
                 if not files:
+                    if full_reindex:
+                        raise RuntimeError("Replacement index has no matching files; existing index was preserved")
                     job.status = FilesystemIndexStatus.COMPLETED
                     job.completed_at = utc_now()
                     job.error_message = "No files matched the configured patterns"
@@ -1384,10 +1456,6 @@ class FilesystemIndexerService:
                     return
 
                 logger.info(f"Found {len(files)} files to process")
-
-                if full_reindex:
-                    logger.info(f"Full re-index requested. Clearing existing data for index '{config.index_name}'")
-                    await self.delete_index(config.index_name)
 
                 base_path = effective_path
                 existing_metadata_by_path: Dict[str, FilesystemFileMetadata] = {}
@@ -1430,6 +1498,7 @@ class FilesystemIndexerService:
                     async with file_semaphore:
                         rel_path = str(file_path.relative_to(base_path))
                         try:
+                            is_vision_image = bool(target and file_path.suffix.lower() in OCR_EXTENSIONS)
                             existing_meta = existing_metadata_by_path.get(rel_path)
                             if existing_meta and not full_reindex:
                                 stat_result = await asyncio.to_thread(file_path.stat)
@@ -1440,7 +1509,7 @@ class FilesystemIndexerService:
                                     stat_result.st_mtime,
                                     tz=timezone.utc,
                                 )
-                                if stat_result.st_size == existing_meta.file_size and modified_at <= last_indexed:
+                                if not is_vision_image and stat_result.st_size == existing_meta.file_size and modified_at <= last_indexed:
                                     return (
                                         rel_path,
                                         [],
@@ -1450,6 +1519,8 @@ class FilesystemIndexerService:
 
                             # Check if file changed (incremental indexing)
                             current_hash = await asyncio.to_thread(compute_file_hash, file_path)
+                            if is_vision_image:
+                                current_hash = hashlib.sha256(f"{current_hash}:{target_fingerprint}".encode()).hexdigest()
 
                             if not full_reindex and existing_meta and existing_meta.file_hash == current_hash:
                                 # File unchanged, skip
@@ -1465,8 +1536,13 @@ class FilesystemIndexerService:
                                 await self._update_job(job)
 
                             # Load and chunk the file
-                            use_token_chunking = app_settings.get("chunking_use_tokens", True)
-                            chunks = await self._load_and_chunk_file(file_path, working_config, use_token_chunking)
+                            chunks = await self._load_and_chunk_file(
+                                file_path,
+                                working_config,
+                                chunking_use_tokens,
+                                source_path=rel_path,
+                                ocr_target=target,
+                            )
 
                             # Track progress - increment counter after loading each file
                             async with files_loaded_lock:
@@ -1476,6 +1552,8 @@ class FilesystemIndexerService:
                                     await self._update_job(job)
 
                             return (rel_path, chunks, current_hash, None)
+                        except (OcrTargetError, VisionOcrError):
+                            raise
                         except Exception as e:
                             return (rel_path, [], None, str(e))
 
@@ -1505,6 +1583,14 @@ class FilesystemIndexerService:
                     tasks = [process_single_file(fp) for fp in batch_files]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
 
+                    if self._is_cancelled(job.id):
+                        job.status = FilesystemIndexStatus.CANCELLED
+                        job.error_message = "Cancelled by user"
+                        job.completed_at = utc_now()
+                        job.cancel_requested = True
+                        await self._update_job(job)
+                        return
+
                     # Update progress after file loading phase completes for this batch
                     job.current_directory = f"Embedding batch {batch_start // batch_size + 1}"
                     await self._update_job(job)
@@ -1515,6 +1601,10 @@ class FilesystemIndexerService:
                     for i, result in enumerate(results):
                         file_path = batch_files[i]
                         if isinstance(result, BaseException):
+                            if isinstance(result, (OcrTargetError, VisionOcrError)):
+                                raise result
+                            if full_reindex:
+                                raise RuntimeError(f"Failed to process {file_path}: {result}") from result
                             logger.debug(f"File processing exception: {result}")
                             job.processed_files += 1
                             continue
@@ -1526,6 +1616,8 @@ class FilesystemIndexerService:
                             continue
 
                         if error:
+                            if full_reindex:
+                                raise RuntimeError(f"Failed to process {rel_path}: {error}")
                             logger.debug(f"Skipped {rel_path}: {error}")
                             job.processed_files += 1
                             continue
@@ -1551,13 +1643,24 @@ class FilesystemIndexerService:
                         # Any chunk exceeding this TIKTOKEN count may exceed BERT limit
                         safe_token_limit = int(embedding_context_limit * safety_margin)
 
-                        # Run re-chunking in thread to avoid blocking event loop
-                        all_chunks, chunk_file_map, rechunked_count = await asyncio.to_thread(
-                            rechunk_texts_batch,
-                            files_to_embed,
+                        # Re-chunk Documents per file so each replacement chunk retains
+                        # its source and OCR metadata. Flattening text here loses that
+                        # association when one source expands to several chunks.
+                        documents_to_embed = [
+                            Document(
+                                page_content=str(chunk),
+                                metadata={**dict(getattr(chunk, "metadata", {})), "source": rel_path},
+                            )
+                            for rel_path, chunks, _, _ in files_to_embed
+                            for chunk in chunks
+                        ]
+                        all_documents, rechunked_count = await asyncio.to_thread(
+                            rechunk_documents_batch,
+                            documents_to_embed,
                             safe_token_limit,
                             config.chunk_overlap,
                         )
+                        all_chunks = [document.page_content for document in all_documents]
 
                         if rechunked_count > 0:
                             logger.info(f"Re-chunked {rechunked_count} oversized chunks (safe_limit: {safe_token_limit}, safety_margin: {safety_margin:.0%})")
@@ -1594,22 +1697,19 @@ class FilesystemIndexerService:
                                     aggressive_limit = int(safe_token_limit * factor)
 
                                     rechunked = 0
-                                    new_chunks: list[str] = []
-                                    new_file_map: list[str] = []
-                                    for chunk_text, rel in zip(all_chunks, chunk_file_map):
-                                        tokens = count_tokens(chunk_text)
+                                    new_documents: list[Document] = []
+                                    for document in all_documents:
+                                        tokens = count_tokens(document.page_content)
                                         if tokens > aggressive_limit:
-                                            sub = rechunk_oversized_text(
-                                                chunk_text,
+                                            sub_documents, _ = rechunk_documents_batch(
+                                                [document],
                                                 aggressive_limit,
                                                 config.chunk_overlap,
                                             )
-                                            new_chunks.extend(sub)
-                                            new_file_map.extend([rel] * len(sub))
+                                            new_documents.extend(sub_documents)
                                             rechunked += 1
                                         else:
-                                            new_chunks.append(chunk_text)
-                                            new_file_map.append(rel)
+                                            new_documents.append(document)
 
                                     if rechunked > 0:
                                         logger.warning(
@@ -1618,20 +1718,24 @@ class FilesystemIndexerService:
                                             f"{aggressive_limit} tokens, retry "
                                             f"{context_retries}/{len(context_retry_factors)}"
                                         )
-                                        all_chunks = new_chunks
-                                        chunk_file_map = new_file_map
+                                        all_documents = new_documents
+                                        all_chunks = [document.page_content for document in all_documents]
                                         modified = True
                                         break
 
                                 if modified:
                                     continue  # Retry embedding
 
-                                # All retries exhausted - individual chunk fallback
+                                # All retries exhausted. The legacy per-chunk fallback truncates and
+                                # can store placeholder vectors, so refuse it where fidelity matters.
+                                self._refuse_lossy_embedding_fallback(config, full_reindex, all_documents)
                                 logger.warning("Context length retries exhausted, falling back to per-chunk embedding")
                                 all_embeddings = await self._embed_chunks_with_fallback(embeddings, all_chunks)
                                 break
 
                         if embedding_failed or all_embeddings is None:
+                            if full_reindex:
+                                raise RuntimeError("Embedding failed while preparing replacement index")
                             for rel_path, _, _, _ in files_to_embed:
                                 job.processed_files += 1
                             await self._update_job(job)
@@ -1647,48 +1751,53 @@ class FilesystemIndexerService:
                                     job.completed_at = utc_now()
                                     await self._update_job(job)
                                     return
-                                settings.embedding_dimension = current_dim
-                                settings.embedding_config_hash = current_config_hash
+                                tracking_dimension = current_dim
 
                         # Collect metadata for batch upsert
                         metadata_to_upsert: List[FilesystemFileMetadata] = []
 
-                        # Distribute embeddings back to files and insert
-                        embed_idx = 0
-                        for rel_path, chunks, current_hash, file_path in files_to_embed:
-                            chunk_count = len(chunks)
-                            file_embeddings = all_embeddings[embed_idx : embed_idx + chunk_count]
-                            embed_idx += chunk_count
+                        # Distribute embeddings using post-rechunk counts and metadata.
+                        if len(all_embeddings) != len(all_documents):
+                            raise RuntimeError("Embedding count does not match re-chunked documents")
+                        documents_by_source: dict[str, list[tuple[Document, list[float]]]] = defaultdict(list)
+                        for document, embedding in zip(all_documents, all_embeddings, strict=True):
+                            source = str(document.metadata.get("source", ""))
+                            documents_by_source[source].append((document, embedding))
+                        for rel_path, _chunks, current_hash, file_path in files_to_embed:
+                            file_records = documents_by_source.pop(rel_path, [])
+                            file_chunks = [_FilesystemChunk(document.page_content, dict(document.metadata)) for document, _embedding in file_records]
+                            file_embeddings = [embedding for _document, embedding in file_records]
+                            chunk_count = len(file_chunks)
+                            if not chunk_count:
+                                if full_reindex:
+                                    raise RuntimeError(f"No chunks produced for {rel_path} while preparing replacement index")
+                                continue
 
                             try:
                                 # Delete old embeddings for this file
-                                await self._delete_file_embeddings(config.index_name, rel_path, backend=backend)
+                                storage_index_name = staging_index_name or config.index_name
+                                await self._delete_file_embeddings(storage_index_name, rel_path, backend=backend)
 
                                 # Insert new embeddings
                                 inserted = await self._insert_embeddings(
-                                    index_name=config.index_name,
+                                    index_name=storage_index_name,
                                     file_path=rel_path,
-                                    chunks=chunks,
+                                    chunks=file_chunks,
                                     embeddings=file_embeddings,
                                     metadata={"source": rel_path},
                                     backend=backend,
                                 )
 
-                                # Update embedding tracking after first success
+                                # Delay tracking updates until the replacement has been
+                                # promoted, preserving previous tracking on failure.
                                 if inserted > 0 and tracking_needs_update:
-                                    await repo.update_embedding_tracking(
-                                        dimension=len(file_embeddings[0]),
-                                        config_hash=current_config_hash,
-                                    )
-                                    tracking_needs_update = False
-                                    settings.embedding_dimension = len(file_embeddings[0])
-                                    settings.embedding_config_hash = current_config_hash
+                                    tracking_dimension = len(file_embeddings[0])
 
                                 # Collect file metadata for batch upsert
                                 file_stat = file_path.stat()
                                 metadata_to_upsert.append(
                                     FilesystemFileMetadata(
-                                        index_name=config.index_name,
+                                        index_name=storage_index_name,
                                         file_path=rel_path,
                                         file_hash=current_hash,
                                         file_size=file_stat.st_size,
@@ -1704,7 +1813,13 @@ class FilesystemIndexerService:
 
                             except Exception as e:
                                 logger.warning(f"Error inserting embeddings for {rel_path}: {e}")
+                                if full_reindex:
+                                    raise
                                 job.processed_files += 1
+
+                        if documents_by_source:
+                            unexpected_sources = ", ".join(sorted(documents_by_source))
+                            raise RuntimeError(f"Re-chunked documents have unknown sources: {unexpected_sources}")
 
                         # Batch upsert all file metadata for this batch
                         if metadata_to_upsert:
@@ -1712,12 +1827,16 @@ class FilesystemIndexerService:
                                 await self._upsert_file_metadata_batch(metadata_to_upsert)
                             except Exception as e:
                                 logger.warning(f"Batch metadata upsert failed: {e}")
+                                if full_reindex:
+                                    raise
                                 # Fall back to individual upserts
                                 for meta in metadata_to_upsert:
                                     try:
                                         await self._upsert_file_metadata(meta)
                                     except Exception as inner_e:
                                         logger.warning(f"Individual metadata upsert failed for {meta.file_path}: {inner_e}")
+                                        if full_reindex:
+                                            raise
 
                     # Update job progress after each batch
                     await self._update_job(job)
@@ -1726,7 +1845,19 @@ class FilesystemIndexerService:
                         logger.info(f"Processed {job.processed_files}/{job.total_files} files, skipped {job.skipped_files} unchanged")
 
             # Finalize the vector store (FAISS saves to disk here, pgvector is no-op)
-            await backend.finalize_index(config.index_name)
+            storage_index_name = staging_index_name or config.index_name
+            if full_reindex and job.total_chunks == 0:
+                raise RuntimeError("Replacement index produced no records; existing index was preserved")
+            await backend.finalize_index(storage_index_name)
+            if staging_index_name:
+                await backend.publish_staged_index(staging_index_name, config.index_name)  # type: ignore[attr-defined]
+                staging_index_name = None
+
+            if tracking_needs_update and tracking_dimension is not None:
+                await repo.update_embedding_tracking(
+                    dimension=tracking_dimension,
+                    config_hash=current_config_hash,
+                )
 
             # Update tool config with last indexed timestamp (after the for loop, inside async with)
             await self._update_tool_config_last_indexed(job.tool_config_id)
@@ -1742,9 +1873,6 @@ class FilesystemIndexerService:
         except asyncio.CancelledError:
             # Task was cancelled during shutdown - don't try to update DB
             logger.info(f"Filesystem indexing task {job.id} cancelled")
-            self._active_jobs.pop(job.id, None)
-            self._cancellation_flags.pop(job.id, None)
-            self._running_tasks.pop(job.id, None)
             raise
         except Exception as e:
             logger.exception(f"Filesystem indexing failed: {e}")
@@ -1761,11 +1889,12 @@ class FilesystemIndexerService:
                         logger.warning(f"Cannot update job {job.id} - DB disconnected during shutdown")
                     else:
                         raise
-            self._active_jobs.pop(job.id, None)
-            self._cancellation_flags.pop(job.id, None)
-            self._running_tasks.pop(job.id, None)
         else:
-            # Success path - update DB and clean up
+            # User cancellation returns from the processing loop after writing
+            # its terminal status; it must not run successful-completion work.
+            if job.status != FilesystemIndexStatus.COMPLETED:
+                return
+
             await self._update_job(job)
 
             # Post-completion actions for FAISS indexes
@@ -1785,6 +1914,12 @@ class FilesystemIndexerService:
                 except Exception as e:
                     logger.error(f"Failed to post-process FAISS index after completion: {e}")
 
+        finally:
+            if staging_index_name and backend:
+                try:
+                    await backend.discard_staged_index(staging_index_name)  # type: ignore[attr-defined]
+                except Exception as cleanup_error:
+                    logger.warning("Failed to discard staged filesystem index: %s", cleanup_error)
             self._active_jobs.pop(job.id, None)
             self._cancellation_flags.pop(job.id, None)
             self._running_tasks.pop(job.id, None)
@@ -1798,6 +1933,8 @@ class FilesystemIndexerService:
                 connection_config = dict(tool_config.connection_config)
                 connection_config["last_indexed_at"] = utc_now().isoformat()
                 await repository.update_tool_config(tool_config_id, {"connection_config": connection_config})
+        except VisionOcrError:
+            raise
         except Exception as e:
             logger.warning(f"Failed to update last_indexed_at: {e}")
 
@@ -1813,6 +1950,8 @@ class FilesystemIndexerService:
         file_path: Path,
         config: FilesystemConnectionConfig,
         use_token_chunking: bool = True,
+        source_path: str | None = None,
+        ocr_target: OcrTarget | None = None,
     ) -> List[str]:
         """Load a file and split it into chunks.
 
@@ -1828,8 +1967,7 @@ class FilesystemIndexerService:
         document_parser via _read_file_content() before chunking.
         """
         try:
-            file_path_str = str(file_path)
-            metadata = {"source": file_path_str}
+            metadata = {"source": source_path or str(file_path)}
             suffix = file_path.suffix.lower()
 
             # For images with vision OCR: use semantic chunking to keep
@@ -1837,17 +1975,22 @@ class FilesystemIndexerService:
             if suffix in OCR_EXTENSIONS and config.ocr_mode in {
                 OcrMode.VISION,
             }:
-                docs = await self._load_image_with_semantic_chunks(file_path, config, metadata)
-                if docs:
-                    return [doc.page_content for doc in docs]
-                # Fall through to standard processing if semantic extraction fails
+                docs = await self._load_image_with_semantic_chunks(file_path, config, metadata, use_token_chunking, ocr_target)
+                return [_FilesystemChunk(doc.page_content, dict(doc.metadata)) for doc in docs]
 
             # Read file content (handles PDF, DOCX, images with OCR, etc.)
             content = await self._read_file_content_async(
                 file_path,
-                ocr_mode=(config.ocr_mode.value if hasattr(config.ocr_mode, "value") else str(config.ocr_mode)),
+                ocr_mode=(
+                    config.ocr_mode.value
+                    if suffix in OCR_EXTENSIONS and hasattr(config.ocr_mode, "value")
+                    else str(config.ocr_mode)
+                    if suffix in OCR_EXTENSIONS
+                    else OcrMode.DISABLED.value
+                ),
                 ocr_provider=(config.ocr_provider.value if config.ocr_provider else None),
                 ocr_vision_model=config.ocr_vision_model,
+                ocr_target=ocr_target,
             )
             if not content:
                 return []
@@ -1862,7 +2005,7 @@ class FilesystemIndexerService:
                     metadata,
                     use_token_chunking,
                 )
-                return [doc.page_content for doc in docs]
+                return [_FilesystemChunk(doc.page_content, dict(doc.metadata)) for doc in docs]
             except (ValueError, RuntimeError, LookupError) as e:
                 # Language not supported by Chonkie - use recursive chunker
                 if is_recursive_fallback_error(e):
@@ -1875,9 +2018,11 @@ class FilesystemIndexerService:
                         metadata,
                         use_token_chunking,
                     )
-                    return [doc.page_content for doc in docs]
+                    return [_FilesystemChunk(doc.page_content, dict(doc.metadata)) for doc in docs]
                 raise
 
+        except (OcrTargetError, VisionOcrError):
+            raise
         except Exception as e:
             logger.warning(f"Error loading file {file_path}: {e}")
             return []
@@ -1887,6 +2032,8 @@ class FilesystemIndexerService:
         file_path: Path,
         config: FilesystemConnectionConfig,
         metadata: dict,
+        use_token_chunking: bool,
+        ocr_target: OcrTarget | None = None,
     ) -> List:
         """
         Load an image and chunk using semantic boundaries from vision OCR.
@@ -1903,34 +2050,30 @@ class FilesystemIndexerService:
         Returns:
             List of Document objects, or empty list if extraction fails
         """
-        # Get Ollama base URL
-        app_settings = await get_app_settings()
-        effective_provider = config.ocr_provider.value if config.ocr_provider else None
-        if not effective_provider:
-            effective_provider = str(app_settings.get("default_ocr_provider") or "ollama")
-        effective_provider = normalize_provider_name(effective_provider)
-        vision_base_url = resolve_provider_base_url(
-            app_settings,
-            effective_provider,
-            "llm",
-        )
-        api_key_field = f"{effective_provider}_api_key"
-        if effective_provider == "openai":
-            api_key_field = "openai_api_key"
-        vision_api_key = app_settings.get(api_key_field)
+        target = ocr_target
+        if target is None:
+            app_settings = await get_app_settings()
+            target = resolve_ocr_target(app_settings, config)
+        if target is None:
+            raise VisionOcrError(f"Vision OCR target is not configured for {file_path}")
+        metadata = metadata | {
+            "ocr_provider": target.provider,
+            "ocr_model": target.model,
+            "ocr_ingestion_version": OCR_PIPELINE_VERSION,
+            "ocr_pipeline_fingerprint": ocr_pipeline_fingerprint(),
+        }
 
         # Get structured OCR result (semaphore is applied at vision_models level)
         result = await extract_image_structured_async(
             file_path,
-            ocr_provider=effective_provider,
-            ocr_vision_model=config.ocr_vision_model,
-            vision_base_url=vision_base_url,
-            vision_api_key=vision_api_key,
+            ocr_provider=target.provider,
+            ocr_vision_model=target.model,
+            vision_base_url=target.base_url,
+            vision_api_key=None,
         )
 
         if not result:
-            logger.debug(f"Structured OCR failed for {file_path}, using fallback")
-            return []
+            raise VisionOcrError(f"Structured vision OCR failed for {file_path}")
 
         # Handle raw text fallback (when structured parsing failed)
         if result.raw_text and not result.extracted_text:
@@ -1942,6 +2085,7 @@ class FilesystemIndexerService:
                 config.chunk_size,
                 config.chunk_overlap,
                 metadata,
+                use_token_chunking,
             )
             return docs
 
@@ -1956,6 +2100,7 @@ class FilesystemIndexerService:
             config.chunk_size,
             config.chunk_overlap,
             metadata,
+            use_tokens=use_token_chunking,
         )
 
         logger.debug(f"Semantic chunking for {file_path.name}: {len(segments)} segments -> {len(docs)} chunks")
@@ -1967,6 +2112,7 @@ class FilesystemIndexerService:
         ocr_mode: str = "disabled",
         ocr_provider: Optional[str] = None,
         ocr_vision_model: Optional[str] = None,
+        ocr_target: OcrTarget | None = None,
     ) -> str:
         """Read file content using the unified document parser (handles OCR, docs, text).
 
@@ -1976,19 +2122,24 @@ class FilesystemIndexerService:
         vision_api_key = None
         effective_provider = ocr_provider
         if ocr_mode == "vision":
-            app_settings = await get_app_settings()
-            if not effective_provider:
-                effective_provider = str(app_settings.get("default_ocr_provider") or "ollama")
-            effective_provider = normalize_provider_name(effective_provider)
-            vision_base_url = resolve_provider_base_url(
-                app_settings,
-                effective_provider,
-                "llm",
-            )
-            api_key_field = f"{effective_provider}_api_key"
-            if effective_provider == "openai":
-                api_key_field = "openai_api_key"
-            vision_api_key = app_settings.get(api_key_field)
+            target = ocr_target
+            if target is None:
+                app_settings = await get_app_settings()
+                target_config = {
+                    key: value
+                    for key, value in {
+                        "ocr_mode": ocr_mode,
+                        "ocr_provider": effective_provider,
+                        "ocr_vision_model": ocr_vision_model,
+                    }.items()
+                    if value is not None
+                }
+                target = resolve_ocr_target(app_settings, target_config)
+            if target is None:
+                raise VisionOcrError(f"Vision OCR target is not configured for {file_path}")
+            effective_provider = target.provider
+            ocr_vision_model = target.model
+            vision_base_url = target.base_url
 
         # Semaphore is applied at vision_models level for Ollama requests
         text = await extract_text_from_file_async(

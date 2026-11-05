@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Coroutine, Dict, List, Literal, Optional, cast
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import (
@@ -134,6 +135,7 @@ from ragtime.core.model_limits import (
     resolve_model_provider_label,
     supports_embeddings,
     supports_function_calling,
+    supports_image_input,
     supports_reasoning,
     supports_reasoning_effort,
     supports_responses_api,
@@ -155,6 +157,7 @@ from ragtime.core.model_providers import (
     resolve_provider_api_key,
     resolve_provider_base_url,
 )
+from ragtime.core.ocr_target import OcrTargetError, resolve_ocr_base_url, resolve_ocr_target
 from ragtime.core.ollama import (
     extract_capabilities,
     extract_effective_context_length,
@@ -405,6 +408,7 @@ from ragtime.indexer.visualization_retry import (
 from ragtime.indexer.workspace_state import build_workspace_chat_state, summary_to_conversation_response
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
+from ragtime.remote_client.removal import execute_windows_cleanup, is_windows_pairing_tool, validate_cleanup_request
 from ragtime.remote_client.repository import remote_pairing_repository
 from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
@@ -479,6 +483,14 @@ def _format_validation_error(exc: Exception) -> str:
         message = str(error.get("msg", "Invalid value"))
         parts.append(f"{location}: {message}")
     return "; ".join(parts) or "Invalid configuration"
+
+
+async def _validate_vision_ocr_target(config: IndexConfig) -> None:
+    """Reject vision jobs without a resolvable provider/model target."""
+    if config.ocr_mode is not OcrMode.VISION:
+        return
+    app_settings = await repository.get_settings()
+    resolve_ocr_target(app_settings, config)
 
 
 def _job_to_response(job: Any, include_vector_store_type: bool = False) -> IndexJobResponse:
@@ -1112,8 +1124,11 @@ async def upload_and_index(
     )
 
     try:
+        await _validate_vision_ocr_target(config)
         job = await indexer.create_index_from_upload(file.file, file.filename, config)
         return _job_to_response(job, include_vector_store_type=True)
+    except OcrTargetError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("Failed to start indexing job")
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -1138,6 +1153,7 @@ async def index_from_git(
     config.name = request.name  # Ensure name is set
 
     try:
+        await _validate_vision_ocr_target(config)
         job = await indexer.create_index_from_git(
             git_url=request.git_url,
             branch=request.git_branch,
@@ -1145,6 +1161,8 @@ async def index_from_git(
             git_token=request.git_token,
         )
         return _job_to_response(job, include_vector_store_type=True)
+    except OcrTargetError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("Failed to start git indexing job")
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -1230,6 +1248,7 @@ async def reindex_from_git(
     )
 
     try:
+        await _validate_vision_ocr_target(config)
         job = await indexer.create_index_from_git(
             git_url=metadata.source,
             branch=(getattr(metadata, "gitBranch", None) or "main"),
@@ -1237,6 +1256,8 @@ async def reindex_from_git(
             git_token=git_token,
         )
         return _job_to_response(job)
+    except OcrTargetError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("Failed to start re-indexing job")
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -1290,18 +1311,25 @@ async def retry_failed_job(
             raise HTTPException(status_code=400, detail="Git URL not found in job. Cannot retry.")
 
         try:
+            config = await indexer.restore_retry_job_config(failed_job)
+            await _validate_vision_ocr_target(config)
             new_job = await indexer.create_index_from_git(
                 git_url=failed_job.git_url,
                 branch=failed_job.git_branch,
-                config=failed_job.config,
+                config=config,
                 git_token=git_token,
             )
             return _job_to_response(new_job)
+        except (OcrTargetError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
             logger.exception("Failed to retry indexing job")
             raise HTTPException(status_code=500, detail=str(e)) from e
     elif failed_job.source_type == "upload":
         try:
+            # A retry creates a new job. An in-place resume keeps its frozen target.
+            config = await indexer.restore_retry_job_config(failed_job)
+            await _validate_vision_ocr_target(config)
             new_job = await indexer.retry_upload_job(failed_job)
             return _job_to_response(new_job)
         except ValueError as e:
@@ -1521,7 +1549,11 @@ async def update_index_config(
 
     # Merge with existing config snapshot
     existing_snapshot = getattr(metadata, "configSnapshot", None)
-    existing_config: dict[str, Any] = existing_snapshot if isinstance(existing_snapshot, dict) else {}
+    existing_config: dict[str, Any] = dict(existing_snapshot) if isinstance(existing_snapshot, dict) else {}
+    if str(existing_config.get("ocr_mode") or "").strip().lower() == "ollama":
+        existing_config["ocr_mode"] = OcrMode.VISION.value
+        if "ocr_provider" not in existing_config:
+            existing_config["ocr_provider"] = OcrProvider.OLLAMA.value
     new_config = {}
     clear_git_token = "git_token" in request.model_fields_set and not (request.git_token or "").strip()
     replacement_token = request.git_token.strip() if request.git_token and request.git_token.strip() else None
@@ -1579,10 +1611,10 @@ async def update_index_config(
         new_config["max_file_size_kb"] = request.max_file_size_kb
     if request.ocr_mode is not None:
         new_config["ocr_mode"] = request.ocr_mode
-    if request.ocr_provider is not None:
-        new_config["ocr_provider"] = request.ocr_provider or None
-    if request.ocr_vision_model is not None:
-        new_config["ocr_vision_model"] = request.ocr_vision_model
+    if "ocr_provider" in request.model_fields_set:
+        new_config["ocr_provider"] = normalize_provider_name(request.ocr_provider) if request.ocr_provider else None
+    if "ocr_vision_model" in request.model_fields_set:
+        new_config["ocr_vision_model"] = request.ocr_vision_model or None
     if request.git_clone_timeout_minutes is not None:
         new_config["git_clone_timeout_minutes"] = request.git_clone_timeout_minutes
     if request.git_history_depth is not None:
@@ -1593,6 +1625,12 @@ async def update_index_config(
         new_config["reindex_start_minute"] = request.reindex_start_minute
     if "reindex_timezone" in request.model_fields_set:
         new_config["reindex_timezone"] = request.reindex_timezone
+
+    if str(new_config.get("ocr_mode") or "").strip().lower() == OcrMode.VISION.value:
+        try:
+            resolve_ocr_target(await repository.get_settings(), new_config)
+        except OcrTargetError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     success = await repository.update_index_config(
         name=name,
@@ -2313,6 +2351,9 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
     """
     updates = request.model_dump(exclude_unset=True)
 
+    if updates.get("default_ocr_provider"):
+        updates["default_ocr_provider"] = normalize_provider_name(getattr(updates["default_ocr_provider"], "value", updates["default_ocr_provider"]))
+
     if "server_name" in updates:
         normalized_server_name = str(updates.get("server_name") or "").strip()
         if not normalized_server_name:
@@ -2333,6 +2374,13 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
 
     # Enforce mutually-exclusive GitHub auth modes (PAT vs Copilot OAuth).
     current_settings = await repository.get_settings()
+    ocr_setting_fields = {"default_ocr_mode", "default_ocr_provider", "default_ocr_vision_model"}
+    if ocr_setting_fields.intersection(updates):
+        merged_ocr_settings = current_settings.model_copy(update=updates)
+        try:
+            resolve_ocr_target(merged_ocr_settings)
+        except OcrTargetError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     timeout_setting_fields = {
         "userspace_exec_timeout_default_seconds",
         "userspace_exec_timeout_max_seconds",
@@ -2408,13 +2456,6 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
         _apply_runtime_setting_hooks(result.model_dump())
     else:
         await rag.initialize()
-
-    # Reset OCR semaphore if concurrency limit was changed
-    if "ocr_concurrency_limit" in updates:
-        from ragtime.core.ollama_concurrency import reset_ollama_semaphore
-
-        reset_ollama_semaphore()
-        logger.info(f"OCR concurrency limit changed to {updates['ocr_concurrency_limit']}, semaphore will reinitialize on next use")
 
     # Notify MCP clients that tools may have changed (e.g., aggregate_search toggle)
     notify_tools_changed()
@@ -3097,7 +3138,13 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
 
 
 @router.delete("/tools/{tool_id}", tags=["Tools"])
-async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin)):
+async def delete_tool_config(
+    tool_id: str,
+    request: Request,
+    ssh_cleanup: Literal["disable_ssh", "pairing_only"] | None = Query(default=None),
+    confirm_machine_wide: bool | None = Query(default=None),
+    _user: User = Depends(require_admin),
+):
     """
     Delete a tool configuration. Admin only.
 
@@ -3111,6 +3158,28 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     tool = await repository.get_tool_config(tool_id)
     if tool is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    try:
+        cleanup_mode = validate_cleanup_request(ssh_cleanup, confirm_machine_wide)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    connection_config = tool.connection_config or {}
+    is_windows_pairing = is_windows_pairing_tool(tool.tool_type, connection_config)
+    if cleanup_mode is not None and not is_windows_pairing:
+        raise HTTPException(status_code=400, detail="ssh_cleanup is only available for verified Windows pairings")
+    cleanup = None
+    if cleanup_mode is not None:
+        pairing = await remote_pairing_repository.get(str(connection_config["pairing_id"]))
+        pairing_status = str(getattr(pairing.get("status"), "value", pairing.get("status"))) if pairing else ""
+        if pairing is None or str(pairing["toolId"]) != tool_id or pairing_status != "paired":
+            raise HTTPException(status_code=400, detail="ssh_cleanup is only available for verified Windows pairings")
+        cleanup = await execute_windows_cleanup(
+            connection_config,
+            str(connection_config["pairing_id"]),
+            cleanup_mode,
+            confirm_machine_wide is True,
+            server_url=get_external_origin(request),
+        )
 
     tool_name = safe_tool_name(tool.name)
 
@@ -3151,6 +3220,8 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     # Delete the tool (cascade deletes jobs)
     success = await repository.delete_tool_config(tool_id)
     if not success:
+        if cleanup is not None:
+            raise HTTPException(status_code=404, detail={"message": "Tool configuration not found", "cleanup": cleanup.as_dict()})
         raise HTTPException(status_code=404, detail="Tool configuration not found")
 
     # Cleanup: unmount filesystem for filesystem indexer tools
@@ -3183,7 +3254,10 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     # Notify MCP clients that tools have changed
     notify_tools_changed()
 
-    return {"message": "Tool configuration deleted"}
+    response: dict[str, Any] = {"message": "Tool configuration deleted"}
+    if cleanup is not None:
+        response["cleanup"] = cleanup.as_dict()
+    return response
 
 
 @router.post("/tools/{tool_id}/toggle", tags=["Tools"])
@@ -7196,6 +7270,10 @@ async def start_filesystem_analysis(
         fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid filesystem configuration: {str(e)}") from e
+    try:
+        resolve_ocr_target(await repository.get_settings(), fs_config)
+    except OcrTargetError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Start analysis
     job = await filesystem_indexer.start_analysis(
@@ -7297,6 +7375,11 @@ async def trigger_filesystem_index(
         fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid filesystem configuration: {str(e)}") from e
+
+    try:
+        resolve_ocr_target(await repository.get_settings(), fs_config)
+    except OcrTargetError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Validate pgvector is available
     if not await filesystem_indexer.ensure_pgvector_extension():
@@ -7410,6 +7493,12 @@ async def retry_filesystem_index_job(tool_id: str, job_id: str, _user: User = De
             status_code=400,
             detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'",
         )
+
+    try:
+        fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
+        resolve_ocr_target(await repository.get_settings(), fs_config)
+    except (OcrTargetError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Retry the job
     new_job = await filesystem_indexer.retry_job(job_id)
@@ -7710,6 +7799,43 @@ def _provider_api_key_from_settings(settings: AppSettings, provider: str) -> str
     return resolve_provider_api_key(settings, provider, "llm")
 
 
+async def _fetch_subscription_vision_candidates(provider: str, settings: AppSettings, api_key: str | None) -> LLMModelsResponse | None:
+    """Fetch subscription provider catalogs before metadata-only vision filtering."""
+    if provider == "anthropic":
+        return await _fetch_anthropic_models(str(api_key or "").strip())
+    if provider == "claude_code":
+        return await _fetch_claude_code_models()
+    if provider == "openai_codex":
+        return await _fetch_openai_codex_models(settings)
+    return None
+
+
+async def _catalog_image_model_ids(provider: str, models: list[Any]) -> set[str]:
+    """Return authenticated catalog model IDs explicitly or reliably known to accept images."""
+    image_capabilities = {"image", "images", "image_input", "vision"}
+    no_image_capabilities = {"no_image", "no_image_input", "text_only"}
+    available_image_model_ids: set[str] = set()
+    for model in models:
+        model_id = str(getattr(model, "id", "") or "").strip()
+        if not model_id:
+            continue
+        capabilities = {str(capability).strip().lower() for capability in getattr(model, "capabilities", None) or []}
+        if provider == "openai_codex":
+            if "image" in capabilities:
+                available_image_model_ids.add(model_id)
+            continue
+        if capabilities & no_image_capabilities:
+            continue
+        if capabilities & image_capabilities or await supports_image_input(model_id):
+            available_image_model_ids.add(model_id)
+            continue
+        # Anthropic's authenticated model catalog does not consistently expose
+        # modality flags. Its listed current Claude models support image input.
+        if provider in {"anthropic", "claude_code"}:
+            available_image_model_ids.add(model_id)
+    return available_image_model_ids
+
+
 def _vision_models_from_infos(provider: str, infos: list[Any]) -> list[VisionModel]:
     return [
         VisionModel(
@@ -7745,20 +7871,39 @@ async def get_provider_vision_models(request: VisionModelsRequest, _user: User =
         )
 
     base_url = (request.base_url or "").strip()
+    parsed_base_url = urlsplit(base_url) if base_url else None
+    if parsed_base_url and (parsed_base_url.username or parsed_base_url.password or parsed_base_url.query or parsed_base_url.fragment):
+        return VisionModelsResponse(
+            success=False,
+            message="OCR endpoint must not contain credentials, query parameters, or fragments",
+            provider=provider,
+        )
+    has_endpoint_override = bool(base_url or request.protocol or request.host or request.port)
     if not base_url and request.protocol and request.host and request.port:
         base_url = f"{request.protocol}://{request.host}:{request.port}"
     if not base_url:
-        base_url = resolve_provider_base_url(app_settings, provider, "llm")
+        try:
+            base_url = resolve_ocr_base_url(app_settings, provider) or ""
+        except OcrTargetError as exc:
+            return VisionModelsResponse(success=False, message=str(exc), provider=provider)
 
-    api_key = str(request.api_key or "").strip() or _provider_api_key_from_settings(app_settings, provider)
+    api_key = str(request.api_key or "").strip() or (None if has_endpoint_override else _provider_api_key_from_settings(app_settings, provider))
     candidate_models = list(request.candidate_models)
+    available_image_model_ids: set[str] | None = None
 
     try:
+        catalog = await _fetch_subscription_vision_candidates(provider, app_settings, api_key)
+        if catalog is not None:
+            if not catalog.success:
+                return VisionModelsResponse(success=False, message=catalog.message, provider=provider, base_url=base_url)
+            candidate_models = []
+            available_image_model_ids = await _catalog_image_model_ids(provider, catalog.models)
         infos = await list_provider_vision_models(
             provider,
             base_url=base_url,
             api_key=api_key,
             candidate_models=candidate_models,
+            available_image_model_ids=available_image_model_ids,
         )
         models = _vision_models_from_infos(provider, infos)
         return VisionModelsResponse(
@@ -8152,7 +8297,7 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
 
 
 async def _fetch_openai_codex_embedding_models(settings: Any) -> EmbeddingModelsResponse:
-    """Fetch Codex-backed embedding models by probing the verified OpenAI embeddings endpoint."""
+    """Fetch Codex-backed embedding models through the capability-probed endpoint."""
     token = await ensure_openai_codex_token_fresh(settings=settings, repository=repository)
     if not token:
         return EmbeddingModelsResponse(success=False, message="OpenAI Codex is not authenticated.")
