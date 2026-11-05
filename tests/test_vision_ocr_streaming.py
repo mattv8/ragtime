@@ -1,22 +1,29 @@
 import json
 import unittest
+from collections.abc import AsyncIterator
+
+import httpx
 
 from ragtime.core import vision_models
 from ragtime.core.ocr_table_recovery import OllamaOcrIncompleteError
 
 
-class _StreamResponse:
+class _FragmentedByteStream(httpx.AsyncByteStream):
     def __init__(self, frames: list[bytes]) -> None:
         self.frames = frames
 
-    async def aiter_bytes(self):
+    async def __aiter__(self) -> AsyncIterator[bytes]:
         for frame in self.frames:
             yield frame
 
 
+def _stream_response(frames: list[bytes]) -> httpx.Response:
+    return httpx.Response(200, stream=_FragmentedByteStream(frames))
+
+
 class VisionOcrStreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_collector_joins_fragmented_response_deltas_and_requires_done(self) -> None:
-        response = _StreamResponse(
+        response = _stream_response(
             [
                 b'{"response":"{\\"extracted_"}\n',
                 b'{"response":"text\\":[]}"}\n{"done":true,"done_reason":"stop","eval_count":7}\n',
@@ -31,11 +38,11 @@ class VisionOcrStreamingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_collector_rejects_eof_without_terminal_done_frame(self) -> None:
         with self.assertRaisesRegex(OllamaOcrIncompleteError, "reason=incomplete"):
-            await vision_models._collect_ollama_ndjson_response(_StreamResponse([b'{"response":"{}"}\n']))
+            await vision_models._collect_ollama_ndjson_response(_stream_response([b'{"response":"{}"}\n']))
 
     async def test_collector_sanitizes_provider_error_as_fatal_ollama_error(self) -> None:
         with self.assertRaisesRegex(OllamaOcrIncompleteError, "reason=error"):
-            await vision_models._collect_ollama_ndjson_response(_StreamResponse([b'{"error":"llama runner process has terminated"}\n']))
+            await vision_models._collect_ollama_ndjson_response(_stream_response([b'{"error":"llama runner process has terminated"}\n']))
 
     async def test_detector_aborts_only_repeated_empty_table_rows(self) -> None:
         empty_rows = "".join("| | |\n" for _ in range(180))
@@ -46,12 +53,12 @@ class VisionOcrStreamingTests(unittest.IsolatedAsyncioTestCase):
         frames = [json.dumps({"response": table[:900]}).encode() + b"\n", json.dumps({"response": table[900:]}).encode() + b"\n"]
 
         with self.assertRaisesRegex(OllamaOcrIncompleteError, "reason=loop_detected"):
-            await vision_models._collect_ollama_ndjson_response(_StreamResponse(frames))
+            await vision_models._collect_ollama_ndjson_response(_stream_response(frames))
 
     async def test_detector_does_not_abort_repeated_meaningful_rows_or_prose(self) -> None:
         repeated = "".join("| value | value |\n" for _ in range(170))
         payload = {"extracted_text": [{"type": "Table", "content": "| A | B |\n| --- | --- |\n" + repeated}]}
-        response = _StreamResponse([json.dumps({"response": json.dumps(payload), "done": True, "done_reason": "stop"}).encode() + b"\n"])
+        response = _stream_response([json.dumps({"response": json.dumps(payload), "done": True, "done_reason": "stop"}).encode() + b"\n"])
 
         collected = await vision_models._collect_ollama_ndjson_response(response)
 
@@ -65,7 +72,7 @@ class VisionOcrStreamingTests(unittest.IsolatedAsyncioTestCase):
                 {"type": "Table", "content": empty_rows},
             ]
         }
-        response = _StreamResponse([json.dumps({"response": json.dumps(payload), "done": True, "done_reason": "stop"}).encode() + b"\n"])
+        response = _stream_response([json.dumps({"response": json.dumps(payload), "done": True, "done_reason": "stop"}).encode() + b"\n"])
 
         collected = await vision_models._collect_ollama_ndjson_response(response)
 
