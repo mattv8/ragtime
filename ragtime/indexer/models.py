@@ -110,6 +110,7 @@ from ragtime.core.userspace_preview_sandbox import (
 )
 from ragtime.core.visualization_tools import VisualizationToolType
 from ragtime.http_api.models import HTTP_API_SECRET_FIELDS, redact_http_api_connection_config, sanitize_persisted_http_api_connection_config
+from ragtime.indexer.job_warnings import IndexingWarnings
 
 DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 1
 MIN_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 1
@@ -297,6 +298,7 @@ class IndexJob(BaseModel):
     processed_chunks: int = 0
     phase: IndexJobPhase = IndexJobPhase.PREPARING
     error_message: Optional[str] = None
+    warnings: IndexingWarnings = Field(default_factory=IndexingWarnings)
     # Live git clone progress (0.0-1.0) while the repo is being cloned.
     # In-memory only (served from the active job), not persisted.
     clone_progress: Optional[float] = Field(default=None, exclude=True)
@@ -533,6 +535,7 @@ class IndexJobResponse(BaseModel):
     total_chunks: int
     processed_chunks: int = 0
     error_message: Optional[str] = None
+    warnings: IndexingWarnings = Field(default_factory=IndexingWarnings)
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -2320,6 +2323,7 @@ class FilesystemIndexJob(BaseModel):
     total_chunks: int = 0
     processed_chunks: int = 0
     error_message: Optional[str] = None
+    warnings: IndexingWarnings = Field(default_factory=IndexingWarnings)
     cancel_requested: bool = False
 
     # File collection progress (for slow network filesystems)
@@ -2366,6 +2370,7 @@ class FilesystemIndexJobResponse(BaseModel):
     total_chunks: int
     processed_chunks: int
     error_message: Optional[str] = None
+    warnings: IndexingWarnings = Field(default_factory=IndexingWarnings)
     cancel_requested: bool = False
     # Collection phase progress (for slow network filesystems)
     files_scanned: int = 0

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, AsyncContextManager, AsyncIterator, Callable, Dict, List, Optional, Sequence
 
 from langchain_core.documents import Document
+from prisma import Json
 from prisma.enums import FilesystemIndexStatus as PrismaFilesystemIndexStatus
 from prisma.errors import TableNotFoundError
 
@@ -53,6 +54,7 @@ from ragtime.indexer.chunking import (
 )
 from ragtime.indexer.document_parser import (
     VisionOcrError,
+    VisionOcrPageError,
     extract_image_structured_async,
     extract_text_from_file_async,
 )
@@ -64,6 +66,7 @@ from ragtime.indexer.file_utils import (
     matches_pattern,
     should_index_file_type,
 )
+from ragtime.indexer.job_warnings import IndexingWarning, warning_source, warnings_from_persisted
 from ragtime.indexer.models import (
     FilesystemAnalysisJob,
     FilesystemAnalysisResult,
@@ -713,6 +716,7 @@ class FilesystemIndexerService:
                 "totalChunks": job.total_chunks,
                 "processedChunks": job.processed_chunks,
                 "errorMessage": job.error_message,
+                "warnings": Json(job.warnings.model_dump(mode="json")),
                 "createdAt": job.created_at,
             }
         )
@@ -730,6 +734,7 @@ class FilesystemIndexerService:
                 "totalChunks": job.total_chunks,
                 "processedChunks": job.processed_chunks,
                 "errorMessage": job.error_message,
+                "warnings": Json(job.warnings.model_dump(mode="json")),
                 "startedAt": job.started_at,
                 "completedAt": job.completed_at,
             },
@@ -757,6 +762,7 @@ class FilesystemIndexerService:
             total_chunks=prisma_job.totalChunks,
             processed_chunks=prisma_job.processedChunks,
             error_message=prisma_job.errorMessage,
+            warnings=warnings_from_persisted(getattr(prisma_job, "warnings", None)),
             created_at=prisma_job.createdAt,
             started_at=prisma_job.startedAt,
             completed_at=prisma_job.completedAt,
@@ -797,6 +803,7 @@ class FilesystemIndexerService:
                         total_chunks=j.totalChunks,
                         processed_chunks=j.processedChunks,
                         error_message=j.errorMessage,
+                        warnings=warnings_from_persisted(getattr(j, "warnings", None)),
                         created_at=j.createdAt,
                         started_at=j.startedAt,
                         completed_at=j.completedAt,
@@ -988,6 +995,13 @@ class FilesystemIndexerService:
                 )
 
         return metadata_by_path
+
+    async def _invalidate_ocr_source_metadata(self, index_name: str, sources: List[str]) -> None:
+        """Retry omitted pages next run, even after a partial full replacement."""
+        if not sources:
+            return
+        db = await get_db()
+        await db.filesystemfilemetadata.delete_many(where={"indexName": index_name, "filePath": {"in": sources}})
 
     async def _upsert_file_metadata(self, metadata: FilesystemFileMetadata) -> None:
         """Upsert file metadata for tracking."""
@@ -1597,10 +1611,20 @@ class FilesystemIndexerService:
 
                     # Collect chunks for batch embedding
                     files_to_embed: list[tuple[str, list[str], str, Path]] = []
+                    omitted_sources: list[str] = []
 
                     for i, result in enumerate(results):
                         file_path = batch_files[i]
                         if isinstance(result, BaseException):
+                            if isinstance(result, asyncio.CancelledError):
+                                raise result
+                            if isinstance(result, VisionOcrPageError):
+                                rel_path = file_path.relative_to(effective_path).as_posix()
+                                warning = IndexingWarning.model_validate({"source": warning_source(rel_path), "category": result.category})
+                                job.warnings.record(warning.source, warning.category)
+                                omitted_sources.append(rel_path)
+                                job.processed_files += 1
+                                continue
                             if isinstance(result, (OcrTargetError, VisionOcrError)):
                                 raise result
                             if full_reindex:
@@ -1630,6 +1654,7 @@ class FilesystemIndexerService:
                         assert current_hash is not None
                         files_to_embed.append((rel_path, chunks, current_hash, file_path))
 
+                    await self._invalidate_ocr_source_metadata(config.index_name, omitted_sources)
                     # Update after categorizing results
                     await self._update_job(job)
 
@@ -1846,6 +1871,8 @@ class FilesystemIndexerService:
 
             # Finalize the vector store (FAISS saves to disk here, pgvector is no-op)
             storage_index_name = staging_index_name or config.index_name
+            if job.warnings.count and job.total_chunks == 0 and job.skipped_files == 0:
+                raise RuntimeError("No usable source records were produced after OCR page failures; existing index was preserved")
             if full_reindex and job.total_chunks == 0:
                 raise RuntimeError("Replacement index produced no records; existing index was preserved")
             await backend.finalize_index(storage_index_name)
