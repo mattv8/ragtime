@@ -29,7 +29,7 @@ import httpx
 from ragtime.core.document_conversion import convert_document_bytes
 from ragtime.core.file_constants import ANYDOC_DOCUMENT_EXTENSIONS, DOCUMENT_EXTENSIONS, OCR_EXTENSIONS, RAW_CAMERA_EXTENSIONS
 from ragtime.core.logging import get_logger
-from ragtime.core.ocr_table_recovery import OllamaOcrIncompleteError
+from ragtime.core.ocr_table_recovery import OcrResponseError, OllamaOcrIncompleteError
 
 logger = get_logger(__name__)
 
@@ -39,6 +39,14 @@ OcrModeType = Literal["disabled", "tesseract", "vision"]
 
 class VisionOcrError(RuntimeError):
     """A vision OCR request failed and must prevent clean index publication."""
+
+
+class VisionOcrPageError(VisionOcrError):
+    """A page-local OCR failure that indexing workers may safely omit."""
+
+    def __init__(self, message: str, *, category: str) -> None:
+        self.category = category
+        super().__init__(message)
 
 
 MAX_EXTRACTED_TEXT_BYTES = 16 * 1024 * 1024
@@ -197,6 +205,20 @@ async def extract_image_structured_async(
             source_format=suffix,
             include_classification=True,
         )
+    except asyncio.CancelledError:
+        raise
+    except (httpx.ReadTimeout, httpx.WriteTimeout, TimeoutError, OcrResponseError) as exc:
+        detail = _structured_vision_failure_detail(exc, effective_provider)
+        raise VisionOcrPageError(
+            f"Structured vision OCR failed for source {file_path.name} ({detail})",
+            category=_vision_page_error_category(exc),
+        ) from exc
+    except OllamaOcrIncompleteError as exc:
+        detail = _structured_vision_failure_detail(exc, effective_provider)
+        message = f"Structured vision OCR failed for source {file_path.name} ({detail})"
+        if exc.reason in {"length", "incomplete", "malformed", "loop_detected"}:
+            raise VisionOcrPageError(message, category=_vision_page_error_category(exc)) from exc
+        raise VisionOcrError(message) from exc
     except Exception as exc:
         detail = _structured_vision_failure_detail(exc, effective_provider)
         raise VisionOcrError(f"Structured vision OCR failed for source {file_path.name} ({detail})") from exc
@@ -216,7 +238,19 @@ def _structured_vision_failure_detail(exc: Exception, provider: str) -> str:
         if exc.prompt_eval_count is not None:
             detail += f", prompt_eval_count={exc.prompt_eval_count}"
         return detail
+    if isinstance(exc, OcrResponseError):
+        return f"provider={provider}, category=invalid_output"
     return f"provider={provider}, category=extraction_failed, error_type={type(exc).__name__}"
+
+
+def _vision_page_error_category(exc: Exception) -> str:
+    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, TimeoutError)):
+        return "timeout"
+    if isinstance(exc, OllamaOcrIncompleteError):
+        return "output_exhausted" if exc.reason == "length" else "incomplete_response"
+    if isinstance(exc, OcrResponseError):
+        return exc.category
+    return "invalid_output"
 
 
 async def extract_text_from_file_async(
@@ -555,6 +589,18 @@ async def _extract_image_vision_ocr(
         elapsed = time.time() - start_time
         logger.debug(f"Vision OCR ({provider}/{vision_model}) completed in {elapsed:.2f}s, extracted {len(text)} chars")
         return text
+    except asyncio.CancelledError:
+        raise
+    except (httpx.ReadTimeout, httpx.WriteTimeout, TimeoutError, OcrResponseError) as exc:
+        raise VisionOcrPageError(
+            f"Vision OCR failed for {provider}/{vision_model}: {_structured_vision_failure_detail(exc, provider)}",
+            category=_vision_page_error_category(exc),
+        ) from exc
+    except OllamaOcrIncompleteError as exc:
+        message = f"Vision OCR failed for {provider}/{vision_model}: {_structured_vision_failure_detail(exc, provider)}"
+        if exc.reason in {"length", "incomplete", "malformed", "loop_detected"}:
+            raise VisionOcrPageError(message, category=_vision_page_error_category(exc)) from exc
+        raise VisionOcrError(message) from exc
     except Exception as exc:
         raise VisionOcrError(f"Vision OCR failed for {provider}/{vision_model}: {exc}") from exc
 
