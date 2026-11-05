@@ -105,6 +105,7 @@ model IndexJob {
   processedChunks Int           @default(0) @map("processed_chunks")
   phase           IndexJobPhase @default(preparing)
   errorMessage    String?       @map("error_message")
+  warnings        Json?         @map("warnings")
 
   // Timestamps
   createdAt   DateTime  @default(now()) @map("created_at")
@@ -824,6 +825,7 @@ model FilesystemIndexJob {
   totalChunks     Int     @default(0) @map("total_chunks")
   processedChunks Int     @default(0) @map("processed_chunks")
   errorMessage    String? @map("error_message")
+  warnings        Json?   @map("warnings")
 
   // Timing
   createdAt   DateTime  @default(now()) @map("created_at")
