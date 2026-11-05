@@ -1,20 +1,22 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUp, ArrowDown, Search } from 'lucide-react';
 import { api } from '@/api';
 import { formatElapsedTime } from '@/utils';
 import type {
   IndexJob,
   IndexJobPhase,
+  IndexingWarnings,
   FilesystemIndexJob,
   SchemaIndexJob,
   PdmIndexJob,
   UserSpaceCodeIndexJob,
 } from '@/types';
-import { InlineCopyButton } from './shared/InlineCopyButton';
 import { useToast, ToastContainer } from './shared/Toast';
 import { useIndexResourceStatus } from '@/hooks/useIndexResourceStatus';
 import type { IndexResourceReason } from '@/types';
 import { JobsTableFrame } from './shared/JobsTableFrame';
+import { IndexJobDetailsDialog } from './shared/IndexJobDetailsDialog';
+import { getIndexJobWarningCount } from './shared/IndexJobWarnings';
 
 interface JobsTableProps {
   jobs: IndexJob[];
@@ -67,6 +69,7 @@ type UnifiedJob = {
   // User Space code-specific fields
   currentFile?: string | null;
   waitingForJobId?: string | null;
+  warnings?: IndexingWarnings | null;
 };
 
 type ActionableJobType = 'document' | 'filesystem' | 'schema' | 'pdm';
@@ -164,6 +167,7 @@ function toUnifiedJob(job: IndexJob): UnifiedJob {
     startedAt: job.started_at,
     completedAt: job.completed_at,
     phase: getProcessingPhase(job),
+    warnings: job.warnings,
   };
 }
 
@@ -244,6 +248,7 @@ function toUnifiedFilesystemJob(job: FilesystemIndexJob): UnifiedJob {
     currentDirectory: job.current_directory,
     toolConfigId: job.tool_config_id,
     cancelRequested: job.cancel_requested,
+    warnings: job.warnings,
   };
 }
 
@@ -478,7 +483,10 @@ export function JobsTable({
     key: keyof UnifiedJob;
     direction: 'asc' | 'desc';
   } | null>(null);
-  const [selectedJob, setSelectedJob] = useState<UnifiedJob | null>(null);
+  const [selectedJobIdentity, setSelectedJobIdentity] = useState<string | null>(null);
+  const jobsHeadingRef = useRef<HTMLHeadingElement>(null);
+  const previousJobStatusesRef = useRef(new Map<string, string>());
+  const [terminalAnnouncement, setTerminalAnnouncement] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
@@ -590,13 +598,55 @@ export function JobsTable({
   };
 
   // Combine all jobs
-  const combinedJobs: UnifiedJob[] = [
-    ...jobs.map(toUnifiedJob),
-    ...filesystemJobs.map(toUnifiedFilesystemJob),
-    ...schemaJobs.map(toUnifiedSchemaJob),
-    ...pdmJobs.map(toUnifiedPdmJob),
-    ...userspaceCodeJobs.map(toUnifiedUserSpaceCodeJob),
-  ];
+  const combinedJobs = useMemo<UnifiedJob[]>(
+    () => [
+      ...jobs.map(toUnifiedJob),
+      ...filesystemJobs.map(toUnifiedFilesystemJob),
+      ...schemaJobs.map(toUnifiedSchemaJob),
+      ...pdmJobs.map(toUnifiedPdmJob),
+      ...userspaceCodeJobs.map(toUnifiedUserSpaceCodeJob),
+    ],
+    [filesystemJobs, jobs, pdmJobs, schemaJobs, userspaceCodeJobs],
+  );
+  const selectedJob = selectedJobIdentity
+    ? combinedJobs.find((job) => `${job.type}:${job.id}` === selectedJobIdentity) ?? null
+    : null;
+
+  const restoreDetailsFocus = (jobIdentity: string) => {
+    window.setTimeout(() => {
+      const detailControl = document.querySelector<HTMLElement>(
+        `[data-index-job-detail-control="${jobIdentity}"]`,
+      );
+      (detailControl ?? jobsHeadingRef.current)?.focus();
+    }, 0);
+  };
+
+  useEffect(() => {
+    if (selectedJobIdentity && !selectedJob) {
+      setSelectedJobIdentity(null);
+      restoreDetailsFocus(selectedJobIdentity);
+    }
+  }, [selectedJob, selectedJobIdentity]);
+
+  useEffect(() => {
+    const previousJobStatuses = previousJobStatusesRef.current;
+    for (const job of combinedJobs) {
+      const jobIdentity = `${job.type}:${job.id}`;
+      const previousStatus = previousJobStatuses.get(jobIdentity);
+      if (
+        previousStatus &&
+        (previousStatus === 'processing' || previousStatus === 'indexing') &&
+        job.status === 'completed' &&
+        getIndexJobWarningCount(job.warnings) > 0
+      ) {
+        const warningCount = getIndexJobWarningCount(job.warnings);
+        setTerminalAnnouncement(
+          `Indexing completed with warnings. ${warningCount} ${warningCount === 1 ? 'source' : 'sources'} skipped during OCR.`,
+        );
+      }
+      previousJobStatuses.set(jobIdentity, job.status);
+    }
+  }, [combinedJobs]);
 
   // Filter and sort
   const allJobs = combinedJobs
@@ -607,7 +657,8 @@ export function JobsTable({
         job.name.toLowerCase().includes(search) ||
         job.id.toLowerCase().includes(search) ||
         job.status.toLowerCase().includes(search) ||
-        job.type.toLowerCase().includes(search)
+        job.type.toLowerCase().includes(search) ||
+        (getIndexJobWarningCount(job.warnings) > 0 && 'warnings'.includes(search))
       );
     })
     .sort((a, b) => {
@@ -656,9 +707,10 @@ export function JobsTable({
   }, [hasActiveJobs]);
 
   return (
-    <div className="card">
+    <section id="indexing-jobs-section" className="card">
+      {terminalAnnouncement && <p role="status" aria-live="polite">{terminalAnnouncement}</p>}
       <div className="section-header">
-        <h2>
+          <h2 ref={jobsHeadingRef} tabIndex={-1}>
           Indexing Jobs
           {hasActiveJobs && (
             <span className="live-indicator" title="Auto-refreshing">
@@ -794,7 +846,7 @@ export function JobsTable({
                 const waitReason = job.type === 'document' ? resourceWaits.get(job.id) : undefined;
 
                 return (
-                  <tr key={`${job.type}-${job.id}`}>
+                  <tr key={`${job.type}-${job.id}`} data-index-job={`${job.type}:${job.id}`}>
                     <td data-label="Type">
                       <span className={`badge type-${job.type}`}>
                         {job.type === 'document'
@@ -818,10 +870,12 @@ export function JobsTable({
                     <td data-label="Elapsed">{getElapsedDuration(job, nowMs)}</td>
                     <td data-label="Progress" className="progress-cell">
                       {job.status === 'failed' ? (
-                        job.errorMessage ? (
+                        job.errorMessage || getIndexJobWarningCount(job.warnings) > 0 ? (
                           <button
                             className="badge failed clickable"
-                            onClick={() => setSelectedJob(job)}
+                            type="button"
+                            onClick={() => setSelectedJobIdentity(`${job.type}:${job.id}`)}
+                            data-index-job-detail-control={`${job.type}:${job.id}`}
                             title="Click to view error details"
                           >
                             failed <span className="info-icon">i</span>
@@ -829,6 +883,20 @@ export function JobsTable({
                         ) : (
                           <span className="badge failed">failed</span>
                         )
+                      ) : job.status === 'completed' && getIndexJobWarningCount(job.warnings) > 0 ? (
+                        <div className="index-job-result">
+                          <button
+                            type="button"
+                            className="badge clickable index-job-warning-badge"
+                            onClick={() => setSelectedJobIdentity(`${job.type}:${job.id}`)}
+                            data-index-job-detail-control={`${job.type}:${job.id}`}
+                            aria-label={`Completed with warnings: ${job.name}. View ${getIndexJobWarningCount(job.warnings)} ${getIndexJobWarningCount(job.warnings) === 1 ? 'source' : 'sources'}.`}
+                          >
+                            Completed with warnings
+                          </button>
+                          <span>{getIndexJobWarningCount(job.warnings).toLocaleString()} {getIndexJobWarningCount(job.warnings) === 1 ? 'source' : 'sources'} skipped during OCR</span>
+                          {job.totalChunks > 0 && <span>{job.totalChunks.toLocaleString()} chunks</span>}
+                        </div>
                       ) : job.status === 'processing' || job.status === 'indexing' ? (
                         <div className="progress-container">
                           <div className="progress-bar">
@@ -840,6 +908,16 @@ export function JobsTable({
                               <span className="field-help" data-resource-wait-reason={waitReason}>
                                 {resourceWaitLabels[waitReason]}
                               </span>
+                            )}
+                            {getIndexJobWarningCount(job.warnings) > 0 && (
+                              <button
+                                type="button"
+                                className="link-btn"
+                                onClick={() => setSelectedJobIdentity(`${job.type}:${job.id}`)}
+                                data-index-job-detail-control={`${job.type}:${job.id}`}
+                              >
+                                {getIndexJobWarningCount(job.warnings).toLocaleString()} {getIndexJobWarningCount(job.warnings) === 1 ? 'source' : 'sources'} skipped during OCR so far
+                              </button>
                             )}
                             <span className="progress-stats">
                               {job.type === 'schema' ? (
@@ -1065,57 +1143,20 @@ export function JobsTable({
         </>
       )}
 
-      {/* Error Details Modal */}
       {selectedJob && (
-        <div className="modal-overlay" onClick={() => setSelectedJob(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Job Error Details</h3>
-              <button className="modal-close" onClick={() => setSelectedJob(null)}>
-                &times;
-              </button>
-            </div>
-            <div className="modal-body">
-              <p>
-                <strong>Job ID:</strong> <code>{selectedJob.id}</code>
-              </p>
-              <p>
-                <strong>Name:</strong> {selectedJob.name}
-              </p>
-              <p>
-                <strong>Type:</strong>{' '}
-                <span className={`badge type-${selectedJob.type}`}>{selectedJob.type}</span>
-              </p>
-              <p>
-                <strong>Status:</strong>{' '}
-                <span className={`badge ${selectedJob.status}`}>{selectedJob.status}</span>
-              </p>
-
-              <div className="error-message-section">
-                <div className="error-message-header">
-                  <h4>Error Message</h4>
-                  <InlineCopyButton
-                    copyText={selectedJob.errorMessage ?? ''}
-                    className="copy-error-btn"
-                    title="Copy error message"
-                    ariaLabel="Copy error message"
-                    copiedTitle="Error message copied"
-                    copiedAriaLabel="Error message copied"
-                    iconSize={16}
-                    feedbackMs={2000}
-                    disabled={!selectedJob.errorMessage}
-                    onCopySuccess={() => toast.success('Error message copied')}
-                    onCopyError={() => toast.error('Failed to copy error message')}
-                  />
-                </div>
-                <pre className="error-message-text">{selectedJob.errorMessage}</pre>
-              </div>
-            </div>
-          </div>
-        </div>
+        <IndexJobDetailsDialog
+          job={selectedJob}
+          onClose={() => {
+            const jobIdentity = `${selectedJob.type}:${selectedJob.id}`;
+            setSelectedJobIdentity(null);
+            restoreDetailsFocus(jobIdentity);
+          }}
+          onCopySuccess={() => toast.success('Error message copied')}
+          onCopyError={() => toast.error('Failed to copy error message')}
+        />
       )}
 
       <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
-    </div>
+    </section>
   );
 }
