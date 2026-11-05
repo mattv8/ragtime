@@ -8,7 +8,7 @@ from unittest import mock
 import pytest
 from prisma.models import IndexConfig as PrismaIndexConfig
 from prisma.models import IndexJob as PrismaIndexJob
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from ragtime.indexer.filesystem_service import FilesystemIndexerService
 from ragtime.indexer.job_warnings import IndexingWarning, IndexingWarnings, warnings_from_persisted
@@ -63,8 +63,8 @@ def test_document_job_persists_and_hydrates_warnings() -> None:
     assert index_job.create.await_args.kwargs["data"]["warnings"].data == job.warnings.model_dump(mode="json")
     assert index_job.update.await_args.kwargs["data"]["warnings"].data == job.warnings.model_dump(mode="json")
 
-    persisted = PrismaIndexJob(
-        **dict(
+    persisted = TypeAdapter(PrismaIndexJob).validate_python(
+        dict(
             id="job-1",
             name="index",
             status="pending",
