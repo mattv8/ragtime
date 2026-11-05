@@ -574,6 +574,15 @@ export interface IndexJob {
   started_at: string | null;
   completed_at: string | null;
   vector_store_type?: VectorStoreType; // Vector store backend used
+  warnings?: IndexingWarnings | null;
+}
+
+export interface IndexingWarnings {
+  count: number;
+  items: Array<{
+    source: string;
+    category: string;
+  }>;
 }
 
 export type IndexResourceStage =
@@ -2579,6 +2588,7 @@ export interface FilesystemIndexJob {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  warnings?: IndexingWarnings | null;
 }
 
 export interface FilesystemTestResponse {

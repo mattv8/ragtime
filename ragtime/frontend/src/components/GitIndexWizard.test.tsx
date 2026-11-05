@@ -454,6 +454,31 @@ describe('GitIndexWizard', () => {
     });
   });
 
+  it('qualifies a completed indexing result when its job contains warnings', async () => {
+    apiMock.getJob.mockResolvedValue({
+      ...startingJob,
+      status: 'completed',
+      phase: 'completed',
+      progress_percent: 100,
+      total_chunks: 12,
+      processed_chunks: 12,
+      completed_at: '2026-07-15T00:01:00Z',
+      warnings: {
+        count: 1,
+        items: [{ source: 'manual.pdf', category: 'invalid_output' }],
+      },
+    });
+    render(<GitIndexWizard />);
+
+    await completeAnalysis();
+    fireEvent.click(screen.getByRole('button', { name: 'Start Indexing' }));
+
+    expect(await screen.findByText('Indexing completed with warnings')).toBeTruthy();
+    expect(screen.getByText('manual.pdf')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toMatch(/\b1 source\b/);
+  });
+
   it('loads webhook configuration in edit mode and reveals a new secret after enable', async () => {
     const user = userEvent.setup();
     apiMock.getIndexWebhook.mockResolvedValue(disabledWebhookConfig());
