@@ -10,9 +10,12 @@ import httpx
 import pytest
 from langchain_core.documents import Document
 
+import ragtime.indexer.service as service
+from ragtime.core import vision_models
 from ragtime.indexer import document_parser
 from ragtime.indexer.indexing_pipeline import BoundedIndexingPipeline
 from ragtime.indexer.indexing_spool import IndexingSpool
+from ragtime.indexer.models import IndexConfig, IndexJob, OcrMode, OcrProvider
 
 
 def run_async(test):
@@ -146,9 +149,6 @@ async def test_all_omitted_pages_leave_no_publishable_document_records(tmp_path:
 
 @run_async
 async def test_upload_all_page_failures_persist_warnings_on_resume_without_publishing(tmp_path: Path, monkeypatch) -> None:
-    from ragtime.indexer import service
-    from ragtime.indexer.models import IndexConfig, IndexJob, OcrMode, OcrProvider
-
     root = tmp_path / "source"
     root.mkdir()
     page = root / "page.png"
@@ -192,10 +192,6 @@ async def test_upload_all_page_failures_persist_warnings_on_resume_without_publi
 
 @run_async
 async def test_provider_runner_error_stream_stays_fatal_after_a_successful_source(tmp_path: Path, monkeypatch) -> None:
-    from ragtime.core import vision_models
-    from ragtime.indexer import service
-    from ragtime.indexer.models import IndexConfig, IndexJob, OcrMode, OcrProvider
-
     source = tmp_path / "source"
     source.mkdir()
     good, bad = source / "good.txt", source / "bad.png"
