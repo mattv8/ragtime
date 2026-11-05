@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+from prisma.models import IndexConfig as PrismaIndexConfig
+from prisma.models import IndexJob as PrismaIndexJob
 from pydantic import ValidationError
 
 from ragtime.indexer.filesystem_service import FilesystemIndexerService
@@ -61,40 +63,44 @@ def test_document_job_persists_and_hydrates_warnings() -> None:
     assert index_job.create.await_args.kwargs["data"]["warnings"].data == job.warnings.model_dump(mode="json")
     assert index_job.update.await_args.kwargs["data"]["warnings"].data == job.warnings.model_dump(mode="json")
 
-    persisted = SimpleNamespace(
-        id="job-1",
-        name="index",
-        status="pending",
-        phase="preparing",
-        sourceType="upload",
-        sourcePath=None,
-        gitUrl=None,
-        gitBranch="main",
-        gitToken=None,
-        totalFiles=0,
-        processedFiles=0,
-        totalChunks=0,
-        processedChunks=0,
-        errorMessage=None,
-        warnings=job.warnings.model_dump(mode="json"),
-        createdAt=datetime.now(timezone.utc),
-        startedAt=None,
-        completedAt=None,
-        config=SimpleNamespace(
+    persisted = PrismaIndexJob(
+        **dict(
+            id="job-1",
             name="index",
-            description="",
-            filePatterns=["**/*"],
-            excludePatterns=[],
-            chunkSize=1000,
-            chunkOverlap=200,
-            embeddingModel="text-embedding-3-small",
-            configSnapshot=None,
-        ),
+            status="pending",
+            phase="preparing",
+            sourceType="upload",
+            sourcePath=None,
+            gitUrl=None,
+            gitBranch="main",
+            gitToken=None,
+            totalFiles=0,
+            processedFiles=0,
+            totalChunks=0,
+            processedChunks=0,
+            errorMessage=None,
+            warnings=job.warnings.model_dump_json(),
+            createdAt=datetime.now(timezone.utc),
+            startedAt=None,
+            completedAt=None,
+            configId="config-1",
+            config=PrismaIndexConfig(
+                id="config-1",
+                name="index",
+                description="",
+                filePatterns=["**/*"],
+                excludePatterns=[],
+                chunkSize=1000,
+                chunkOverlap=200,
+                embeddingModel="text-embedding-3-small",
+                configSnapshot=None,
+            ),
+        )
     )
 
     assert repository._prisma_job_to_model(persisted).warnings == job.warnings
-    persisted.warnings = None
-    assert repository._prisma_job_to_model(persisted).warnings == IndexingWarnings()
+    legacy_persisted = PrismaIndexJob(**{**persisted.model_dump(), "warnings": None})
+    assert repository._prisma_job_to_model(legacy_persisted).warnings == IndexingWarnings()
 
 
 def test_filesystem_job_persists_and_hydrates_warnings() -> None:
