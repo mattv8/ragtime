@@ -12,6 +12,7 @@ import pytest
 from langchain_core.documents import Document
 
 from ragtime.core.ocr_target import OcrTarget
+from ragtime.indexer.document_parser import VisionOcrError, VisionOcrPageError
 from ragtime.indexer.filesystem_service import FilesystemIndexerService, _FilesystemChunk
 from ragtime.indexer.models import FilesystemConnectionConfig, FilesystemIndexJob, FilesystemIndexStatus, OcrMode, OcrProvider
 
@@ -25,8 +26,10 @@ class RecordingBackend:
         self.stored_embeddings: list[tuple[str, list[list[float]]]] = []
         self.published = 0
         self.discarded: list[str] = []
+        self.deleted: list[str] = []
 
     async def delete_file_embeddings(self, index_name: str, file_path: str) -> int:
+        self.deleted.append(file_path)
         return 0
 
     async def store_embeddings(self, index_name, file_path, chunks, embeddings, metadata, chunk_metadata=None):
@@ -260,6 +263,93 @@ async def test_image_semantic_chunks_keep_frozen_ocr_provenance(filesystem_job):
     assert all(item["ocr_provider"] == "openai" and item["ocr_model"] == "vision-model" for item in metadata)
     assert all(item["ocr_ingestion_version"] == 1 and item["ocr_pipeline_fingerprint"] for item in metadata)
     assert all("base_url" not in item for item in metadata)
+
+
+@contextmanager
+def _page_warning_runtime(backend, repo):
+    with (
+        patch("ragtime.indexer.filesystem_service.get_app_settings", AsyncMock(return_value={"embedding_provider": "ollama"})),
+        patch("ragtime.indexer.repository.IndexerRepository", return_value=repo),
+        patch("ragtime.indexer.filesystem_service.get_backend", return_value=backend),
+        patch("ragtime.core.embedding_models.get_embedding_model_context_limit", AsyncMock(return_value=100)),
+        patch("ragtime.indexer.filesystem_service.embed_documents_subbatched", AsyncMock(side_effect=lambda _model, docs, **_kw: [[1.0] for _ in docs])),
+    ):
+        yield
+
+
+@pytest.mark.parametrize("full_reindex", [False, True])
+@run_async
+async def test_page_timeout_warns_but_indexes_other_sources_without_hashing_failed_page(filesystem_job, full_reindex):
+    service, job, config = filesystem_job
+    backend = RecordingBackend()
+    repo = SimpleNamespace(get_settings=AsyncMock(return_value=settings()), update_embedding_tracking=AsyncMock())
+    service._get_embeddings = AsyncMock(return_value=object())
+    service._get_file_metadata_batch = AsyncMock(return_value={})
+    service._invalidate_ocr_source_metadata = AsyncMock()
+
+    async def load(path, *_args, **_kwargs):
+        if path.name == "a.txt":
+            raise VisionOcrPageError("Provider timeout; no private URL", category="timeout")
+        return [_FilesystemChunk("usable", {"source": path.name})]
+
+    service._load_and_chunk_file = load
+    with _page_warning_runtime(backend, repo):
+        await service._process_index(job, config, full_reindex=full_reindex)
+
+    assert job.status is FilesystemIndexStatus.COMPLETED
+    assert job.error_message is None
+    assert job.warnings.model_dump() == {"count": 1, "items": [{"source": "a.txt", "category": "timeout"}]}
+    assert job.skipped_files == 0
+    assert [entry[1] for entry in backend.stored] == ["b.txt"]
+    assert "a.txt" not in backend.deleted
+    assert [meta.file_path for meta in service._upsert_file_metadata_batch.call_args.args[0]] == ["b.txt"]
+    service._invalidate_ocr_source_metadata.assert_awaited_once_with("serving", ["a.txt"])
+    assert backend.published == int(full_reindex)
+
+
+@pytest.mark.parametrize("full_reindex", [False, True])
+@run_async
+async def test_every_page_fails_without_clean_completion_or_replacement(filesystem_job, full_reindex):
+    service, job, config = filesystem_job
+    backend = RecordingBackend()
+    repo = SimpleNamespace(get_settings=AsyncMock(return_value=settings()), update_embedding_tracking=AsyncMock())
+    service._get_embeddings = AsyncMock(return_value=object())
+    service._get_file_metadata_batch = AsyncMock(return_value={})
+    service._invalidate_ocr_source_metadata = AsyncMock()
+    service._load_and_chunk_file = AsyncMock(side_effect=VisionOcrPageError("Unusable page", category="invalid_output"))
+    with _page_warning_runtime(backend, repo):
+        await service._process_index(job, config, full_reindex=full_reindex)
+
+    assert job.status is FilesystemIndexStatus.FAILED
+    assert job.warnings.count == 2
+    assert backend.published == 0
+    assert backend.stored == []
+    assert backend.deleted == []
+    service._upsert_file_metadata_batch.assert_not_awaited()
+
+
+@run_async
+async def test_global_ocr_configuration_error_is_not_reported_as_page_warning(filesystem_job):
+    service, job, config = filesystem_job
+    backend = RecordingBackend()
+    repo = SimpleNamespace(get_settings=AsyncMock(return_value=settings()), update_embedding_tracking=AsyncMock())
+    service._get_embeddings = AsyncMock(return_value=object())
+    service._load_and_chunk_file = AsyncMock(side_effect=VisionOcrError("Missing configured model"))
+    with _page_warning_runtime(backend, repo):
+        await service._process_index(job, config, full_reindex=True)
+    assert job.status is FilesystemIndexStatus.FAILED
+    assert job.warnings.count == 0
+    assert backend.published == 0
+
+
+@run_async
+async def test_omitted_source_invalidates_only_its_success_hash():
+    delete = AsyncMock(return_value=1)
+    database = SimpleNamespace(filesystemfilemetadata=SimpleNamespace(delete_many=delete))
+    service = FilesystemIndexerService()
+    with patch("ragtime.indexer.filesystem_service.get_db", AsyncMock(return_value=database)):
+        await service._invalidate_ocr_source_metadata("index", ["pages/129.png"])
+    delete.assert_awaited_once_with(where={"indexName": "index", "filePath": {"in": ["pages/129.png"]}})
 
 
 CONTEXT_ERROR = "input length exceeds the maximum context length"

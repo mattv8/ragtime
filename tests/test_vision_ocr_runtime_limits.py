@@ -25,6 +25,25 @@ class VisionOcrRuntimeLimitTests(unittest.IsolatedAsyncioTestCase):
                 request = vision_models.httpx.Request("POST", url)
                 return vision_models.httpx.Response(200, json={"response": "{}", "done": True}, request=request)
 
+            def stream(self, _method, url, **kwargs):
+                client = self
+
+                class Stream:
+                    async def __aenter__(self):
+                        self.response = await client.post(url, **kwargs)
+                        return self
+
+                    async def __aexit__(self, *_args):
+                        return None
+
+                    def raise_for_status(self):
+                        self.response.raise_for_status()
+
+                    async def aiter_bytes(self):
+                        yield vision_models.json.dumps(self.response.json()).encode() + b"\n"
+
+                return Stream()
+
         with (
             patch.object(vision_models.httpx, "AsyncClient", return_value=Client()),
             patch.object(vision_models, "get_output_limit", return_value=2048),
@@ -102,6 +121,25 @@ class VisionOcrRuntimeLimitTests(unittest.IsolatedAsyncioTestCase):
                     json={"response": "", "thinking": '{"extracted_text": []}', "done": True},
                     request=request,
                 )
+
+            def stream(self, _method, url, **kwargs):
+                client = self
+
+                class Stream:
+                    async def __aenter__(self):
+                        self.response = await client.post(url, **kwargs)
+                        return self
+
+                    async def __aexit__(self, *_args):
+                        return None
+
+                    def raise_for_status(self):
+                        self.response.raise_for_status()
+
+                    async def aiter_bytes(self):
+                        yield vision_models.json.dumps(self.response.json()).encode() + b"\n"
+
+                return Stream()
 
         image = vision_models.io.BytesIO()
         Image.new("RGB", (1, 1)).save(image, format="PNG")

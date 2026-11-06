@@ -8,6 +8,15 @@ from typing import Any
 
 OLLAMA_OCR_RECOVERY_REPEAT_PENALTY = 1.05
 
+
+class OcrResponseError(ValueError):
+    """A malformed or unsupported OCR provider response."""
+
+    def __init__(self, message: str, *, category: str = "invalid_output") -> None:
+        self.category = category
+        super().__init__(message)
+
+
 OCR_TABLE_RECOVERY_PROMPT = (
     "Extract only the tables visible in this image. Return each visible table once. "
     "Preserve the exact source grid and all visible cell text. Headers: one entry per physical column including the leftmost row-label column; combine merged group and subheader labels into each column header. "
@@ -55,7 +64,7 @@ class OllamaOcrIncompleteError(RuntimeError):
     """A sanitized incomplete Ollama OCR response signal."""
 
     def __init__(self, reason: str, eval_count: int | None = None, prompt_eval_count: int | None = None) -> None:
-        self.reason = reason if reason in {"length", "incomplete", "error", "load", "malformed"} else "incomplete"
+        self.reason = reason if reason in {"length", "incomplete", "error", "load", "malformed", "loop_detected"} else "incomplete"
         self.eval_count = _valid_counter(eval_count)
         self.prompt_eval_count = _valid_counter(prompt_eval_count)
         super().__init__(str(self))
@@ -81,6 +90,30 @@ def validate_ocr_recovery_response(ocr: dict[str, Any], *, include_classificatio
         _only_source_table(blocks)
     except ValueError:
         raise ValueError("Invalid OCR table recovery input.") from None
+
+
+def has_rectangular_ocr_table_baseline(ocr: dict[str, Any], *, include_classification: bool) -> bool:
+    """Return whether one source table is independently safe to retain unchanged."""
+    try:
+        _table_index, table = _only_source_table(_validated_ocr_blocks(ocr, include_classification))
+        lines = table["content"].splitlines()
+        separator_indexes = [index for index, line in enumerate(lines) if _is_separator(_parse_markdown_row(line))]
+        if len(separator_indexes) != 1:
+            return False
+        separator_index = separator_indexes[0]
+        if separator_index != 1:
+            return False
+        header = _parse_markdown_row(lines[0])
+        separator = _parse_markdown_row(lines[1])
+        if header is None or separator is None or len(header) < 2 or len(separator) != len(header) or any(not cell.strip() for cell in header):
+            return False
+        for line in lines[2:]:
+            row = _parse_markdown_row(line)
+            if row is None or len(row) != len(header) or not any(cell.strip() for cell in row):
+                return False
+        return True
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def recover_ocr_table_blocks(ocr: dict[str, Any], table_payload: dict[str, Any], *, include_classification: bool) -> dict[str, Any]:

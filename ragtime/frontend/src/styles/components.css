@@ -6907,6 +6907,61 @@ textarea {
   background: var(--color-error-light);
   color: var(--color-error);
 }
+.index-job-warning-badge {
+  background: var(--color-warning-light);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-warning-border);
+}
+
+.index-job-warning-badge:focus-visible,
+.index-job-result .link-btn:focus-visible,
+.index-job-details .modal-close:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.index-job-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.index-job-warnings {
+  margin-top: var(--space-md);
+}
+
+.index-job-warnings .status-message.warning {
+  color: var(--color-text-primary);
+}
+
+.index-job-warnings h4 {
+  margin: var(--space-md) 0 var(--space-sm);
+}
+
+.index-job-warnings-list {
+  display: grid;
+  gap: var(--space-sm);
+  margin: 0;
+  padding-left: var(--space-lg);
+}
+
+.index-job-warning-item {
+  display: grid;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.index-job-warning-source {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.index-job-details .modal-body {
+  min-width: 0;
+}
 .badge.cancelled {
   background: var(--color-warning-light);
   color: var(--color-warning);

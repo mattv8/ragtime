@@ -14,6 +14,7 @@ from langchain_community.document_loaders import TextLoader
 from langchain_core.documents import Document
 
 from ragtime.indexer.chunking import chunk_spooled_batch, is_context_length_error, rechunk_documents_batch
+from ragtime.indexer.document_parser import VisionOcrPageError
 from ragtime.indexer.embedding_errors import iter_exception_chain
 from ragtime.indexer.indexing_spool import EmbeddedBatch, IndexingSpool, SpoolRecord, SpoolTaskOutput
 from ragtime.indexer.vector_utils import embed_documents_subbatched
@@ -40,11 +41,12 @@ class BoundedIndexingPipeline:
         progress: Callable[[int], Awaitable[None]] | None = None,
     ) -> int:
         completed_ordinals = await asyncio.to_thread(self.spool.document_ordinals)
+        failed_ordinals = await asyncio.to_thread(self.spool.failed_source_ordinals)
         count = 0
         for ordinal, path in enumerate(files):
             if self.cancelled():
                 raise __import__("asyncio").CancelledError()
-            if ordinal in completed_ordinals:
+            if ordinal in completed_ordinals or ordinal in failed_ordinals:
                 if progress:
                     await progress(ordinal + 1)
                 continue
@@ -54,7 +56,14 @@ class BoundedIndexingPipeline:
             manifest = task_dir / "documents.jsonl"
             await asyncio.to_thread(manifest.touch)
             source_count = source_bytes = 0
-            docs = await load(path) if load else await asyncio.to_thread(TextLoader(str(path), autodetect_encoding=True).load)
+            try:
+                docs = await load(path) if load else await asyncio.to_thread(TextLoader(str(path), autodetect_encoding=True).load)
+            except VisionOcrPageError as exc:
+                source = path.relative_to(source_root).as_posix()
+                await asyncio.to_thread(self.spool.record_source_warning, ordinal, source, exc.category)
+                if progress:
+                    await progress(ordinal + 1)
+                continue
             for document_ordinal, doc in enumerate(docs):
                 text = doc.page_content
                 text_bytes = len(text.encode("utf-8"))

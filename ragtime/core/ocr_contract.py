@@ -17,6 +17,11 @@ _OCR_CONTRACT_CONSTANTS = {
     "OLLAMA_OCR_CONTEXT_LENGTH",
     "OLLAMA_OCR_THINK",
     "DEFAULT_VISION_OCR_TIMEOUT",
+    "OLLAMA_NDJSON_FRAME_MAX_BYTES",
+    "OLLAMA_NDJSON_RESPONSE_MAX_BYTES",
+    "OLLAMA_TABLE_DETECTOR_LINE_MAX_BYTES",
+    "OLLAMA_TABLE_LOOP_ROW_COUNT",
+    "OLLAMA_TABLE_LOOP_MIN_CHARACTERS",
     "CLASSIFICATION_PROMPT",
     "CLASSIFICATION_SCHEMA",
     "OCR_WITH_CLASSIFICATION_PROMPT",
@@ -42,7 +47,12 @@ _OCR_CONTRACT_FUNCTIONS = {
     "_encoded_image_limit",
     "_parse_vision_response_json",
     "_extract_vision_text_lines",
+    "_collect_ollama_ndjson_response",
+    "_is_empty_markdown_row",
+    "_is_nonempty_markdown_row",
+    "_markdown_row_cells",
 }
+_OCR_CONTRACT_CLASSES = {"_OllamaTableLoopDetector"}
 
 
 def _semantic_source(source: bytes, *, include_recovery_module: bool) -> bytes:
@@ -60,7 +70,8 @@ def _semantic_source(source: bytes, *, include_recovery_module: bool) -> bytes:
         is_contract_constant = isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id in _OCR_CONTRACT_CONSTANTS for target in node.targets
         )
-        if is_ocr_helper or is_contract_function or is_contract_constant:
+        is_contract_class = isinstance(node, ast.ClassDef) and node.name in _OCR_CONTRACT_CLASSES
+        if is_ocr_helper or is_contract_function or is_contract_constant or is_contract_class:
             contract_nodes.append(ast.dump(node, annotate_fields=True, include_attributes=False))
     return "\n".join(contract_nodes).encode() if contract_nodes else source
 
