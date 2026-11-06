@@ -609,7 +609,7 @@ export function JobsTable({
     [filesystemJobs, jobs, pdmJobs, schemaJobs, userspaceCodeJobs],
   );
   const selectedJob = selectedJobIdentity
-    ? combinedJobs.find((job) => `${job.type}:${job.id}` === selectedJobIdentity) ?? null
+    ? (combinedJobs.find((job) => `${job.type}:${job.id}` === selectedJobIdentity) ?? null)
     : null;
 
   const restoreDetailsFocus = (jobIdentity: string) => {
@@ -708,9 +708,13 @@ export function JobsTable({
 
   return (
     <section id="indexing-jobs-section" className="card">
-      {terminalAnnouncement && <p role="status" aria-live="polite">{terminalAnnouncement}</p>}
+      {terminalAnnouncement && (
+        <p role="status" aria-live="polite">
+          {terminalAnnouncement}
+        </p>
+      )}
       <div className="section-header">
-          <h2 ref={jobsHeadingRef} tabIndex={-1}>
+        <h2 ref={jobsHeadingRef} tabIndex={-1}>
           Indexing Jobs
           {hasActiveJobs && (
             <span className="live-indicator" title="Auto-refreshing">
@@ -883,7 +887,8 @@ export function JobsTable({
                         ) : (
                           <span className="badge failed">failed</span>
                         )
-                      ) : job.status === 'completed' && getIndexJobWarningCount(job.warnings) > 0 ? (
+                      ) : job.status === 'completed' &&
+                        getIndexJobWarningCount(job.warnings) > 0 ? (
                         <div className="index-job-result">
                           <button
                             type="button"
@@ -894,8 +899,14 @@ export function JobsTable({
                           >
                             Completed with warnings
                           </button>
-                          <span>{getIndexJobWarningCount(job.warnings).toLocaleString()} {getIndexJobWarningCount(job.warnings) === 1 ? 'source' : 'sources'} skipped during OCR</span>
-                          {job.totalChunks > 0 && <span>{job.totalChunks.toLocaleString()} chunks</span>}
+                          <span>
+                            {getIndexJobWarningCount(job.warnings).toLocaleString()}{' '}
+                            {getIndexJobWarningCount(job.warnings) === 1 ? 'source' : 'sources'}{' '}
+                            skipped during OCR
+                          </span>
+                          {job.totalChunks > 0 && (
+                            <span>{job.totalChunks.toLocaleString()} chunks</span>
+                          )}
                         </div>
                       ) : job.status === 'processing' || job.status === 'indexing' ? (
                         <div className="progress-container">
@@ -916,7 +927,9 @@ export function JobsTable({
                                 onClick={() => setSelectedJobIdentity(`${job.type}:${job.id}`)}
                                 data-index-job-detail-control={`${job.type}:${job.id}`}
                               >
-                                {getIndexJobWarningCount(job.warnings).toLocaleString()} {getIndexJobWarningCount(job.warnings) === 1 ? 'source' : 'sources'} skipped during OCR so far
+                                {getIndexJobWarningCount(job.warnings).toLocaleString()}{' '}
+                                {getIndexJobWarningCount(job.warnings) === 1 ? 'source' : 'sources'}{' '}
+                                skipped during OCR so far
                               </button>
                             )}
                             <span className="progress-stats">

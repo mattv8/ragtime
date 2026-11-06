@@ -167,7 +167,14 @@ describe('JobsTable', () => {
 
     rerender(
       <JobsTable
-        jobs={[{ ...activeJob, status: 'completed', phase: 'completed', completed_at: '2026-07-15T12:01:00Z' }]}
+        jobs={[
+          {
+            ...activeJob,
+            status: 'completed',
+            phase: 'completed',
+            completed_at: '2026-07-15T12:01:00Z',
+          },
+        ]}
         loading={false}
         error={null}
       />,
@@ -177,9 +184,13 @@ describe('JobsTable', () => {
       screen.getByRole('button', { name: 'Completed with warnings: Source index. View 1 source.' }),
     );
 
-    await user.click(screen.getByRole('button', { name: 'Completed with warnings: Source index. View 1 source.' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Completed with warnings: Source index. View 1 source.' }),
+    );
     rerender(<JobsTable jobs={[]} loading={false} error={null} />);
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Indexing Jobs' })));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Indexing Jobs' })),
+    );
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 });
