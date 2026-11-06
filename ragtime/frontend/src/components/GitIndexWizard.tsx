@@ -1780,8 +1780,12 @@ export function GitIndexWizard({
     : null;
 
   return (
-      <div id="git-index-job-result" style={{ padding: '24px' }}>
-      {terminalAnnouncement && <p role="status" aria-live="polite">{terminalAnnouncement}</p>}
+    <div id="git-index-job-result" style={{ padding: '24px' }}>
+      {terminalAnnouncement && (
+        <p role="status" aria-live="polite">
+          {terminalAnnouncement}
+        </p>
+      )}
       {!indexingJob ? (
         <div style={{ textAlign: 'center', padding: '16px' }}>
           <div style={{ fontSize: '1.2rem', marginBottom: '16px' }}>Starting indexing job...</div>
@@ -1794,8 +1798,8 @@ export function GitIndexWizard({
               : jobWarned
                 ? 'Indexing completed with warnings'
                 : jobDone
-                ? 'Indexing complete'
-                : formatIndexJobPhase(indexingJob)}
+                  ? 'Indexing complete'
+                  : formatIndexJobPhase(indexingJob)}
           </div>
 
           {!jobFailed && (

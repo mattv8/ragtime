@@ -29,9 +29,14 @@ export function IndexJobWarnings({ warnings, jobIdentity }: IndexJobWarningsProp
   if (count === 0) return null;
 
   return (
-    <section id={`${jobIdentity}-warnings`} className="index-job-warnings" aria-labelledby={summaryId}>
+    <section
+      id={`${jobIdentity}-warnings`}
+      className="index-job-warnings"
+      aria-labelledby={summaryId}
+    >
       <div id={summaryId} className="status-message warning">
-        {warningCountLabel(count)} in this run. The index may not reflect all current source content.
+        {warningCountLabel(count)} in this run. The index may not reflect all current source
+        content.
       </div>
       <h4>Sources skipped during OCR</h4>
       {items.length > 0 ? (
@@ -43,7 +48,9 @@ export function IndexJobWarnings({ warnings, jobIdentity }: IndexJobWarningsProp
               data-index-job-warning={`${jobIdentity}:${warning.source}`}
             >
               <code className="index-job-warning-source">{warning.source}</code>
-              <span>{warningExplanations[warning.category] ?? 'OCR could not process this source.'}</span>
+              <span>
+                {warningExplanations[warning.category] ?? 'OCR could not process this source.'}
+              </span>
             </li>
           ))}
         </ul>
@@ -51,7 +58,9 @@ export function IndexJobWarnings({ warnings, jobIdentity }: IndexJobWarningsProp
         <p>Warning details are unavailable for this job.</p>
       )}
       {items.length > 0 && count > items.length && (
-        <p>Showing {items.length.toLocaleString()} of {count.toLocaleString()} warnings.</p>
+        <p>
+          Showing {items.length.toLocaleString()} of {count.toLocaleString()} warnings.
+        </p>
       )}
     </section>
   );

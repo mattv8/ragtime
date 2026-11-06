@@ -31,7 +31,8 @@ export function IndexJobDetailsDialog({
   const warningCount = getIndexJobWarningCount(job.warnings);
   const isFatal = job.status === 'failed';
   const title = isFatal ? 'Job Error Details' : 'Job warnings';
-  const status = job.status === 'completed' && warningCount > 0 ? 'Completed with warnings' : job.status;
+  const status =
+    job.status === 'completed' && warningCount > 0 ? 'Completed with warnings' : job.status;
   const jobIdentity = `${job.type}-${job.id}`;
 
   return (
@@ -58,12 +59,20 @@ export function IndexJobDetailsDialog({
           </button>
         </div>
         <div className="modal-body">
-          <p><strong>Job ID:</strong> <code>{job.id}</code></p>
-          <p><strong>Name:</strong> {job.name}</p>
-          <p><strong>Type:</strong> <span className={`badge type-${job.type}`}>{job.type}</span></p>
+          <p>
+            <strong>Job ID:</strong> <code>{job.id}</code>
+          </p>
+          <p>
+            <strong>Name:</strong> {job.name}
+          </p>
+          <p>
+            <strong>Type:</strong> <span className={`badge type-${job.type}`}>{job.type}</span>
+          </p>
           <p>
             <strong>Status:</strong>{' '}
-            <span className={`badge ${job.status === 'completed' && warningCount > 0 ? 'index-job-warning-badge' : job.status}`}>
+            <span
+              className={`badge ${job.status === 'completed' && warningCount > 0 ? 'index-job-warning-badge' : job.status}`}
+            >
               {status}
             </span>
           </p>
@@ -93,7 +102,9 @@ export function IndexJobDetailsDialog({
               )}
             </section>
           )}
-          {warningCount > 0 && <IndexJobWarnings warnings={job.warnings} jobIdentity={jobIdentity} />}
+          {warningCount > 0 && (
+            <IndexJobWarnings warnings={job.warnings} jobIdentity={jobIdentity} />
+          )}
         </div>
       </div>
     </div>
