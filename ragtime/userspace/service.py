@@ -1419,15 +1419,7 @@ def _requires_live_data_contract(
     if not is_module_source:
         return False
 
-    # Auto-require live data contract only for the dashboard entry
-    # module (dashboard/main.ts) when workspace has tools.  Helper
-    # components under dashboard/ receive data as parameters and do
-    # not need their own live data wiring.
-    is_dashboard_entry = normalized_path == "dashboard/main.ts"
-    if is_dashboard_entry and workspace_has_tools:
-        return live_data_requested
-
-    # All other module sources: only when explicitly requested.
+    # Module sources require the contract only when explicitly requested.
     return live_data_requested
 
 
