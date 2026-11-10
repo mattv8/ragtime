@@ -17,8 +17,9 @@ def _call_requires_live_data_contract(
     fake_copilot_auth.ensure_copilot_token_fresh = ensure_copilot_token_fresh
     sys.modules.setdefault("ragtime.core.copilot_auth", fake_copilot_auth)
 
-    import ragtime.rag.components as rag_components
-    from ragtime.userspace.service import _requires_live_data_contract as predicate
+    # Load after the Copilot stub, with components before service to avoid import cycles.
+    import ragtime.rag.components as rag_components  # inline-import: keep
+    from ragtime.userspace.service import _requires_live_data_contract as predicate  # inline-import: keep
 
     assert rag_components
     return predicate(relative_path, live_data_requested, workspace_has_tools)
