@@ -4446,59 +4446,6 @@ class RAGComponents:
 
         return results, errors
 
-    async def _load_faiss_indexes(self, embedding_model):
-        """Load FAISS indexes from database metadata (sequential, for backwards compat).
-
-        Uses the index_metadata table to discover available indexes and loads
-        only those that are enabled. The path is read directly from the database
-        metadata, which was saved by the indexer service.
-
-        For parallel loading, use _load_faiss_indexes_parallel instead.
-        """
-        assert self._app_settings is not None  # Set by initialize()
-        # Try to load from database metadata (preferred)
-        if self._index_metadata:
-            enabled_indexes = [idx for idx in self._index_metadata if idx.get("enabled", True) and idx.get("chunk_count", 0) > 0]
-
-            if enabled_indexes:
-                for idx in enabled_indexes:
-                    index_name = idx.get("name")
-                    if not index_name:
-                        continue
-
-                    # Use the path stored in the database by the indexer
-                    index_path_str = idx.get("path")
-                    if not index_path_str:
-                        logger.warning(f"Index {index_name} has no path in metadata, skipping")
-                        continue
-
-                    index_path = Path(index_path_str)
-                    if index_path.exists():
-                        try:
-                            db = await self._load_faiss_local_admitted(
-                                index_name=index_name,
-                                index_path=index_path,
-                                embedding_model=embedding_model,
-                                metadata=idx,
-                            )
-                            # Create retriever with MMR support if enabled
-                            self.retrievers[index_name] = self._create_retriever_from_faiss(db, index_name)
-                            self.faiss_dbs[index_name] = db  # Store for dynamic k searches
-                            logger.info(f"Loaded FAISS index: {index_name} from {index_path}")
-                        except Exception as e:
-                            logger.warning(f"Failed to load FAISS index {index_name}: {e}")
-                    else:
-                        logger.warning(f"FAISS index path not found: {index_path}")
-
-                if self.retrievers:
-                    logger.info(f"Loaded {len(self.retrievers)} FAISS index(es) from database metadata")
-                else:
-                    logger.info("No enabled FAISS indexes found in database metadata")
-            else:
-                logger.info("No indexes found in database metadata")
-        else:
-            logger.info("No index metadata available (database not initialized)")
-
     async def _load_faiss_indexes_parallel(self, embedding_model):
         """Load FAISS indexes in parallel using asyncio.to_thread.
 
@@ -7148,31 +7095,6 @@ class RAGComponents:
         raise RuntimeError(
             "Synchronous retriever context access is unavailable inside an active event loop; await _get_context_from_retrievers_async() instead."
         )
-
-    def _prepend_reminder_to_content(self, content: Any, mode: str = "chat") -> Any:
-        """Prepend tool usage reminder to content (string or multimodal list).
-
-        For string content: prepends the reminder text.
-        For multimodal content: prepends a text block with the reminder.
-
-        Args:
-            content: String or list of content parts (LangChain format)
-
-        Returns:
-            Content with reminder prepended
-        """
-        reminder_text = self._build_turn_reminder_text(mode)
-
-        if isinstance(content, str):
-            return f"{reminder_text}{content}"
-
-        if isinstance(content, list):
-            # Prepend reminder as first text block
-            reminder_block = {"type": "text", "text": reminder_text}
-            return [reminder_block] + content
-
-        # Fallback
-        return f"{reminder_text}{content}"
 
     @staticmethod
     def _build_turn_reminder_text(
@@ -16238,14 +16160,6 @@ class RAGComponents:
             max_iterations=max(1, int(resolved_max_iterations)),
             return_intermediate_steps=True,
         )
-
-    # ------------------------------------------------------------------
-    # Thinking-model tool-call support
-    # ------------------------------------------------------------------
-
-    def _is_thinking_ollama(self, llm: Any) -> bool:
-        """Return True when *llm* is a ChatOllama instance with thinking/reasoning enabled."""
-        return isinstance(llm, ChatOllama) and getattr(llm, "reasoning", None) is True
 
     @staticmethod
     def _uses_copilot_responses_instructions(llm: Any) -> bool:
