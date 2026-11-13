@@ -14,7 +14,7 @@ def _call_requires_live_data_contract(
     async def ensure_copilot_token_fresh(*_args: object, **_kwargs: object) -> None:
         return None
 
-    fake_copilot_auth.ensure_copilot_token_fresh = ensure_copilot_token_fresh
+    setattr(fake_copilot_auth, "ensure_copilot_token_fresh", ensure_copilot_token_fresh)
     sys.modules.setdefault("ragtime.core.copilot_auth", fake_copilot_auth)
 
     # Load after the Copilot stub, with components before service to avoid import cycles.

@@ -20,7 +20,7 @@ def _outcome(coercer: Coercer, value: object) -> Outcome:
     return "return", type(result), result
 
 
-CASES = [
+CASES: list[tuple[object, Outcome, Outcome]] = [
     (None, ("return", type(None), None), ("return", type(None), None)),
     (False, ("return", type(None), None), ("return", type(None), None)),
     (True, ("return", type(None), None), ("return", type(None), None)),
