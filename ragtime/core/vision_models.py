@@ -27,6 +27,7 @@ from langchain_core.messages import HumanMessage
 from PIL import Image
 
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
+from ragtime.core._provider_metadata_coercion import coerce_positive_int as _coerce_provider_metadata_positive_int
 from ragtime.core.app_setting_defaults import DEFAULT_OCR_CONCURRENCY_LIMIT
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.claude_code_chat import ClaudeCodeChatModel
@@ -38,7 +39,9 @@ from ragtime.core.ocr_table_recovery import (
     OCR_TABLE_RECOVERY_PROMPT,
     OCR_TABLE_RECOVERY_SCHEMA,
     OLLAMA_OCR_RECOVERY_REPEAT_PENALTY,
+    OcrResponseError,
     OllamaOcrIncompleteError,
+    has_rectangular_ocr_table_baseline,
     recover_ocr_table_blocks,
     validate_ocr_recovery_response,
 )
@@ -73,6 +76,11 @@ OCR_OUTPUT_BUDGET_CACHE_TTL_SECONDS = MODELS_DEV_VISION_CACHE_TTL_SECONDS
 OLLAMA_OCR_CONTEXT_LENGTH = 16384
 OLLAMA_OCR_THINK = False
 DEFAULT_VISION_OCR_TIMEOUT = 180.0
+OLLAMA_NDJSON_FRAME_MAX_BYTES = 256 * 1024
+OLLAMA_NDJSON_RESPONSE_MAX_BYTES = 4 * 1024 * 1024
+OLLAMA_TABLE_DETECTOR_LINE_MAX_BYTES = 64 * 1024
+OLLAMA_TABLE_LOOP_ROW_COUNT = 64
+OLLAMA_TABLE_LOOP_MIN_CHARACTERS = 1024
 # Per-model budgets; memoized so per-page OCR never re-triggers catalog lookups when models.dev is unavailable.
 _ocr_output_budget_cache: dict[str, tuple[float, int]] = {}
 
@@ -379,19 +387,7 @@ def _dedupe_capability_tokens(capabilities: list[str]) -> list[str]:
 
 
 def _coerce_positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value if value > 0 else None
-    if isinstance(value, float):
-        parsed = int(value)
-        return parsed if parsed > 0 else None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped.isdigit():
-            parsed = int(stripped)
-            return parsed if parsed > 0 else None
-    return None
+    return _coerce_provider_metadata_positive_int(value)
 
 
 def _provider_metadata_reports_vision(
@@ -1245,6 +1241,7 @@ async def _request_vision_response_once(
             image_b64=image_b64,
             timeout=timeout,
             output_budget=output_budget,
+            stream=schema is not None,
         )
         _reject_ollama_incomplete_response(data)
         return _extract_ollama_response_text(data)
@@ -1311,6 +1308,7 @@ def _ollama_ocr_request_json(
     image_b64: str,
     output_budget: int,
     repeat_penalty: float | None = None,
+    stream: bool = False,
 ) -> dict[str, Any]:
     options: dict[str, Any] = {
         "temperature": 0.1,
@@ -1323,7 +1321,7 @@ def _ollama_ocr_request_json(
         "model": model,
         "prompt": prompt,
         "images": [image_b64],
-        "stream": False,
+        "stream": stream,
         "think": OLLAMA_OCR_THINK,
         "options": options,
     }
@@ -1342,23 +1340,225 @@ async def _ollama_ocr_post_once(
     timeout: float,
     output_budget: int,
     repeat_penalty: float | None = None,
+    stream: bool = False,
 ) -> Any:
     endpoint = _vision_http_endpoint("ollama", base_url)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            f"{endpoint}/api/generate",
-            json=_ollama_ocr_request_json(
-                model=model,
-                prompt=prompt,
-                schema=schema,
-                image_b64=image_b64,
-                output_budget=output_budget,
-                repeat_penalty=repeat_penalty,
-            ),
+        payload = _ollama_ocr_request_json(
+            model=model,
+            prompt=prompt,
+            schema=schema,
+            image_b64=image_b64,
+            output_budget=output_budget,
+            repeat_penalty=repeat_penalty,
+            stream=stream,
         )
-        response.raise_for_status()
-        data = response.json()
-    return data
+        if not stream:
+            response = await client.post(f"{endpoint}/api/generate", json=payload)
+            response.raise_for_status()
+            return response.json()
+        async with client.stream("POST", f"{endpoint}/api/generate", json=payload) as response:
+            response.raise_for_status()
+            return await _collect_ollama_ndjson_response(response)
+
+
+class _OllamaTableLoopDetector:
+    """Recognize a long run of empty Markdown rows in a decoded Table block."""
+
+    def __init__(self) -> None:
+        self._current_type: str | None = None
+        self._current_key: str | None = None
+        self._in_string = False
+        self._is_content = False
+        self._escape = False
+        self._unicode_digits = ""
+        self._string: list[str] = []
+        self._line: list[str] = []
+        self._discard_line = False
+        self._seen_table_context = False
+        self._empty_row: str | None = None
+        self._empty_row_count = 0
+        self._empty_row_characters = 0
+
+    def feed(self, delta: str) -> None:
+        for character in delta:
+            self._feed_character(character)
+
+    def _feed_character(self, character: str) -> None:
+        if not self._in_string:
+            if character == '"':
+                self._in_string = True
+                self._string = []
+                self._is_content = self._current_key == "content" and self._current_type == "Table"
+                if self._is_content:
+                    self._reset_table_content()
+            elif character in "{[":
+                self._current_key = None
+            elif character == ":":
+                return
+            elif character in ",}]":
+                if character in "}]":
+                    self._current_type = None
+                self._current_key = None
+            return
+        if self._unicode_digits:
+            self._unicode_digits += character
+            if len(self._unicode_digits) == 5:
+                try:
+                    self._append_decoded_character(chr(int(self._unicode_digits[1:], 16)))
+                except ValueError:
+                    self._append_decoded_character("?")
+                self._unicode_digits = ""
+            return
+        if self._escape:
+            self._escape = False
+            if character == "u":
+                self._unicode_digits = "u"
+                return
+            self._append_decoded_character({"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\", "/": "/"}.get(character, character))
+            return
+        if character == "\\":
+            self._escape = True
+            return
+        if character == '"':
+            value = "".join(self._string)
+            self._in_string = False
+            if self._is_content:
+                self._reset_table_content()
+            if self._current_key is None:
+                self._current_key = value
+            elif self._current_key == "type":
+                self._current_type = value
+                self._current_key = None
+            else:
+                self._current_key = None
+            return
+        self._append_decoded_character(character)
+
+    def _append_decoded_character(self, character: str) -> None:
+        if self._is_content:
+            self._feed_table_character(character)
+        else:
+            self._string.append(character)
+
+    def _feed_table_character(self, character: str) -> None:
+        if character == "\n":
+            if self._discard_line:
+                self._discard_line = False
+                return
+            self._observe_table_line("".join(self._line))
+            self._line = []
+            return
+        if self._discard_line:
+            return
+        self._line.append(character)
+        if len(self._line) > OLLAMA_TABLE_DETECTOR_LINE_MAX_BYTES:
+            self._reset_empty_rows()
+            self._line = []
+            self._discard_line = True
+
+    def _observe_table_line(self, line: str) -> None:
+        if not self._seen_table_context:
+            if _is_nonempty_markdown_row(line):
+                self._seen_table_context = True
+            return
+        if not _is_empty_markdown_row(line):
+            self._reset_empty_rows()
+            return
+        if self._empty_row != line:
+            self._empty_row = line
+            self._empty_row_count = 1
+            self._empty_row_characters = len(line) + 1
+            return
+        self._empty_row_count += 1
+        self._empty_row_characters += len(line) + 1
+        if self._empty_row_count >= OLLAMA_TABLE_LOOP_ROW_COUNT and self._empty_row_characters >= OLLAMA_TABLE_LOOP_MIN_CHARACTERS:
+            raise OllamaOcrIncompleteError("loop_detected")
+
+    def _reset_empty_rows(self) -> None:
+        self._empty_row = None
+        self._empty_row_count = 0
+        self._empty_row_characters = 0
+
+    def _reset_table_content(self) -> None:
+        self._line = []
+        self._discard_line = False
+        self._seen_table_context = False
+        self._reset_empty_rows()
+
+
+def _is_empty_markdown_row(line: str) -> bool:
+    stripped = line.strip()
+    if not (stripped.startswith("|") and stripped.endswith("|")):
+        return False
+    cells = _markdown_row_cells(stripped)
+    return cells is not None and bool(cells) and all(not cell.strip() for cell in cells)
+
+
+def _is_nonempty_markdown_row(line: str) -> bool:
+    cells = _markdown_row_cells(line.strip())
+    return cells is not None and any(cell.strip() for cell in cells)
+
+
+def _markdown_row_cells(line: str) -> list[str] | None:
+    if not (line.startswith("|") and line.endswith("|")):
+        return None
+    cells: list[str] = []
+    cell: list[str] = []
+    escaped = False
+    for character in line[1:-1]:
+        if escaped:
+            cell.append(character)
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == "|":
+            cells.append("".join(cell))
+            cell = []
+        else:
+            cell.append(character)
+    return None if escaped else [*cells, "".join(cell)]
+
+
+async def _collect_ollama_ndjson_response(response: httpx.Response) -> dict[str, Any]:
+    """Collect a bounded Ollama NDJSON stream, accepting only a terminal done frame."""
+    pending = b""
+    response_parts: list[str] = []
+    response_bytes = 0
+    final_frame: dict[str, Any] | None = None
+    detector = _OllamaTableLoopDetector()
+    async for chunk in response.aiter_bytes():
+        pending += chunk
+        while b"\n" in pending:
+            raw_frame, pending = pending.split(b"\n", 1)
+            if len(raw_frame) > OLLAMA_NDJSON_FRAME_MAX_BYTES:
+                raise OllamaOcrIncompleteError("malformed")
+            try:
+                frame = json.loads(raw_frame)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise OllamaOcrIncompleteError("malformed") from exc
+            if not isinstance(frame, dict) or final_frame is not None:
+                raise OllamaOcrIncompleteError("malformed")
+            if "error" in frame:
+                raise OllamaOcrIncompleteError("error")
+            delta = frame.get("response")
+            if delta is not None:
+                if not isinstance(delta, str):
+                    raise OllamaOcrIncompleteError("malformed")
+                response_bytes += len(delta.encode("utf-8"))
+                if response_bytes > OLLAMA_NDJSON_RESPONSE_MAX_BYTES:
+                    raise OllamaOcrIncompleteError("malformed")
+                detector.feed(delta)
+                response_parts.append(delta)
+            if frame.get("done") is True:
+                final_frame = frame
+            elif "done" in frame and frame["done"] is not False:
+                raise OllamaOcrIncompleteError("malformed")
+        if len(pending) > OLLAMA_NDJSON_FRAME_MAX_BYTES:
+            raise OllamaOcrIncompleteError("malformed")
+    if pending or final_frame is None:
+        raise OllamaOcrIncompleteError("incomplete")
+    return {**final_frame, "response": "".join(response_parts)}
 
 
 def _ollama_ocr_remaining_timeout(deadline: float) -> float:
@@ -1375,7 +1575,7 @@ def _ollama_ocr_is_recoverable_contract(
     error: OllamaOcrIncompleteError,
 ) -> bool:
     return (
-        error.reason == "length"
+        error.reason in {"length", "loop_detected"}
         and provider == "ollama"
         and (
             (prompt == OCR_WITH_CLASSIFICATION_PROMPT and schema == OCR_WITH_CLASSIFICATION_SCHEMA) or (prompt == OCR_ONLY_PROMPT and schema == OCR_ONLY_SCHEMA)
@@ -1450,7 +1650,12 @@ async def _ollama_ocr_recover_response_text(
     _reject_ollama_incomplete_response(structured_data, required_reason="stop")
     structured_text = _extract_ollama_response_text(structured_data)
     structured_ocr = _ollama_ocr_parse_json_object(structured_text)
-    validate_ocr_recovery_response(structured_ocr, include_classification=include_classification)
+    try:
+        validate_ocr_recovery_response(structured_ocr, include_classification=include_classification)
+    except ValueError as exc:
+        raise OcrResponseError("Ollama OCR recovery returned invalid structured output.") from exc
+    if has_rectangular_ocr_table_baseline(structured_ocr, include_classification=include_classification):
+        return structured_text
     table_content, _ = _ollama_ocr_table_image_content(recovery_image_content, recovery_source_format)
     table_data = await _retry_vision_request(
         lambda: _ollama_ocr_post(OCR_TABLE_RECOVERY_PROMPT, OCR_TABLE_RECOVERY_SCHEMA, table_content),
@@ -1459,16 +1664,19 @@ async def _ollama_ocr_recover_response_text(
     )
     _reject_ollama_incomplete_response(table_data, required_reason="stop")
     table_payload = _ollama_ocr_parse_json_object(_extract_ollama_response_text(table_data))
-    return json.dumps(recover_ocr_table_blocks(structured_ocr, table_payload, include_classification=include_classification))
+    try:
+        return json.dumps(recover_ocr_table_blocks(structured_ocr, table_payload, include_classification=include_classification))
+    except ValueError as exc:
+        raise OcrResponseError("Ollama OCR recovery returned invalid table output.") from exc
 
 
 def _ollama_ocr_parse_json_object(text: str) -> dict[str, Any]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError("Ollama OCR recovery returned malformed structured output.") from exc
+        raise OcrResponseError("Ollama OCR recovery returned malformed structured output.") from exc
     if not isinstance(data, dict):
-        raise ValueError("Ollama OCR recovery returned malformed structured output.")
+        raise OcrResponseError("Ollama OCR recovery returned malformed structured output.")
     return data
 
 
@@ -1537,7 +1745,11 @@ def _reject_ollama_incomplete_response(data: Any, *, required_reason: str | None
 def _reject_openai_incomplete_response(data: Any) -> None:
     choices = data.get("choices") if isinstance(data, dict) else None
     first = choices[0] if isinstance(choices, list) and choices else None
-    if not isinstance(first, dict) or first.get("finish_reason") in {"length", "content_filter"}:
+    if not isinstance(first, dict):
+        raise OcrResponseError("Vision OCR response was malformed.")
+    if first.get("finish_reason") == "length":
+        raise OcrResponseError("Vision OCR response was incomplete.", category="output_exhausted")
+    if first.get("finish_reason") == "content_filter":
         raise RuntimeError("Vision OCR response was incomplete or refused.")
 
 
@@ -1564,7 +1776,9 @@ async def _resolve_vision_api_key(provider: str, supplied_key: str | None) -> st
 
 
 def _response_text_from_anthropic_payload(payload: dict[str, Any]) -> str:
-    if payload.get("stop_reason") in {"max_tokens", "refusal"}:
+    if payload.get("stop_reason") == "max_tokens":
+        raise OcrResponseError("Anthropic OCR response was incomplete.", category="output_exhausted")
+    if payload.get("stop_reason") == "refusal":
         raise RuntimeError("Anthropic OCR response was incomplete or refused.")
     blocks = payload.get("content")
     if not isinstance(blocks, list):
@@ -1770,7 +1984,7 @@ def _vision_ocr_result_from_dict(result: dict[str, Any]) -> "VisionOcrResult":
         not isinstance(block, dict) or not isinstance(block.get("type"), str) or not isinstance(block.get("content"), str) or block["type"] not in allowed_types
         for block in extracted_text
     ):
-        raise ValueError("OCR response contains malformed extracted_text blocks.")
+        raise OcrResponseError("OCR response contains malformed extracted_text blocks.")
     return VisionOcrResult(
         extracted_text=extracted_text,
         image_type=result.get("image_type"),
@@ -1922,7 +2136,7 @@ async def extract_text_with_vision(
         )
         if result is None:
             if schema is not None:
-                raise ValueError("Vision OCR provider returned malformed structured output.")
+                raise OcrResponseError("Vision OCR provider returned malformed structured output.")
             return response_text
 
         if uses_default_prompt:
@@ -2086,7 +2300,7 @@ async def extract_text_with_vision_structured(
             log_parse_errors=schema is not None,
         )
         if result is None:
-            raise ValueError("Vision OCR provider returned malformed structured output.")
+            raise OcrResponseError("Vision OCR provider returned malformed structured output.")
 
         return _vision_ocr_result_from_dict(result)
 

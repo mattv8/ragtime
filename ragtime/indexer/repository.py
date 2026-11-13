@@ -145,6 +145,7 @@ from ragtime.http_api.secrets import (
 )
 from ragtime.indexer.chat_events import with_event_channel
 from ragtime.indexer.denial_notices import build_denial_message, denial_dedup_key, denial_preview_events, latest_denial_message_id
+from ragtime.indexer.job_warnings import warnings_from_persisted
 from ragtime.indexer.models import (
     DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
     SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
@@ -828,6 +829,7 @@ class IndexerRepository:
             "totalChunks": job.total_chunks,
             "processedChunks": job.processed_chunks,
             "errorMessage": job.error_message,
+            "warnings": Json(job.warnings.model_dump(mode="json")),
             "createdAt": job.created_at,
             "startedAt": job.started_at,
             "completedAt": job.completed_at,
@@ -872,6 +874,7 @@ class IndexerRepository:
                 "totalChunks": job.total_chunks,
                 "processedChunks": job.processed_chunks,
                 "errorMessage": job.error_message,
+                "warnings": Json(job.warnings.model_dump(mode="json")),
                 "startedAt": job.started_at,
                 "completedAt": job.completed_at,
             },
@@ -991,6 +994,7 @@ class IndexerRepository:
             total_chunks=prisma_job.totalChunks,
             processed_chunks=prisma_job.processedChunks,
             error_message=prisma_job.errorMessage,
+            warnings=warnings_from_persisted(getattr(prisma_job, "warnings", None)),
             created_at=prisma_job.createdAt,
             started_at=prisma_job.startedAt,
             completed_at=prisma_job.completedAt,

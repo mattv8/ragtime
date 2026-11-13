@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from ragtime.core._provider_metadata_coercion import coerce_int as _coerce_provider_metadata_int
 from ragtime.core.logging import get_logger
 from ragtime.core.ollama import get_model_embedding_dimension
 
@@ -44,15 +45,7 @@ class EmbeddingModelInfo:
 
 
 def _coerce_int(value: object) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
+    return _coerce_provider_metadata_int(value)
 
 
 async def _fetch_models_dev_embedding_models() -> dict[str, EmbeddingModelInfo]:

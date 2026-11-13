@@ -161,8 +161,9 @@ class VisionOcrOutputBudgetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_anthropic_max_tokens_stop_still_raises(self) -> None:
         truncated = {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "{"}]}
-        with self.assertRaisesRegex(RuntimeError, "incomplete or refused"):
+        with self.assertRaises(vision_models.OcrResponseError) as caught:
             await self._dispatch("anthropic", "claude-small", 1024, _RecordingHttpClient(truncated, {}))
+        self.assertEqual(caught.exception.category, "output_exhausted")
 
     async def test_ollama_payload_uses_budget_as_num_predict(self) -> None:
         captured: dict[str, Any] = {}
@@ -198,8 +199,9 @@ class VisionOcrOutputBudgetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_openai_finish_length_still_raises(self) -> None:
         truncated = {"choices": [{"finish_reason": "length", "message": {"content": "{"}}]}
-        with self.assertRaisesRegex(RuntimeError, "incomplete or refused"):
+        with self.assertRaises(vision_models.OcrResponseError) as caught:
             await self._dispatch("openai", "gpt-4o", 1024, _RecordingHttpClient(truncated, {}))
+        self.assertEqual(caught.exception.category, "output_exhausted")
 
     async def test_claude_code_adapter_receives_budget(self) -> None:
         captured: dict[str, Any] = {}

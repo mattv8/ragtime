@@ -81,6 +81,7 @@ from ragtime.indexer.file_utils import (
 )
 from ragtime.indexer.indexing_pipeline import DEFAULT_BATCH_TEXT_BYTES, MAX_SOURCE_TEXT_BYTES, BoundedIndexingPipeline
 from ragtime.indexer.indexing_spool import IndexingSpool
+from ragtime.indexer.job_warnings import IndexingWarnings
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
 from ragtime.indexer.memory_utils import (
     estimate_index_memory,
@@ -3014,6 +3015,7 @@ class IndexerService:
 
         async def loaded_progress(processed: int) -> None:
             job.processed_files = processed
+            job.warnings = IndexingWarnings.model_validate(await asyncio.to_thread(spool.source_warning_summary))
             await repository.update_job(job)
 
         async def chunk_progress(processed_documents: int, total_chunks: int) -> None:
@@ -3030,6 +3032,8 @@ class IndexerService:
                 if job.source_type == "git" and config.git_history_depth != 1:
                     await pipeline.stage_extra_documents(await self._index_git_history(source_dir, job.name, config.git_history_depth))
                 await asyncio.to_thread(spool.mark_stage_complete, "documents")
+            job.warnings = IndexingWarnings.model_validate(await asyncio.to_thread(spool.source_warning_summary))
+            await repository.update_job(job)
             summary = await asyncio.to_thread(spool.summary)
             if not summary["document_count"]:
                 raise ValueError("No indexable documents were loaded; check file patterns, exclusions, and OCR settings")

@@ -24,6 +24,7 @@ import { defaultScheduleStartMinute, defaultScheduleTimezone } from './ScheduleS
 import { GitWebhookSettings } from './GitWebhookSettings';
 import { GitHistoryDepthAndAdvancedOptions } from './GitHistoryDepthAndAdvancedOptions';
 import { isGitAuthenticationError, useGitTokenValidation } from './gitTokenValidation';
+import { IndexJobWarnings, getIndexJobWarningCount } from './shared/IndexJobWarnings';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
@@ -73,6 +74,10 @@ function formatIndexJobPhase(job: IndexJob): string {
     cancelled: 'Cancelled',
   };
   return labels[job.phase] || 'Processing';
+}
+
+function hasIndexJobWarnings(job: IndexJob | null): boolean {
+  return getIndexJobWarningCount(job?.warnings) > 0;
 }
 
 /**
@@ -129,6 +134,7 @@ export function GitIndexWizard({
   const [wizardStep, setWizardStep] = useState<WizardStep>('input');
   const [analysisResult, setAnalysisResult] = useState<IndexAnalysisResult | null>(null);
   const [indexingJob, setIndexingJob] = useState<IndexJob | null>(null);
+  const [terminalAnnouncement, setTerminalAnnouncement] = useState('');
   const notifiedJobCreatedRef = useRef(false);
   const webhookRequestRef = useRef(0);
   const branchRequestRef = useRef(0);
@@ -620,7 +626,17 @@ export function GitIndexWizard({
         if (cancelled) return;
         setIndexingJob(nextJob);
         if (nextJob.status === 'completed') {
-          setStatus({ type: 'success', message: `Indexing complete: ${nextJob.name}` });
+          if (hasIndexJobWarnings(nextJob)) {
+            setTerminalAnnouncement(
+              `Indexing completed with warnings. ${getIndexJobWarningCount(nextJob.warnings)} ${getIndexJobWarningCount(nextJob.warnings) === 1 ? 'source' : 'sources'} skipped during OCR.`,
+            );
+          }
+          setStatus({
+            type: hasIndexJobWarnings(nextJob) ? 'info' : 'success',
+            message: hasIndexJobWarnings(nextJob)
+              ? `Indexing completed with warnings: ${nextJob.name}`
+              : `Indexing complete: ${nextJob.name}`,
+          });
         } else if (nextJob.status === 'failed') {
           const message = nextJob.error_message || 'Indexing failed.';
           if (isGitAuthenticationError(message)) {
@@ -1751,6 +1767,7 @@ export function GitIndexWizard({
 
   const jobDone = isIndexJobTerminal(indexingJob);
   const jobFailed = indexingJob?.status === 'failed';
+  const jobWarned = indexingJob?.status === 'completed' && hasIndexJobWarnings(indexingJob);
   const displayPercent = indexingJob ? getIndexJobDisplayPercent(indexingJob) : 0;
   const progressSummary = indexingJob
     ? indexingJob.phase === 'loading' || indexingJob.phase === 'scanning'
@@ -1763,7 +1780,12 @@ export function GitIndexWizard({
     : null;
 
   return (
-    <div style={{ padding: '24px' }}>
+    <div id="git-index-job-result" style={{ padding: '24px' }}>
+      {terminalAnnouncement && (
+        <p role="status" aria-live="polite">
+          {terminalAnnouncement}
+        </p>
+      )}
       {!indexingJob ? (
         <div style={{ textAlign: 'center', padding: '16px' }}>
           <div style={{ fontSize: '1.2rem', marginBottom: '16px' }}>Starting indexing job...</div>
@@ -1773,9 +1795,11 @@ export function GitIndexWizard({
           <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
             {jobFailed
               ? 'Indexing failed'
-              : jobDone
-                ? 'Indexing complete'
-                : formatIndexJobPhase(indexingJob)}
+              : jobWarned
+                ? 'Indexing completed with warnings'
+                : jobDone
+                  ? 'Indexing complete'
+                  : formatIndexJobPhase(indexingJob)}
           </div>
 
           {!jobFailed && (
@@ -1791,7 +1815,9 @@ export function GitIndexWizard({
                 <span>
                   {indexingJob.phase === 'cloning'
                     ? 'Cloning repository'
-                    : formatIndexJobPhase(indexingJob)}
+                    : jobWarned
+                      ? 'Processing finished'
+                      : formatIndexJobPhase(indexingJob)}
                 </span>
                 <span style={{ fontFamily: 'var(--font-mono)' }}>{displayPercent}%</span>
               </div>
@@ -1829,6 +1855,13 @@ export function GitIndexWizard({
 
           {jobFailed && indexingJob.error_message && (
             <div className="status-message error">{indexingJob.error_message}</div>
+          )}
+
+          {indexingJob && hasIndexJobWarnings(indexingJob) && (
+            <IndexJobWarnings
+              warnings={indexingJob.warnings}
+              jobIdentity={`git-${indexingJob.id}`}
+            />
           )}
 
           {webhookSection}

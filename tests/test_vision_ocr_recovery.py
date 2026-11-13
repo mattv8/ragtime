@@ -56,6 +56,25 @@ class _QueuedOllamaClient:
         request = vision_models.httpx.Request("POST", url)
         return vision_models.httpx.Response(200, json=next(self._responses), request=request)
 
+    def stream(self, _method: str, url: str, **kwargs: Any):
+        client = self
+
+        class Stream:
+            async def __aenter__(self):
+                self.response = await client.post(url, **kwargs)
+                return self
+
+            async def __aexit__(self, *_args: Any) -> None:
+                return None
+
+            def raise_for_status(self) -> None:
+                self.response.raise_for_status()
+
+            async def aiter_bytes(self):
+                yield json.dumps(self.response.json()).encode() + b"\n"
+
+        return Stream()
+
 
 class _TrackingLimiter(vision_models._VisionOcrLimiter):
     def __init__(self) -> None:
@@ -143,17 +162,15 @@ class OllamaOcrIncompleteResponseTests(unittest.TestCase):
 
 
 class OllamaOcrRecoveryLifecycleTests(unittest.IsolatedAsyncioTestCase):
-    async def test_public_structured_ocr_accepts_legacy_reply_without_done_key(self) -> None:
+    async def test_public_structured_ocr_requires_terminal_stream_frame(self) -> None:
         payloads: list[dict[str, Any]] = []
         client = _QueuedOllamaClient([{"response": json.dumps(_structured_ocr_response())}], payloads)
         with (
             patch.object(vision_models.httpx, "AsyncClient", return_value=client),
             patch.object(vision_models, "_supports_structured_vision_output", AsyncMock(return_value=True)),
         ):
-            result = await vision_models.extract_text_with_vision_structured(_png_image(), "https://ollama.test", "vision")
-
-        self.assertEqual(result.extracted_text[-1]["content"], "Preserved prose.")
-        self.assertEqual(len(payloads), 1)
+            with self.assertRaises(OllamaOcrIncompleteError):
+                await vision_models.extract_text_with_vision_structured(_png_image(), "https://ollama.test", "vision")
 
     async def test_recovery_freezes_the_primary_output_budget_for_all_phases(self) -> None:
         payloads: list[dict[str, Any]] = []

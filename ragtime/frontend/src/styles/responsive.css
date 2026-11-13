@@ -57,6 +57,13 @@
   #tool-delete-dialog .btn {
     min-height: var(--control-height);
   }
+
+  .index-job-warning-badge,
+  .index-job-result .link-btn,
+  .index-job-details .modal-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 /* Narrow desktop breakpoint (1250px and below) — collapse user-menu to avatar only */
@@ -332,6 +339,15 @@
   .progress-cell {
     grid-column: 1 / -1;
     min-width: auto;
+  }
+
+  .index-job-result {
+    min-width: 0;
+  }
+
+  .index-job-warning-badge {
+    max-width: 100%;
+    white-space: normal;
   }
 
   .userspace-sqlite-breadcrumb-row,

@@ -74,6 +74,8 @@ class _QueuedClient:
         self._responses = iter(responses)
         self._payloads = payloads
         self._timeouts = timeouts
+        self.streams: list[_QueuedStream] = []
+        self.events: list[str] = []
 
     async def __aenter__(self):
         return self
@@ -82,6 +84,7 @@ class _QueuedClient:
         return None
 
     async def post(self, url: str, **kwargs: Any) -> vision_models.httpx.Response:
+        self.events.append("post")
         self._payloads.append(kwargs["json"])
         response = next(self._responses)
         if isinstance(response, _WaitForPost):
@@ -94,6 +97,41 @@ class _QueuedClient:
         if isinstance(response, vision_models.httpx.Response):
             return response
         return vision_models.httpx.Response(200, json=response, request=request)
+
+    def stream(self, _method: str, url: str, **kwargs: Any) -> "_QueuedStream":
+        stream = _QueuedStream(self, url, kwargs)
+        self.streams.append(stream)
+        return stream
+
+
+class _QueuedStream:
+    def __init__(self, client: _QueuedClient, url: str, kwargs: dict[str, Any]) -> None:
+        self._client = client
+        self._url = url
+        self._kwargs = kwargs
+        self._response: vision_models.httpx.Response | None = None
+        self.closed = False
+
+    async def __aenter__(self) -> "_QueuedStream":
+        try:
+            self._response = await self._client.post(self._url, **self._kwargs)
+        except asyncio.CancelledError:
+            self.closed = True
+            self._client.events.append("stream-close")
+            raise
+        return self
+
+    async def __aexit__(self, *_args: Any) -> None:
+        self.closed = True
+        self._client.events.append("stream-close")
+
+    def raise_for_status(self) -> None:
+        assert self._response is not None
+        self._response.raise_for_status()
+
+    async def aiter_bytes(self):
+        assert self._response is not None
+        yield json.dumps(self._response.json()).encode() + b"\n"
 
 
 class _TrackingLimiter(vision_models._VisionOcrLimiter):
@@ -153,6 +191,7 @@ class VisionOcrRecoveryLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(asyncio.CancelledError):
                     await request
                 self.assertEqual((limiter.acquires, limiter.releases, limiter.active), (1, 1, 0))
+                self.assertTrue(client.streams[0].closed)
 
     async def test_phase_two_rate_limit_retries_without_repeating_original_request(self) -> None:
         payloads: list[dict[str, Any]] = []
@@ -244,6 +283,35 @@ class VisionOcrRecoveryLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self._request(client, _TrackingLimiter()), original)
         self.assertEqual(len(payloads), 1)
 
+    async def test_rectangular_clean_retry_returns_unchanged_without_typed_table_request(self) -> None:
+        payloads: list[dict[str, Any]] = []
+        clean_retry = json.dumps(
+            {
+                "extracted_text": [
+                    {"type": "Table", "content": "| A | B |\n| --- | --- |\n| 1 | two |\n|  | three |"},
+                ]
+            }
+        )
+        client = _QueuedClient([_ollama_response("{", reason="length"), _ollama_response(clean_retry)], payloads, [])
+
+        result = await self._request(client, _TrackingLimiter())
+
+        self.assertEqual(result, clean_retry)
+        self.assertEqual([payload["prompt"] for payload in payloads], [vision_models.OCR_ONLY_PROMPT, vision_models.OCR_ONLY_PROMPT])
+        self.assertTrue(client.streams[0].closed)
+
+    async def test_primary_stream_closes_before_recovery_request(self) -> None:
+        payloads: list[dict[str, Any]] = []
+        client = _QueuedClient(
+            [_ollama_response("{", reason="length"), _ollama_response(json.dumps(_structured())), _ollama_response(json.dumps(_table()))], payloads, []
+        )
+
+        await self._request(client, _TrackingLimiter())
+
+        self.assertTrue(client.streams[0].closed)
+        self.assertEqual(len(client.streams), 1)
+        self.assertEqual(client.events[:3], ["post", "stream-close", "post"])
+
     async def test_non_ollama_length_completion_never_invokes_recovery(self) -> None:
         request = vision_models.httpx.Request("POST", "https://openai.test/v1/chat/completions")
 
@@ -272,7 +340,7 @@ class VisionOcrRecoveryLifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(vision_models, "_get_vision_ocr_limiter", AsyncMock(return_value=limiter)),
             patch.object(vision_models, "_vision_ocr_limit", AsyncMock(return_value=1)),
         ):
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(vision_models.OcrResponseError) as caught:
                 await vision_models._request_vision_response_text(
                     provider="openai",
                     base_url="https://openai.test",
@@ -284,6 +352,7 @@ class VisionOcrRecoveryLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     image_mime_type="image/png",
                     timeout=PAGE_TIMEOUT,
                 )
+        self.assertEqual(caught.exception.category, "output_exhausted")
         self.assertEqual(client.calls, 1)
         self.assertEqual((limiter.acquires, limiter.releases, limiter.active), (1, 1, 0))
 
@@ -325,6 +394,25 @@ class VisionOcrRecoveryLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 if isinstance(response, vision_models.httpx.Response):
                     return response
                 return vision_models.httpx.Response(200, json=response, request=request)
+
+            def stream(self, _method: str, url: str, **kwargs: Any):
+                client = self
+
+                class Stream:
+                    async def __aenter__(self):
+                        self.response = await client.post(url, **kwargs)
+                        return self
+
+                    async def __aexit__(self, *_args: Any) -> None:
+                        return None
+
+                    def raise_for_status(self) -> None:
+                        self.response.raise_for_status()
+
+                    async def aiter_bytes(self):
+                        yield json.dumps(self.response.json()).encode() + b"\n"
+
+                return Stream()
 
         class RecordingFactory:
             def __call__(self, *, timeout: float):

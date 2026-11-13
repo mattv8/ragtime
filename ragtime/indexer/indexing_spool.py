@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+from ragtime.indexer.job_warnings import MAX_WARNING_SAMPLES, IndexingWarning, warning_source
+
 
 @dataclass(frozen=True)
 class SpoolRecord:
@@ -187,6 +189,24 @@ class IndexingSpool:
 
     def accept_documents(self, output: SpoolTaskOutput) -> None:
         self._accept(output, "documents")
+
+    def record_source_warning(self, ordinal: int, source: str, category: str) -> None:
+        """Checkpoint an omitted source separately from successfully loaded text."""
+        if ordinal < 0:
+            raise ValueError("Source ordinal must be nonnegative")
+        relative_source = str(self._relative(source))
+        warning = IndexingWarning.model_validate({"source": warning_source(relative_source), "category": category})
+        self.set_state(f"ocr_failure:{ordinal:012d}", warning.model_dump())
+
+    def failed_source_ordinals(self) -> set[int]:
+        rows = self._connection.execute("SELECT key FROM state WHERE key LIKE 'ocr_failure:%'")
+        return {int(row[0].split(":", 1)[1]) for row in rows}
+
+    def source_warning_summary(self) -> dict[str, Any]:
+        """Keep full omission count while exposing only bounded diagnostic samples."""
+        count = self._connection.execute("SELECT COUNT(*) FROM state WHERE key LIKE 'ocr_failure:%'").fetchone()[0]
+        rows = self._connection.execute("SELECT value FROM state WHERE key LIKE 'ocr_failure:%' ORDER BY key LIMIT ?", (MAX_WARNING_SAMPLES,))
+        return {"count": count, "items": [json.loads(row[0]) for row in rows]}
 
     def accept_chunks(self, output: SpoolTaskOutput) -> None:
         self._accept(output, "chunks")
