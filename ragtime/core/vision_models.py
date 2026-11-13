@@ -27,6 +27,7 @@ from langchain_core.messages import HumanMessage
 from PIL import Image
 
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
+from ragtime.core._provider_metadata_coercion import coerce_positive_int as _coerce_provider_metadata_positive_int
 from ragtime.core.app_setting_defaults import DEFAULT_OCR_CONCURRENCY_LIMIT
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.claude_code_chat import ClaudeCodeChatModel
@@ -386,19 +387,7 @@ def _dedupe_capability_tokens(capabilities: list[str]) -> list[str]:
 
 
 def _coerce_positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value if value > 0 else None
-    if isinstance(value, float):
-        parsed = int(value)
-        return parsed if parsed > 0 else None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped.isdigit():
-            parsed = int(stripped)
-            return parsed if parsed > 0 else None
-    return None
+    return _coerce_provider_metadata_positive_int(value)
 
 
 def _provider_metadata_reports_vision(

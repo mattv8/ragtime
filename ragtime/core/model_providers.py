@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from ragtime.core._provider_metadata_coercion import coerce_positive_int as _coerce_provider_metadata_positive_int
+
 ProviderRole = Literal["llm", "embedding"]
 
 
@@ -391,19 +393,7 @@ def resolve_model_family_from_metadata(
 
 def coerce_positive_int(value: Any) -> int | None:
     """Return a positive integer parsed from common scalar payload values."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value if value > 0 else None
-    if isinstance(value, float):
-        parsed = int(value)
-        return parsed if parsed > 0 else None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped.isdigit():
-            parsed = int(stripped)
-            return parsed if parsed > 0 else None
-    return None
+    return _coerce_provider_metadata_positive_int(value)
 
 
 def extract_openai_embedding_dimension(payload: dict[str, Any]) -> int | None:

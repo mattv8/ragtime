@@ -45,7 +45,7 @@ class BoundedIndexingPipeline:
         count = 0
         for ordinal, path in enumerate(files):
             if self.cancelled():
-                raise __import__("asyncio").CancelledError()
+                raise asyncio.CancelledError()
             if ordinal in completed_ordinals or ordinal in failed_ordinals:
                 if progress:
                     await progress(ordinal + 1)
@@ -144,7 +144,7 @@ class BoundedIndexingPipeline:
             if not wave:
                 break
             if self.cancelled():
-                raise __import__("asyncio").CancelledError()
+                raise asyncio.CancelledError()
             tasks = [
                 asyncio.create_task(
                     chunk_spooled_batch(self.job_id, self.spool.root, batch, chunk_size=chunk_size, chunk_overlap=chunk_overlap, use_tokens=use_tokens)
@@ -186,7 +186,7 @@ class BoundedIndexingPipeline:
             if batch is None:
                 break
             if self.cancelled():
-                raise __import__("asyncio").CancelledError()
+                raise asyncio.CancelledError()
             records = list(batch.records)
             texts = await asyncio.to_thread(lambda: [self.spool._file(record.text_path).read_text(encoding="utf-8") for record in records])
             if safe_token_limit:

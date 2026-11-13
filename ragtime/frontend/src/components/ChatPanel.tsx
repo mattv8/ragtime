@@ -4187,12 +4187,6 @@ interface ScreenshotToolOutput {
   };
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function formatToolRuntimeDisplayName(toolId: string): string {
   const uppercaseSegments = new Set([
     'api',
@@ -4229,7 +4223,7 @@ function parseLoadedToolNamesOutput(
 
   let parsed: Record<string, unknown> | null = null;
   try {
-    parsed = asRecord(JSON.parse(toolCall.output));
+    parsed = asJsonRecord(JSON.parse(toolCall.output));
   } catch {
     return null;
   }
@@ -5566,7 +5560,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
     const nested =
       parsed.screenshot && typeof parsed.screenshot === 'object' ? parsed.screenshot : null;
-    const mcpResponse = asRecord(parsed.mcp?.response) ?? asRecord(toolCall.mcp?.response);
+    const mcpResponse = asJsonRecord(parsed.mcp?.response) ?? asJsonRecord(toolCall.mcp?.response);
     const url =
       typeof parsed.preview_image_url === 'string'
         ? parsed.preview_image_url.trim()
@@ -9069,7 +9063,7 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
 });
 
 function extractSubagentHandoffOutput(toolCall: ActiveToolCall): string {
-  const inputRecord = asRecord(toolCall.input);
+  const inputRecord = asJsonRecord(toolCall.input);
   const inputFinalOutput = inputRecord?.final_output;
   if (typeof inputFinalOutput === 'string' && inputFinalOutput.trim()) {
     return inputFinalOutput;
@@ -9077,7 +9071,7 @@ function extractSubagentHandoffOutput(toolCall: ActiveToolCall): string {
 
   if (typeof toolCall.output === 'string' && toolCall.output.trim()) {
     try {
-      const parsed = asRecord(JSON.parse(toolCall.output));
+      const parsed = asJsonRecord(JSON.parse(toolCall.output));
       const outputFinalOutput = parsed?.final_output;
       if (typeof outputFinalOutput === 'string' && outputFinalOutput.trim()) {
         return outputFinalOutput;
@@ -9156,7 +9150,7 @@ function recoverSubagentAgentsFromMalformedOutput(output: string): Record<string
 }
 
 function parseSubagentToolCall(toolCall: ActiveToolCall): SubAgentRunInfo[] {
-  const inputRecord = asRecord(toolCall.input);
+  const inputRecord = asJsonRecord(toolCall.input);
   const inputAgents = Array.isArray(inputRecord?.subagents) ? inputRecord.subagents : [];
 
   let outputRecord: Record<string, unknown> | null = null;
@@ -9164,7 +9158,7 @@ function parseSubagentToolCall(toolCall: ActiveToolCall): SubAgentRunInfo[] {
   if (typeof toolCall.output === 'string' && toolCall.output.trim().length > 0) {
     try {
       const parsed = JSON.parse(toolCall.output);
-      outputRecord = asRecord(parsed);
+      outputRecord = asJsonRecord(parsed);
     } catch {
       outputRecord = null;
       recoveredOutputAgents = recoverSubagentAgentsFromMalformedOutput(toolCall.output);
@@ -9195,8 +9189,8 @@ function parseSubagentToolCall(toolCall: ActiveToolCall): SubAgentRunInfo[] {
   }
 
   return Array.from({ length: count }, (_, index) => {
-    const inputAgent = asRecord(inputAgents[index]) || {};
-    const outputAgent = asRecord(outputAgents[index]) || {};
+    const inputAgent = asJsonRecord(inputAgents[index]) || {};
+    const outputAgent = asJsonRecord(outputAgents[index]) || {};
     const fallbackName = `Subagent ${index + 1}`;
 
     return {

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from ragtime.core._provider_metadata_coercion import coerce_int as _coerce_provider_metadata_int
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import get_provider, normalize_provider_name
 
@@ -288,15 +289,7 @@ MODEL_FAMILY_PATTERNS: dict[str, list[tuple[str, str | None]]] = {
 
 
 def _coerce_int(value: object) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
+    return _coerce_provider_metadata_int(value)
 
 
 def _cache_key(value: str) -> str:

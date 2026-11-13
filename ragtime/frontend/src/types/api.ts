@@ -2626,14 +2626,6 @@ export type FilesystemAnalysisStatus =
   | 'completed'
   | 'failed';
 
-export interface FileTypeStats {
-  extension: string;
-  file_count: number;
-  total_size_bytes: number;
-  estimated_chunks: number;
-  sample_files: string[];
-}
-
 export interface FilesystemAnalysisResult {
   total_files: number;
   total_size_bytes: number;
