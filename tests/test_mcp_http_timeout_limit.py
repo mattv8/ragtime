@@ -2,14 +2,27 @@ import asyncio
 import copy
 import unittest
 from contextlib import asynccontextmanager
+from typing import Any
 from unittest import mock
 
 from mcp.server import Server
-from mcp.types import ListToolsRequest
+from mcp.types import ListToolsRequest, ListToolsResult, Tool
 
 from ragtime.mcp.server import _register_handlers, mcp_tool_adapter, run_mcp_server
 from ragtime.mcp.tools import MCPToolAdapter, MCPToolDefinition
 from ragtime.tools.ssh_transfer import SSHTransferInput
+
+
+def _shell_schema(adapter: MCPToolAdapter, timeout_max_seconds: int) -> dict[str, Any]:
+    schema = adapter._build_input_schema({"tool_type": "ssh_shell", "timeout_max_seconds": timeout_max_seconds})
+    assert schema is not None
+    return schema
+
+
+async def _list_tools(server: Server) -> list[Tool]:
+    result = await server.request_handlers[ListToolsRequest](ListToolsRequest())
+    assert isinstance(result.root, ListToolsResult)
+    return result.root.tools
 
 
 class McpHttpTimeoutLimitTests(unittest.IsolatedAsyncioTestCase):
@@ -19,7 +32,7 @@ class McpHttpTimeoutLimitTests(unittest.IsolatedAsyncioTestCase):
         self.definition = MCPToolDefinition(
             name="ssh_test",
             description="test",
-            input_schema=self.adapter._build_input_schema({"tool_type": "ssh_shell", "timeout_max_seconds": 300}),
+            input_schema=_shell_schema(self.adapter, 300),
             tool_config={"timeout_max_seconds": 300},
             execute_fn=self.executor,
         )
@@ -58,7 +71,7 @@ class McpHttpTimeoutLimitTests(unittest.IsolatedAsyncioTestCase):
         second = MCPToolDefinition(
             name="ssh_short",
             description="test",
-            input_schema=self.adapter._build_input_schema({"tool_type": "ssh_shell", "timeout_max_seconds": 45}),
+            input_schema=_shell_schema(self.adapter, 45),
             tool_config={"timeout_max_seconds": 45},
             execute_fn=self.executor,
         )
@@ -66,8 +79,7 @@ class McpHttpTimeoutLimitTests(unittest.IsolatedAsyncioTestCase):
         server = Server("test")
         _register_handlers(server, self.adapter)
         with mock.patch.object(self.adapter, "get_available_tools", new=mock.AsyncMock(return_value=[self.definition, second])):
-            result = await server.request_handlers[ListToolsRequest](ListToolsRequest())
-        tools = result.root.tools
+            tools = await _list_tools(server)
         for tool, expected in zip(tools, [80, 45], strict=True):
             timeout = tool.inputSchema["properties"]["timeout"]
             self.assertEqual(timeout["default"], expected)
@@ -90,9 +102,9 @@ class McpHttpTimeoutLimitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_list_preserves_transfer_and_unlimited_and_timeout_free_schemas(self) -> None:
         transfer_schema = SSHTransferInput.model_json_schema()
-        unlimited_schema = self.adapter._build_input_schema({"tool_type": "ssh_shell", "timeout_max_seconds": 0})
+        unlimited_schema = _shell_schema(self.adapter, 0)
         no_timeout_schema = {"type": "object", "properties": {"query": {"type": "string"}}}
-        schemas = [transfer_schema, unlimited_schema, no_timeout_schema]
+        schemas: list[dict[str, Any]] = [transfer_schema, unlimited_schema, no_timeout_schema]
         originals = copy.deepcopy(schemas)
         definitions = [
             MCPToolDefinition(name=f"tool_{index}", description="test", input_schema=schema, tool_config={}, execute_fn=self.executor)
@@ -101,8 +113,7 @@ class McpHttpTimeoutLimitTests(unittest.IsolatedAsyncioTestCase):
         server = Server("test")
         _register_handlers(server, self.adapter)
         with mock.patch.object(self.adapter, "get_available_tools", new=mock.AsyncMock(return_value=definitions)):
-            result = await server.request_handlers[ListToolsRequest](ListToolsRequest())
-        listed = result.root.tools
+            listed = await _list_tools(server)
         transfer_timeout = listed[0].inputSchema["properties"]["timeout"]
         self.assertEqual(transfer_timeout["minimum"], 1)
         self.assertEqual((transfer_timeout["default"], transfer_timeout["maximum"]), (80, 80))
