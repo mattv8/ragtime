@@ -424,7 +424,16 @@ $utf8NoBom = [Text.UTF8Encoding]::new($false)
 $OutputEncoding = $utf8NoBom
 $deadlineSeconds = {timeout_literal}
 $deadline = if ($deadlineSeconds -gt 0) {{ [DateTime]::UtcNow.AddSeconds($deadlineSeconds) }} else {{ $null }}
-$payload = [Console]::In.ReadLine()
+$stdinReader = [IO.StreamReader]::new([Console]::OpenStandardInput(), $utf8NoBom)
+$stdinTask = $stdinReader.ReadToEndAsync()
+while (-not $stdinTask.IsCompleted) {{
+    if ($deadline -and [DateTime]::UtcNow -ge $deadline) {{ [Console]::Error.WriteLine('{POWERSHELL_TIMEOUT_SENTINEL}'); [Environment]::Exit(1) }}
+    [Threading.Thread]::Sleep(25)
+}}
+$stdinText = $stdinTask.GetAwaiter().GetResult()
+$newline = $stdinText.IndexOf([char]10)
+if ($newline -lt 0) {{ $payload = $stdinText; $stdinPayload = '' }} else {{ $payload = $stdinText.Substring(0, $newline); $stdinPayload = $stdinText.Substring($newline + 1) }}
+$payload = $payload.TrimEnd([char]13)
 if ([string]::IsNullOrWhiteSpace($payload)) {{ [Console]::Error.WriteLine('Missing PowerShell payload'); exit 1 }}
 $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
 $processInfo.FileName = 'powershell.exe'
@@ -435,7 +444,6 @@ $processInfo.RedirectStandardOutput = $true
 $processInfo.RedirectStandardError = $true
 $processInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
 $processInfo.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
-$stdinPayload = [Console]::In.ReadToEnd()
 if ($deadline -and [DateTime]::UtcNow -ge $deadline) {{ [Console]::Error.WriteLine('{POWERSHELL_TIMEOUT_SENTINEL}'); exit 1 }}
 $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $processInfo

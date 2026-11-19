@@ -22,6 +22,7 @@ from typing import Any, Awaitable, Callable
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings, get_enabled_tool_configs, get_tool_configs
 from ragtime.core.faiss_concurrency import FaissSearchBusyError, faiss_search_coordinator
+from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
 from ragtime.core.logging import get_logger
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
 from ragtime.http_api.guidance import build_http_api_headers_description, build_http_api_request_guidance
@@ -47,6 +48,19 @@ from ragtime.tools.ssh_transfer import SSHTransferInput, build_ssh_transfer_tool
 logger = get_logger(__name__)
 
 MCP_TOOL_TIMEOUT_GRACE_SECONDS = 10.0
+
+
+def _build_timeout_property(label: str, maximum: int) -> dict:
+    hint = "Use 0 for no timeout." if maximum == 0 else "Use 0 or omit to use the configured maximum."
+    timeout_property: dict[str, Any] = {
+        "type": "integer",
+        "description": f"{label} timeout in seconds (default and maximum: {'unlimited' if maximum == 0 else maximum}). {hint}",
+        "default": max(0, maximum),
+        "minimum": 0,
+    }
+    if maximum > 0:
+        timeout_property["maximum"] = maximum
+    return timeout_property
 
 
 def _build_embedding_configuration_error(app_settings: dict[str, Any] | None) -> EmbeddingOperationError:
@@ -452,6 +466,32 @@ class MCPToolAdapter:
         self._heartbeat_refresh_task: asyncio.Task[None] | None = None
         self._tool_executors: dict[str, Callable[..., Awaitable[str]]] = {}
         self._tool_definitions: dict[str, MCPToolDefinition] = {}
+        self.http_call_limit_enabled: bool = True
+
+    async def get_http_call_timeout_limit(self) -> int:
+        return max(1, int(await get_http_proxy_safe_timeout_seconds()) - int(MCP_TOOL_TIMEOUT_GRACE_SECONDS))
+
+    def limit_input_schema(self, input_schema: dict, limit: int | None) -> dict:
+        if limit is None:
+            return input_schema
+        schema = copy.deepcopy(input_schema)
+        timeout_property = schema.get("properties", {}).get("timeout")
+        if timeout_property is not None:
+            configured_maximum = int(timeout_property.get("maximum") or 0)
+            configured_default = int(timeout_property.get("default") or 0)
+            maximum = min(configured_maximum, limit) if configured_maximum > 0 else limit
+            default = min(configured_default, limit) if configured_default > 0 else limit
+            timeout_property["maximum"] = maximum
+            timeout_property["default"] = min(default, maximum)
+            description = timeout_property.get("description", "")
+            description, replacements = re.subn(r"\(default and maximum: (?:\d+|unlimited)\)", f"(default and maximum: {maximum})", description)
+            if replacements:
+                description = description.replace("Use 0 or omit to use the configured maximum.", "Use 0 or omit to use the maximum.")
+                description = description.replace("Use 0 for no timeout.", "Use 0 or omit to use the maximum.")
+            else:
+                description += f" Over this MCP HTTP connection the maximum is {maximum} seconds."
+            timeout_property["description"] = description
+        return schema
 
     async def get_available_tools(
         self,
@@ -802,6 +842,13 @@ class MCPToolAdapter:
         input_schema: dict | None = None,
     ) -> str:
         effective_timeout = self._resolve_mcp_call_timeout(arguments, timeout_max_seconds, input_schema)
+        http_limit_applied = False
+        if self.http_call_limit_enabled and (input_schema or {}).get("properties", {}).get("timeout") is not None:
+            limit = await self.get_http_call_timeout_limit()
+            if effective_timeout == 0 or effective_timeout > limit:
+                effective_timeout = limit
+                http_limit_applied = True
+            arguments = {**arguments, "timeout": effective_timeout}
         if effective_timeout <= 0:
             return await execute_fn(**arguments)
 
@@ -812,7 +859,10 @@ class MCPToolAdapter:
             )
         except asyncio.TimeoutError:
             logger.warning(f"MCP tool '{tool_name}' timed out after {effective_timeout}s")
-            return f"Error: Tool {tool_name} timed out after {effective_timeout} seconds"
+            message = f"Error: Tool {tool_name} timed out after {effective_timeout} seconds"
+            if http_limit_applied:
+                message += " (MCP HTTP per-call limit; split the work into smaller calls)"
+            return message
 
     @staticmethod
     def _resolve_mcp_call_timeout(
@@ -1030,47 +1080,12 @@ class MCPToolAdapter:
 
         schema = copy.deepcopy(base_schema)
         timeout_max_seconds = int(config.get("timeout_max_seconds", 300) or 0)
-        timeout = max(0, timeout_max_seconds)
-
         if tool_type in {"postgres", "mssql", "mysql", "influxdb", "http_api"}:
-            timeout_hint = "Use 0 for no timeout." if timeout_max_seconds == 0 else "Use 0 or omit to use the configured maximum."
-            timeout_schema = {
-                "type": "integer",
-                "description": (
-                    f"{'Request' if tool_type == 'http_api' else 'Query'} timeout in seconds (default and maximum: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). {timeout_hint}"
-                ),
-                "default": timeout,
-                "minimum": 0,
-            }
-            if timeout_max_seconds > 0:
-                timeout_schema["maximum"] = timeout_max_seconds
-            schema["properties"]["timeout"] = timeout_schema
+            schema["properties"]["timeout"] = _build_timeout_property("Request" if tool_type == "http_api" else "Query", timeout_max_seconds)
         elif tool_type == "odoo_shell":
-            timeout_hint = "Use 0 for no timeout." if timeout_max_seconds == 0 else "Use 0 or omit to use the configured maximum."
-            timeout_schema = {
-                "type": "integer",
-                "description": (
-                    f"Execution timeout in seconds (default and maximum: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). {timeout_hint}"
-                ),
-                "default": timeout,
-                "minimum": 0,
-            }
-            if timeout_max_seconds > 0:
-                timeout_schema["maximum"] = timeout_max_seconds
-            schema["properties"]["timeout"] = timeout_schema
+            schema["properties"]["timeout"] = _build_timeout_property("Execution", timeout_max_seconds)
         elif tool_type in {"ssh_shell", "windows_shell"}:
-            timeout_hint = "Use 0 for no timeout." if timeout_max_seconds == 0 else "Use 0 or omit to use the configured maximum."
-            timeout_schema = {
-                "type": "integer",
-                "description": (
-                    f"Command timeout in seconds (default and maximum: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). {timeout_hint}"
-                ),
-                "default": timeout,
-                "minimum": 0,
-            }
-            if timeout_max_seconds > 0:
-                timeout_schema["maximum"] = timeout_max_seconds
-            schema["properties"]["timeout"] = timeout_schema
+            schema["properties"]["timeout"] = _build_timeout_property("Command", timeout_max_seconds)
 
         if tool_type == "http_api":
             conn_config = HttpApiConnectionConfig(**(config.get("connection_config") or {}))
