@@ -1270,6 +1270,50 @@ pdm_indexer = PdmIndexerService()
 # =============================================================================
 
 
+class _PdmFilterError(ValueError):
+    pass
+
+
+class _PdmConfigurationError(RuntimeError):
+    pass
+
+
+async def _search_pdm_rows(
+    query: str,
+    index_name: str,
+    document_type: str | None = None,
+    max_results: int = 10,
+) -> list[dict]:
+    from ragtime.core.app_settings import get_app_settings  # inline-import: keep
+
+    extra_where = None
+    if document_type:
+        normalized_document_type = document_type.strip().upper()
+        if normalized_document_type not in _ALLOWED_PDM_DOCUMENT_TYPES:
+            allowed = ", ".join(sorted(_ALLOWED_PDM_DOCUMENT_TYPES))
+            raise _PdmFilterError(f"Invalid document_type filter. Allowed values: {allowed}")
+        extra_where = f"document_type = '{normalized_document_type}'"
+
+    app_settings = await get_app_settings()
+    embeddings = await get_embeddings_model(
+        app_settings,
+        return_none_on_error=True,
+        logger_override=logger,
+    )
+    if embeddings is None:
+        raise _PdmConfigurationError(build_embedding_configuration_error(app_settings, operation="query"))
+    embedding = await embeddings.aembed_query(query)
+    return await search_pgvector_embeddings(
+        table_name="pdm_embeddings",
+        query_embedding=embedding,
+        index_name=index_name,
+        max_results=max_results,
+        columns=PDM_COLUMNS,
+        extra_where=extra_where,
+        logger_override=logger,
+    )
+
+
 async def search_pdm_index(
     query: str,
     index_name: str,
@@ -1289,42 +1333,7 @@ async def search_pdm_index(
         Formatted string with matching PDM documents
     """
     try:
-        # Build document type filter before doing embedding work so invalid
-        # caller input never reaches SQL construction or expensive providers.
-        extra_where = None
-        if document_type:
-            normalized_document_type = document_type.strip().upper()
-            if normalized_document_type not in _ALLOWED_PDM_DOCUMENT_TYPES:
-                allowed = ", ".join(sorted(_ALLOWED_PDM_DOCUMENT_TYPES))
-                return f"Error: Invalid document_type filter. Allowed values: {allowed}"
-            extra_where = f"document_type = '{normalized_document_type}'"
-
-        # Get embedding model
-        from ragtime.core.app_settings import get_app_settings
-
-        app_settings = await get_app_settings()
-        embeddings = await get_embeddings_model(
-            app_settings,
-            return_none_on_error=True,
-            logger_override=logger,
-        )
-
-        if embeddings is None:
-            return f"Error: {build_embedding_configuration_error(app_settings, operation='query')}"
-
-        # Generate query embedding
-        embedding = await embeddings.aembed_query(query)
-
-        # Search using centralized pgvector search
-        results = await search_pgvector_embeddings(
-            table_name="pdm_embeddings",
-            query_embedding=embedding,
-            index_name=index_name,
-            max_results=max_results,
-            columns=PDM_COLUMNS,
-            extra_where=extra_where,
-            logger_override=logger,
-        )
+        results = await _search_pdm_rows(query, index_name, document_type, max_results)
 
         if not results:
             return "No matching documents found in PDM index."
@@ -1346,7 +1355,7 @@ async def search_pdm_index(
 
         return "\n\n---\n\n".join(output_parts)
 
-    except EmbeddingOperationError as e:
+    except (EmbeddingOperationError, _PdmFilterError, _PdmConfigurationError) as e:
         logger.error(f"Error searching PDM index: {e}")
         return f"Error: {str(e)}"
     except Exception as e:
@@ -1359,17 +1368,13 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-async def lookup_pdm_documents(
+async def _lookup_pdm_rows(
     index_name: str,
     document_id: int | None = None,
     filename: str | None = None,
     part_number: str | None = None,
-    configuration: str | None = None,
     max_results: int = 10,
-) -> str:
-    """Look up deterministic checked-in PDM document snapshots without embeddings."""
-    if document_id is None and not filename and not part_number:
-        return "Error: Provide document_id, filename, or part_number."
+) -> list[dict]:
     limit = max(1, min(50, int(max_results)))
     filters = ["index_name = $1"]
     params: list[Any] = [index_name]
@@ -1386,9 +1391,23 @@ async def lookup_pdm_documents(
         "SELECT document_id, filename, part_number, target_revision, state_json, extracted_at "
         "FROM pdm_document_state WHERE " + " AND ".join(filters) + f" ORDER BY filename LIMIT {limit}"
     )
+    db: Any = await get_db()
+    return await db.query_raw(query, *params)
+
+
+async def lookup_pdm_documents(
+    index_name: str,
+    document_id: int | None = None,
+    filename: str | None = None,
+    part_number: str | None = None,
+    configuration: str | None = None,
+    max_results: int = 10,
+) -> str:
+    """Look up deterministic checked-in PDM document snapshots without embeddings."""
+    if document_id is None and not filename and not part_number:
+        return "Error: Provide document_id, filename, or part_number."
     try:
-        db: Any = await get_db()
-        rows = await db.query_raw(query, *params)
+        rows = await _lookup_pdm_rows(index_name, document_id, filename, part_number, max_results)
     except Exception as exc:
         logger.error(f"Error looking up PDM documents: {exc}")
         return f"Error looking up PDM documents: {exc}"
@@ -1445,3 +1464,133 @@ async def lookup_pdm_documents(
                     lines.append(f"- {value.variable_name}: {value.value_text} (v{value.origin_revision})")
         output.append("\n".join(lines))
     return "\n\n---\n\n".join(output) if output else "No matching documents found in PDM index."
+
+
+def _pdm_state(row: dict) -> PdmDocumentStateModel:
+    raw = row.get("state_json", {})
+    return PdmDocumentStateModel.model_validate(json.loads(raw) if isinstance(raw, str) else raw)
+
+
+def _pdm_vault_paths(folders: list[str], filename: str) -> list[str]:
+    paths: dict[str, str] = {}
+    for folder in folders:
+        segments = [segment for segment in (folder.replace("/", "\\") + "\\" + filename.replace("/", "\\")).split("\\") if segment]
+        path = "\\" + "\\".join(segments)
+        paths.setdefault(path.casefold(), path)
+    return sorted(paths.values(), key=lambda path: (path.casefold(), path))
+
+
+def _pdm_values(values: dict) -> dict:
+    return {value.variable_name: "" if value.is_blank else value.value_text for value in values.values()}
+
+
+def _pdm_lookup_item(state: PdmDocumentStateModel, extracted_at: Any) -> dict:
+    return {
+        "document_id": state.document_id,
+        "filename": state.filename,
+        "document_type": state.document_type,
+        "part_number": state.part_number,
+        "description": state.description,
+        "revision": state.target_revision,
+        "vault_paths": _pdm_vault_paths(state.folder_paths, state.filename),
+        "extracted_at": extracted_at.isoformat() if hasattr(extracted_at, "isoformat") else extracted_at,
+        "document_values": _pdm_values(state.document_values),
+        "configurations": [{"name": item.name, "values": _pdm_values(item.values)} for item in state.configurations],
+        "bom": [item.model_dump() for item in state.bom_components],
+        "warnings": state.warnings,
+    }
+
+
+async def search_pdm_documents(
+    query: str,
+    index_name: str,
+    document_type: str | None = None,
+    max_results: int = 10,
+) -> list[dict]:
+    try:
+        rows = await _search_pdm_rows(query, index_name, document_type, max_results)
+    except (EmbeddingOperationError, _PdmFilterError, _PdmConfigurationError):
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Error searching PDM: {exc}") from exc
+    if not rows:
+        return []
+    db: Any = await get_db()
+    ids = list({row["document_id"] for row in rows if row.get("document_id") is not None})
+    placeholders = ", ".join(f"${position}" for position in range(2, len(ids) + 2))
+    states = (
+        await db.query_raw(
+            f"SELECT document_id, state_json FROM pdm_document_state WHERE index_name = $1 AND document_id IN ({placeholders})",
+            index_name,
+            *ids,
+        )
+        if ids
+        else []
+    )
+    by_id = {}
+    for row in states or []:
+        try:
+            by_id[row["document_id"]] = _pdm_state(row)
+        except Exception as exc:
+            logger.warning(f"Skipping invalid PDM document state: {exc}")
+    items = []
+    for row in rows:
+        state = by_id.get(row.get("document_id"))
+        filename = state.filename if state else row.get("filename", "")
+        items.append(
+            {
+                "document_id": row.get("document_id"),
+                "filename": filename,
+                "document_type": state.document_type if state else row.get("document_type"),
+                "part_number": state.part_number if state else row.get("part_number"),
+                "description": state.description if state else None,
+                "revision": state.target_revision if state else None,
+                "vault_paths": _pdm_vault_paths(state.folder_paths if state else [row.get("folder_path") or ""], filename),
+                "similarity": row.get("similarity", 0),
+                "configurations": [item.name for item in state.configurations] if state else [],
+                "bom_count": len(state.bom_components) if state else 0,
+            }
+        )
+    return items
+
+
+async def lookup_pdm_document_states(
+    index_name: str,
+    document_id: int | None = None,
+    filename: str | None = None,
+    part_number: str | None = None,
+    max_results: int = 10,
+) -> list[dict]:
+    if document_id is None and not filename and not part_number:
+        raise ValueError("Provide document_id, filename, or part_number.")
+    rows = await _lookup_pdm_rows(index_name, document_id, filename, part_number, max_results)
+    items = []
+    for row in rows or []:
+        try:
+            items.append(_pdm_lookup_item(_pdm_state(row), row.get("extracted_at")))
+        except Exception as exc:
+            logger.warning(f"Skipping invalid PDM document state: {exc}")
+    return items
+
+
+async def get_pdm_index_summary(index_name: str) -> dict:
+    db: Any = await get_db()
+    rows = await db.query_raw(
+        "SELECT COUNT(*) AS count, MAX(extracted_at) AS newest FROM pdm_document_state WHERE index_name = $1",
+        index_name,
+    )
+    metadata = await db.query_raw(
+        "SELECT COUNT(*) AS count, MAX(last_indexed) AS newest FROM pdm_document_metadata WHERE index_name = $1",
+        index_name,
+    )
+    state = rows[0] if rows else {}
+    fallback = metadata[0] if metadata else {}
+    timestamps = [value for value in (state.get("newest"), fallback.get("newest")) if value is not None]
+    newest = max(timestamps) if timestamps else None
+    last_indexed_at = None
+    if newest is not None:
+        last_indexed_at = newest.isoformat() if hasattr(newest, "isoformat") else newest
+    return {
+        "last_indexed_at": last_indexed_at,
+        "document_count": int(state.get("count") or fallback.get("count") or 0),
+    }
