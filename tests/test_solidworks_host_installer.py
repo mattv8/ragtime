@@ -94,7 +94,8 @@ class HostInstallerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(script, installer.INSTALL_SCRIPT.replace("__SHA__", self.artifact.sha256).replace("__PREFIX__", self.artifact.sha256[:16]))
         self.assertNotIn("__SHA__", script)
         self.assertNotIn("__PREFIX__", script)
-        self.assertLess(len(script), 4000)
+        # Length guard: the payload travels over stdin (ragtime/core/ssh.py _encode_powershell_payload), not on the command line.
+        self.assertLess(len(script), 6000)
         self.assertLess(len(installer.UNINSTALL_SCRIPT), 4000)
         self.assertLess(len(installer.STAGING_SCRIPT), 4000)
 
@@ -278,6 +279,32 @@ class InstallScriptTemplateTests(unittest.TestCase):
         self.assertIn("Rename-Item -LiteralPath $hostDir -NewName 'host.failed'", failure)
         self.assertNotIn("Remove-Item -LiteralPath $hostDir", failure)
         self.assertLess(failure.index("NewName 'host.failed'"), failure.index("NewName 'host'"))
+
+    def assert_in_order(self, script: str, patterns: tuple[str, ...]) -> None:
+        positions = []
+        for pattern in patterns:
+            match = re.search(pattern, script)
+            assert match is not None, pattern
+            positions.append(match.start())
+        self.assertEqual(positions, sorted(positions))
+
+    def assert_wait_and_retry_limits(self, script: str) -> None:
+        for name in ("exitWaitSeconds", "pollMs", "retryTries", "retryDelayMs"):
+            with self.subTest(limit=name):
+                self.assertRegex(script, rf"(?m)^\${name} = \d+$")
+                self.assertGreater(script.count(f"${name}"), 1)
+        self.assertIn("catch { $false }", script)
+
+    def test_install_waits_for_host_exit_then_retries_rename(self):
+        script = installer.INSTALL_SCRIPT
+        self.assert_in_order(script, (r"& \$exe uninstall", r"Get-Process\b", r"for \(\$i = 1; ; \$i\+\+\)", r"\$output = & \$exe install"))
+        self.assert_wait_and_retry_limits(script)
+
+    def test_uninstall_waits_for_host_exit_then_retries_removal(self):
+        script = installer.UNINSTALL_SCRIPT
+        self.assert_in_order(script, (r"& \$exe uninstall", r"Get-Process\b", r"for \(\$i = 1; ; \$i\+\+\)", r"Remove-Item -LiteralPath \$hostDir"))
+        self.assert_wait_and_retry_limits(script)
+        self.assertRegex(script, r"-Name 'ragtime-solidworks-host'")
 
 
 if __name__ == "__main__":

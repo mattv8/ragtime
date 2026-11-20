@@ -32,6 +32,10 @@ try {
 
 INSTALL_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
+$exitWaitSeconds = 20
+$pollMs = 250
+$retryTries = 20
+$retryDelayMs = 500
 $root = Join-Path $env:LOCALAPPDATA 'RagtimeSolidWorks'
 $hostDir = Join-Path $root 'host'
 $new = Join-Path $root 'host.new'
@@ -76,6 +80,8 @@ try {
   if ($hadOld) {
     & $exe uninstall | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'uninstall failed' }
+    $end = (Get-Date).AddSeconds($exitWaitSeconds)
+    do { if (-not (Get-Process -Name 'ragtime-solidworks-host' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and $_.Path.StartsWith("$hostDir\", [StringComparison]::OrdinalIgnoreCase) } catch { $false } })) { break }; Start-Sleep -Milliseconds $pollMs } while ((Get-Date) -lt $end)
   }
 } catch {
   Remove-Item -LiteralPath $new -Recurse -Force -ErrorAction SilentlyContinue
@@ -84,7 +90,7 @@ try {
 }
 $hadDir = Test-Path -LiteralPath $hostDir
 try {
-  if ($hadDir) { Rename-Item -LiteralPath $hostDir -NewName 'host.old' }
+  if ($hadDir) { for ($i = 1; ; $i++) { try { Rename-Item -LiteralPath $hostDir -NewName 'host.old'; break } catch { if ($i -ge $retryTries) { throw }; Start-Sleep -Milliseconds $retryDelayMs } } }
 } catch {
   Remove-Item -LiteralPath $new -Recurse -Force -ErrorAction SilentlyContinue
   Restore-Current
@@ -133,15 +139,24 @@ exit 0
 
 UNINSTALL_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
+$exitWaitSeconds = 20
+$pollMs = 250
+$retryTries = 20
+$retryDelayMs = 500
 $hostDir = Join-Path (Join-Path $env:LOCALAPPDATA 'RagtimeSolidWorks') 'host'
 $exe = Join-Path $hostDir 'ragtime-solidworks-host.exe'
 try {
   if (Test-Path -LiteralPath $exe) {
     & $exe uninstall | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Output 'RAGTIME_UNINSTALL:uninstall_failed'; exit 1 }
+    $end = (Get-Date).AddSeconds($exitWaitSeconds)
+    do { if (-not (Get-Process -Name 'ragtime-solidworks-host' -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and $_.Path.StartsWith("$hostDir\", [StringComparison]::OrdinalIgnoreCase) } catch { $false } })) { break }; Start-Sleep -Milliseconds $pollMs } while ((Get-Date) -lt $end)
   }
   if (Test-Path -LiteralPath $hostDir) {
-    try { Remove-Item -LiteralPath $hostDir -Recurse -Force -ErrorAction Stop } catch {
+    for ($i = 1; ; $i++) {
+      try { Remove-Item -LiteralPath $hostDir -Recurse -Force -ErrorAction Stop; break } catch { if ($i -ge $retryTries) { break }; Start-Sleep -Milliseconds $retryDelayMs }
+    }
+    if (Test-Path -LiteralPath $hostDir) {
       Write-Output 'RAGTIME_UNINSTALL:locked'
       exit 0
     }
