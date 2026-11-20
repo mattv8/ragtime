@@ -55,6 +55,7 @@ class CiWorkflowContractTests(unittest.TestCase):
             "BACKEND_RESULT",
             "FRONTEND_RESULT",
             "STORAGE_RESULT",
+            "SOLIDWORKS_RESULT",
         ):
             self.assertIn(name, gate_step["env"])
             self.assertIn(f'"${name}"', script)
@@ -65,6 +66,7 @@ class CiWorkflowContractTests(unittest.TestCase):
             "BACKEND_RESULT": "success",
             "FRONTEND_RESULT": "success",
             "STORAGE_RESULT": "success",
+            "SOLIDWORKS_RESULT": "success",
         }
         self.assertEqual(_run_workflow_script(script, success), 0)
         for name in success:

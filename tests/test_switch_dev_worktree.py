@@ -289,6 +289,16 @@ class SwitchTests(unittest.TestCase):
         self.assertIn("      - object-storage-key:/run/ragtime-storage-key\n", content)
         self.assertIn("      - object-storage-key:/run/ragtime-storage-key:ro\n", content)
 
+    def test_override_mounts_target_solidworks_artifacts_read_only(self):
+        temp, primary, target = self.make_tree(storage=False)
+        self.addCleanup(temp.cleanup)
+        override = primary / "compose.override.yml"
+
+        write_override(override, primary, target, storage=None)
+
+        content = override.read_text()
+        self.assertIn(json.dumps(f"{target / 'dotnet' / 'artifacts'}:/opt/ragtime/solidworks-host:ro"), content)
+
     def test_dry_run_uses_target_storage_mount_metadata(self):
         temp, primary, target = self.make_tree()
         self.addCleanup(temp.cleanup)
