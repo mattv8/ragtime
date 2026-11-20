@@ -3,7 +3,14 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MCPRoutesPanel } from './MCPRoutesPanel';
-import type { IndexInfo, McpRouteConfig, ToolConfig } from '@/types';
+import type {
+  IndexInfo,
+  InstructionSkill,
+  InstructionSkillOwner,
+  InstructionSkillSummary,
+  McpRouteConfig,
+  ToolConfig,
+} from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   listMcpRoutes: vi.fn(),
@@ -11,6 +18,7 @@ const apiMock = vi.hoisted(() => ({
   listToolConfigs: vi.fn(),
   listIndexes: vi.fn(),
   getSettings: vi.fn(),
+  getInstructionSkillSummary: vi.fn(),
   createMcpRoute: vi.fn(),
   updateMcpRoute: vi.fn(),
   toggleMcpRoute: vi.fn(),
@@ -41,6 +49,41 @@ vi.mock('@/api/contentProtection', async () => ({
 vi.mock('./shared/Toast', () => ({
   useToast: () => [[], toastMock] as const,
   ToastContainer: () => null,
+}));
+
+const skillsDialogMock = vi.hoisted(() => ({
+  nextSkills: [] as InstructionSkill[],
+}));
+
+vi.mock('./InstructionSkillsDialog', () => ({
+  InstructionSkillsDialog: ({
+    open,
+    owner,
+    ownerName,
+    onClose,
+    onSkillsChanged,
+  }: {
+    open: boolean;
+    owner: InstructionSkillOwner;
+    ownerName: string;
+    onClose: () => void;
+    onSkillsChanged?: (skills: InstructionSkill[]) => void;
+  }) =>
+    open ? (
+      <div
+        role="dialog"
+        aria-label={`Skills · ${ownerName}`}
+        data-owner-kind={owner.kind}
+        data-owner-id={owner.id}
+      >
+        <button type="button" onClick={onClose}>
+          Close Skills Mock
+        </button>
+        <button type="button" onClick={() => onSkillsChanged?.(skillsDialogMock.nextSkills)}>
+          Save Skills Mock
+        </button>
+      </div>
+    ) : null,
 }));
 
 vi.mock('./DeleteConfirmButton', () => ({
@@ -159,19 +202,39 @@ function makeRoute(overrides: Partial<McpRouteConfig> = {}): McpRouteConfig {
   };
 }
 
+function skillFixture(id: string, enabled: boolean): InstructionSkill {
+  return {
+    id,
+    owner_kind: 'route',
+    owner_id: 'route-1',
+    name: `skill-${id}`,
+    description: 'Describes the skill',
+    content: 'Skill body',
+    mode: 'on_demand',
+    enabled,
+    sort_order: 0,
+    uri: `skill://routes/route-1/skill-${id}/SKILL.md`,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  };
+}
+
 async function renderPanel({
   routes = [],
   ldapConfigured = false,
   contentProtectionConfig = CONTENT_PROTECTION_CONFIG,
+  skillSummary = { tools: {}, routes: {} },
 }: {
   routes?: McpRouteConfig[];
   ldapConfigured?: boolean;
   contentProtectionConfig?: typeof CONTENT_PROTECTION_CONFIG;
+  skillSummary?: InstructionSkillSummary;
 } = {}) {
   apiMock.listMcpRoutes.mockResolvedValue({ routes, count: routes.length });
   apiMock.listMcpDefaultFilters.mockResolvedValue({ filters: [], count: 0 });
   apiMock.listToolConfigs.mockResolvedValue(TOOL_CONFIGS);
   apiMock.listIndexes.mockResolvedValue(INDEXES);
+  apiMock.getInstructionSkillSummary.mockResolvedValue(skillSummary);
   apiMock.getSettings.mockResolvedValue({
     settings: {
       aggregate_search: true,
@@ -206,6 +269,7 @@ describe('MCPRoutesPanel', () => {
     apiMock.updateMcpDefaultFilter.mockResolvedValue(undefined);
     apiMock.toggleMcpDefaultFilter.mockResolvedValue(undefined);
     apiMock.deleteMcpDefaultFilter.mockResolvedValue(undefined);
+    skillsDialogMock.nextSkills = [];
     vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((array) => {
       const values = array as Uint8Array;
       values.fill(7);
@@ -361,5 +425,80 @@ describe('MCPRoutesPanel', () => {
     await user.click(screen.getByRole('button', { name: /add custom route/i }));
     await waitFor(() => expect(contentProtectionMock.getConfig).toHaveBeenCalledTimes(2));
     expect(screen.queryByText(/Save the route first/)).toBeNull();
+  });
+
+  it('shows the route skill count and a Skills button first in the card actions', async () => {
+    await renderPanel({
+      routes: [makeRoute()],
+      skillSummary: { tools: {}, routes: { 'route-1': { total: 2, enabled: 1 } } },
+    });
+
+    const count = screen.getByText('2 route skills');
+    expect(count.hasAttribute('data-mcp-route-skills-count')).toBe(true);
+    expect(count.closest('.tool-card-meta')).toBeTruthy();
+
+    const actions = document.querySelector('.tool-card-actions') as HTMLElement;
+    const buttons = Array.from(actions.querySelectorAll('button'));
+    expect(buttons[0].textContent).toBe('Skills');
+    expect(buttons[0].hasAttribute('data-mcp-route-skills-button')).toBe(true);
+    expect(buttons[0].classList.contains('btn-secondary')).toBe(true);
+  });
+
+  it('uses the singular label for a single route skill', async () => {
+    await renderPanel({
+      routes: [makeRoute()],
+      skillSummary: { tools: {}, routes: { 'route-1': { total: 1, enabled: 1 } } },
+    });
+
+    expect(screen.getByText('1 route skill')).toBeTruthy();
+  });
+
+  it('hides the route skill count when the route has no skills', async () => {
+    await renderPanel({ routes: [makeRoute()] });
+
+    expect(screen.queryByText(/route skill/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
+  });
+
+  it('gives each route card a stable id hook', async () => {
+    await renderPanel({ routes: [makeRoute()] });
+
+    expect(document.getElementById('mcp-route-route-1')?.classList.contains('tool-card')).toBe(
+      true,
+    );
+  });
+
+  it('opens the skills dialog with the route as owner', async () => {
+    const user = userEvent.setup();
+    await renderPanel({ routes: [makeRoute()] });
+
+    await user.click(screen.getByRole('button', { name: 'Skills' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Skills · Custom Route' });
+    expect(dialog.getAttribute('data-owner-kind')).toBe('route');
+    expect(dialog.getAttribute('data-owner-id')).toBe('route-1');
+  });
+
+  it('refreshes the route count from the skills the dialog reports', async () => {
+    const user = userEvent.setup();
+    skillsDialogMock.nextSkills = [skillFixture('one', true), skillFixture('two', false)];
+    await renderPanel({
+      routes: [makeRoute()],
+      skillSummary: { tools: {}, routes: { 'route-1': { total: 1, enabled: 1 } } },
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Skills' }));
+    await user.click(await screen.findByRole('button', { name: 'Save Skills Mock' }));
+
+    expect(await screen.findByText('2 route skills')).toBeTruthy();
+  });
+
+  it('keeps the route list usable when the skill summary cannot be loaded', async () => {
+    apiMock.getInstructionSkillSummary.mockRejectedValue(new Error('offline'));
+    await renderPanel({ routes: [makeRoute()] });
+
+    expect(screen.getByText('Custom Route')).toBeTruthy();
+    expect(screen.queryByText(/route skill/)).toBeNull();
+    expect(toastMock.error).not.toHaveBeenCalled();
   });
 });

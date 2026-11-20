@@ -31,6 +31,11 @@ import type {
   ToolConfig,
   CreateToolConfigRequest,
   UpdateToolConfigRequest,
+  InstructionSkill,
+  InstructionSkillOwner,
+  InstructionSkillSummary,
+  CreateInstructionSkillRequest,
+  UpdateInstructionSkillRequest,
   ReorderToolsRequest,
   ExportToolConfigRequest,
   ImportToolConfigRequest,
@@ -619,6 +624,11 @@ export interface ChatTaskStreamEvent {
   version?: number;
   hit_max_iterations?: boolean;
   [key: string]: unknown;
+}
+
+function instructionSkillsPath(owner: InstructionSkillOwner): string {
+  const ownerSegment = owner.kind === 'tool' ? 'tools' : 'mcp-routes';
+  return `${API_BASE}/${ownerSegment}/${encodeURIComponent(owner.id)}/skills`;
 }
 
 export const api = {
@@ -2431,6 +2441,79 @@ export const api = {
       },
     );
     return handleResponse<ToolConfig>(response);
+  },
+
+  async listInstructionSkills(owner: InstructionSkillOwner): Promise<InstructionSkill[]> {
+    const response = await apiFetch(instructionSkillsPath(owner));
+    return handleResponse<InstructionSkill[]>(response);
+  },
+
+  async createInstructionSkill(
+    owner: InstructionSkillOwner,
+    request: CreateInstructionSkillRequest,
+  ): Promise<InstructionSkill> {
+    const response = await apiFetch(instructionSkillsPath(owner), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<InstructionSkill>(response);
+  },
+
+  async updateInstructionSkill(
+    owner: InstructionSkillOwner,
+    skillId: string,
+    updates: UpdateInstructionSkillRequest,
+  ): Promise<InstructionSkill> {
+    const response = await apiFetch(
+      `${instructionSkillsPath(owner)}/${encodeURIComponent(skillId)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      },
+    );
+    return handleResponse<InstructionSkill>(response);
+  },
+
+  async deleteInstructionSkill(owner: InstructionSkillOwner, skillId: string): Promise<void> {
+    const response = await apiFetch(
+      `${instructionSkillsPath(owner)}/${encodeURIComponent(skillId)}`,
+      { method: 'DELETE' },
+    );
+    await handleResponse<{ message: string }>(response);
+  },
+
+  async reorderInstructionSkills(
+    owner: InstructionSkillOwner,
+    skillIds: string[],
+  ): Promise<InstructionSkill[]> {
+    const response = await apiFetch(`${instructionSkillsPath(owner)}/order`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skill_ids: skillIds }),
+    });
+    return handleResponse<InstructionSkill[]>(response);
+  },
+
+  async copyToolInstructionSkills(
+    targetToolId: string,
+    sourceToolId: string,
+  ): Promise<InstructionSkill[]> {
+    const response = await apiFetch(
+      `${API_BASE}/tools/${encodeURIComponent(targetToolId)}/skills/copy`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_tool_id: sourceToolId }),
+      },
+    );
+    return handleResponse<InstructionSkill[]>(response);
+  },
+
+  async getInstructionSkillSummary(): Promise<InstructionSkillSummary> {
+    const response = await apiFetch(`${API_BASE}/skills/summary`);
+    return handleResponse<InstructionSkillSummary>(response);
   },
 
   /**
