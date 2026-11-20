@@ -6,6 +6,7 @@ import {
   type SolidworksInstanceMode,
   type SolidworksOptions,
 } from '../api/solidworks';
+import { InfoPopover } from './shared/InfoPopover';
 
 export interface SolidWorksOptionsPanelProps {
   value: SolidworksOptions;
@@ -20,7 +21,6 @@ type Tone = 'info' | 'warning' | 'error';
 const TONE_ICON: Record<Tone, LucideIcon> = { info: Info, warning: AlertTriangle, error: XCircle };
 const TIMEOUT_MIN = 15;
 const TIMEOUT_MAX = 3600;
-const TIMEOUT_SLIDER = { min: 15, max: 300, step: 5 } as const;
 const TIMEOUT_PROXY_WARNING_ABOVE = 110;
 const IDLE_MINUTES_MAX = 1440;
 const MAX_INSTANCES_LIMIT = 4;
@@ -62,14 +62,14 @@ interface NumberFieldProps {
   value: number;
   min: number;
   max: number;
-  helpId: string;
-  help: string;
+  infoId: string;
+  infoLabel: string;
+  info: ReactNode;
+  unit?: 'sec' | 'min';
   errorId: string;
   /** Receives the parsed draft (NaN when empty or not a number). */
   error: (draft: number) => string;
   warningId?: string;
-  warning?: string;
-  slider?: { id: string };
   onChange: (value: number) => void;
 }
 
@@ -79,20 +79,20 @@ function NumberField({
   value,
   min,
   max,
-  helpId,
-  help,
+  infoId,
+  infoLabel,
+  info,
+  unit,
   errorId,
   error,
   warningId,
-  warning,
-  slider,
   onChange,
 }: NumberFieldProps) {
   const [draft, setDraft] = useState(String(value));
   useEffect(() => setDraft(String(value)), [value]);
   const parsed = parseDraft(draft);
   const valid = isWholeInRange(parsed, min, max);
-  const describedBy = [helpId, !valid && errorId, warning && warningId].filter(Boolean).join(' ');
+  const describedBy = [!valid && errorId, warningId].filter(Boolean).join(' ') || undefined;
 
   const change = (text: string) => {
     setDraft(text);
@@ -108,20 +108,18 @@ function NumberField({
 
   return (
     <div className="form-group">
-      <label htmlFor={inputId}>{label}</label>
-      <div className={slider ? 'sw-timeout-control' : undefined}>
-        {slider && (
-          <input
-            id={slider.id}
-            type="range"
-            min={TIMEOUT_SLIDER.min}
-            max={TIMEOUT_SLIDER.max}
-            step={TIMEOUT_SLIDER.step}
-            value={Math.min(TIMEOUT_SLIDER.max, Math.max(TIMEOUT_SLIDER.min, value))}
-            aria-label={`${label} slider`}
-            onChange={(event) => change(event.target.value)}
-          />
-        )}
+      <div className="sw-field-label">
+        <label htmlFor={inputId}>
+          {label}
+          {unit && (
+            <span className="sw-visually-hidden"> ({unit === 'sec' ? 'seconds' : 'minutes'})</span>
+          )}
+        </label>
+        <InfoPopover id={infoId} label={infoLabel}>
+          {info}
+        </InfoPopover>
+      </div>
+      <div className={unit ? 'sw-unit-input' : undefined}>
         <input
           id={inputId}
           type="number"
@@ -134,18 +132,15 @@ function NumberField({
           aria-invalid={!valid}
           aria-describedby={describedBy}
         />
+        {unit && (
+          <span className="sw-unit" aria-hidden="true">
+            {unit}
+          </span>
+        )}
       </div>
-      <p id={helpId} className="field-help">
-        {help}
-      </p>
       {!valid && (
         <Message id={errorId} tone="error">
           {error(parsed)}
-        </Message>
-      )}
-      {warning && warningId && (
-        <Message id={warningId} tone="warning">
-          {warning}
         </Message>
       )}
     </div>
@@ -184,7 +179,7 @@ export function SolidWorksOptionsPanel({
     ? {
         id: 'solidworks-version-warning',
         tone: 'info' as const,
-        text: 'Install and start the host to choose from the versions found on the machine.',
+        text: 'Start the host to choose from installed versions.',
       }
     : pinNotInstalled
       ? {
@@ -196,28 +191,26 @@ export function SolidWorksOptionsPanel({
               : `SolidWorks ${pin} was not found: no SolidWorks installation is visible to this account.`,
         }
       : null;
-  const versionDescribedBy = ['solidworks-version-help', versionMessage?.id]
-    .filter(Boolean)
-    .join(' ');
+  const versionDescribedBy = versionMessage?.id;
   const background = options.instance_mode === 'background';
   const timeoutWarning =
     timeoutMaxSeconds > TIMEOUT_PROXY_WARNING_ABOVE
-      ? 'Calls running past about 120 seconds may be cut off by the web proxy before the host can answer.'
+      ? 'Calls over about 120 seconds may be cut off by the web proxy.'
       : undefined;
   const timeoutField = (
     <NumberField
       inputId="solidworks-timeout-max-seconds"
-      label="Max Timeout (seconds)"
+      label="Timeout"
+      unit="sec"
       value={timeoutMaxSeconds}
       min={TIMEOUT_MIN}
       max={TIMEOUT_MAX}
-      helpId="solidworks-timeout-help"
-      help="Longest a single SolidWorks call may take, including starting SolidWorks (about 10 seconds) and opening large assemblies. The default is 100 because the web proxy in front of Ragtime ends requests at about 120 seconds."
+      infoId="solidworks-timeout-help"
+      infoLabel="About timeout"
+      info="Longest a single SolidWorks call may take, including starting SolidWorks (about 10 seconds) and opening large assemblies. The default is 100 because the web proxy in front of Ragtime ends requests at about 120 seconds."
       errorId="solidworks-timeout-error"
       error={timeoutError}
-      warningId="solidworks-timeout-warning"
-      warning={timeoutWarning}
-      slider={{ id: 'solidworks-timeout-range' }}
+      warningId={timeoutWarning ? 'solidworks-timeout-warning' : undefined}
       onChange={onTimeoutMaxSecondsChange}
     />
   );
@@ -230,35 +223,47 @@ export function SolidWorksOptionsPanel({
       disabled={disabled}
     >
       <legend>SolidWorks options</legend>
-      <div
-        id="solidworks-instance-mode"
-        role="radiogroup"
-        aria-labelledby="solidworks-instance-mode-label"
-        className="sw-choice-grid"
-      >
-        <span id="solidworks-instance-mode-label" className="sw-group-label">
-          Instance mode
-        </span>
-        {INSTANCE_MODES.map(([mode, title, description]) => (
-          <label className="sw-choice-card" key={mode}>
-            <input
-              id={`solidworks-instance-mode-${mode}`}
-              type="radio"
-              name="solidworks-instance-mode"
-              value={mode}
-              checked={options.instance_mode === mode}
-              onChange={() => update({ instance_mode: mode })}
-            />
-            <span>
-              <strong>{title}</strong>
-              <small>{description}</small>
-            </span>
-          </label>
-        ))}
+      <div id="solidworks-instance-mode-field">
+        <div className="sw-field-label">
+          <span id="solidworks-instance-mode-label">Instance mode</span>
+          <InfoPopover id="solidworks-instance-mode-help" label="About instance mode">
+            {INSTANCE_MODES.map(([mode, title, description]) => (
+              <p key={mode}>
+                <strong>{title}:</strong>{' '}
+                {description.charAt(0).toLowerCase() + description.slice(1)}
+              </p>
+            ))}
+          </InfoPopover>
+        </div>
+        <div
+          id="solidworks-instance-mode"
+          role="radiogroup"
+          aria-labelledby="solidworks-instance-mode-label"
+          className="sw-segmented"
+        >
+          {INSTANCE_MODES.map(([mode, title]) => (
+            <label key={mode}>
+              <input
+                id={`solidworks-instance-mode-${mode}`}
+                type="radio"
+                name="solidworks-instance-mode"
+                value={mode}
+                checked={options.instance_mode === mode}
+                onChange={() => update({ instance_mode: mode })}
+              />
+              <span>{title}</span>
+            </label>
+          ))}
+        </div>
       </div>
-      <div className="form-row">
+      <div id="solidworks-options-fields" className="sw-options-grid">
         <div className="form-group">
-          <label htmlFor="solidworks-version">SolidWorks version</label>
+          <div className="sw-field-label">
+            <label htmlFor="solidworks-version">Version</label>
+            <InfoPopover id="solidworks-version-help" label="About version">
+              {versionHelp(pin, options.instance_mode)}
+            </InfoPopover>
+          </div>
           <select
             id="solidworks-version"
             value={pin === null ? '' : String(pin)}
@@ -284,48 +289,49 @@ export function SolidWorksOptionsPanel({
                 </option>
               ))}
           </select>
-          <p id="solidworks-version-help" className="field-help">
-            {versionHelp(pin, options.instance_mode)}
-          </p>
-          {versionMessage && (
-            <Message id={versionMessage.id} tone={versionMessage.tone}>
-              {versionMessage.text}
-            </Message>
-          )}
         </div>
-        {background ? (
+        {background && (
           <NumberField
             inputId="solidworks-max-instances"
-            label="Max background instances"
+            label="Max instances"
             value={options.max_instances}
             min={1}
             max={MAX_INSTANCES_LIMIT}
-            helpId="solidworks-max-instances-help"
-            help="How many SolidWorks processes the host may run at once. Each uses memory and may use a licence seat. In testing, two instances under one Windows account used one floating licence; check your own licence terms."
+            infoId="solidworks-max-instances-help"
+            infoLabel="About max instances"
+            info="How many SolidWorks processes the host may run at once. Each uses memory and may use a licence seat. In testing, two instances under one Windows account used one floating licence; check your own licence terms."
             errorId="solidworks-max-instances-error"
             error={() => `Enter a whole number from 1 to ${MAX_INSTANCES_LIMIT}.`}
             onChange={(next) => update({ max_instances: next })}
           />
-        ) : (
-          timeoutField
         )}
-      </div>
-      {background && (
-        <div className="form-row">
-          {timeoutField}
+        {timeoutField}
+        {background && (
           <NumberField
             inputId="solidworks-idle-minutes"
-            label="Close idle instances after (minutes)"
+            label="Close idle after"
+            unit="min"
             value={Math.round(options.idle_shutdown_seconds / 60)}
             min={1}
             max={IDLE_MINUTES_MAX}
-            helpId="solidworks-idle-minutes-help"
-            help="A background instance exits after this long without a call, which frees memory and licence seats. The next call starts a new one, which takes about 10 seconds."
+            infoId="solidworks-idle-minutes-help"
+            infoLabel="About idle shutdown"
+            info="A background instance exits after this long without a call, which frees memory and licence seats. The next call starts a new one, which takes about 10 seconds."
             errorId="solidworks-idle-minutes-error"
             error={() => `Enter a whole number from 1 to ${IDLE_MINUTES_MAX}.`}
             onChange={(minutes) => update({ idle_shutdown_seconds: minutes * 60 })}
           />
-        </div>
+        )}
+      </div>
+      {versionMessage && (
+        <Message id={versionMessage.id} tone={versionMessage.tone}>
+          {versionMessage.text}
+        </Message>
+      )}
+      {timeoutWarning && (
+        <Message id="solidworks-timeout-warning" tone="warning">
+          {timeoutWarning}
+        </Message>
       )}
     </fieldset>
   );

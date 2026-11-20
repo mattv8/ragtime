@@ -15,6 +15,7 @@ import {
   type SolidworksHostStatus,
 } from '../api/solidworks';
 import { InlineCopyButton } from './shared/InlineCopyButton';
+import { InfoPopover } from './shared/InfoPopover';
 
 export interface SolidWorksHostPanelProps {
   toolId: string | null;
@@ -69,14 +70,6 @@ const MANUAL_STATES: State[] = [
   'running_update',
   'not_responding',
   'install_failed',
-];
-const LOGIN_NOTE_STATES: State[] = [
-  'not_installed',
-  'install_failed',
-  'no_desktop_session',
-  'not_responding',
-  'running_current',
-  'running_update',
 ];
 const POLLING_STATES: State[] = ['no_desktop_session', 'not_responding'];
 const PRIMARY_BY_STATE: Partial<Record<State, Button>> = {
@@ -152,9 +145,9 @@ function failureState(failure: Failure | null): State | null {
 
 function factRowsFor(state: State): readonly FactKey[] {
   if (state === 'running_current' || state === 'running_update')
-    return ['host-version', 'account', 'session', 'solidworks', 'starts'];
+    return ['account', 'session', 'solidworks', 'starts', 'host-version'];
   if (state === 'no_desktop_session' || state === 'not_responding')
-    return ['host-version', 'account', 'session', 'solidworks'];
+    return ['account', 'session', 'solidworks', 'host-version'];
   if (state === 'not_installed' || state === 'artifact_unavailable')
     return ['account', 'session', 'solidworks'];
   return [];
@@ -224,7 +217,7 @@ function stateText(state: State, context: TextContext): ReactNode {
     case 'running_current':
       return 'The host is installed and answering.';
     case 'running_update':
-      return `Version ${context.status?.host_version ?? 'unknown'} is running; version ${context.status?.expected_host_version ?? 'unknown'} is available. Updating restarts the host and closes any SolidWorks it started. Calls in progress fail.`;
+      return `Version ${context.status?.host_version ?? 'unknown'} is running; version ${context.status?.expected_host_version ?? 'unknown'} is available.`;
   }
 }
 
@@ -537,7 +530,7 @@ export function SolidWorksHostPanel({
           ? 'Not logged in'
           : 'Unknown';
     if (key === 'solidworks') return versions ? versions.join(', ') || 'None found' : 'Unknown';
-    return 'At logon of this account';
+    return 'At logon';
   };
   const hint = retryAction ? failureHint(failure?.code) : null;
   const failureTitle =
@@ -574,7 +567,7 @@ export function SolidWorksHostPanel({
           ref={uninstallButton}
           id="solidworks-host-uninstall"
           data-sw-action="uninstall"
-          className="btn btn-secondary btn-sm sw-actions-end"
+          className="btn btn-secondary btn-sm"
           type="button"
           disabled={requesting}
           onClick={() => setConfirming(true)}
@@ -645,10 +638,23 @@ export function SolidWorksHostPanel({
             <RefreshCw size={14} aria-hidden="true" /> Check again
           </button>
         )}
+        {buttons.includes('uninstall') && renderButton('uninstall')}
       </header>
-      <p id="solidworks-host-state" role="status" aria-live="polite">
-        {showAlert ? null : text}
-      </p>
+      <div className={state === 'running_update' ? 'sw-message' : undefined}>
+        <p
+          id="solidworks-host-state"
+          role="status"
+          aria-live="polite"
+          className={state === 'running_current' ? 'sw-visually-hidden' : undefined}
+        >
+          {showAlert ? null : text}
+        </p>
+        {state === 'running_update' && (
+          <InfoPopover id="solidworks-host-update-help" label="About updating">
+            Updating restarts the host and closes any SolidWorks it started. Calls in progress fail.
+          </InfoPopover>
+        )}
+      </div>
       {state === 'request_failed' && !showAlert && failure?.message && <p>{failure.message}</p>}
       {status?.warning && (
         <p id="solidworks-host-warning" className="sw-message" data-tone="warning">
@@ -684,11 +690,7 @@ export function SolidWorksHostPanel({
         </ul>
       )}
       {facts.length > 0 && (
-        <dl
-          id="solidworks-host-facts"
-          className="rc-facts-list"
-          aria-label="SolidWorks host details"
-        >
+        <dl id="solidworks-host-facts" className="sw-facts" aria-label="SolidWorks host details">
           {facts.map((key) => (
             <div key={key} data-sw-fact={key}>
               <dt>
@@ -697,10 +699,16 @@ export function SolidWorksHostPanel({
                   : key === 'account'
                     ? 'Account'
                     : key === 'session'
-                      ? 'Desktop session'
+                      ? 'Session'
                       : key === 'solidworks'
-                        ? 'SolidWorks found'
+                        ? 'SolidWorks'
                         : 'Starts'}
+                {key === 'session' && (
+                  <InfoPopover id="solidworks-session-help" label="About session">
+                    The tool works only while this account is logged in on the machine. A
+                    disconnected remote desktop session counts as logged in.
+                  </InfoPopover>
+                )}
               </dt>
               <dd>{factValue(key)}</dd>
             </div>
@@ -722,10 +730,11 @@ export function SolidWorksHostPanel({
           role="note"
         >
           <AlertTriangle className="sw-message-icon" size={14} aria-hidden="true" />
-          <span>
+          <span>Runs as an administrator account.</span>
+          <InfoPopover id="solidworks-account-warning-help" label="About the administrator account">
             The tool acts as <strong>{status.account.name}</strong>, an account with administrator
             rights. Choose an account that only has the access SolidWorks work needs.
-          </span>
+          </InfoPopover>
         </div>
       )}
       {confirming ? (
@@ -768,17 +777,11 @@ export function SolidWorksHostPanel({
         </div>
       ) : (
         <div id="solidworks-host-actions" className="sw-actions">
-          {buttons.map(renderButton)}
+          {buttons.filter((button) => button !== 'uninstall').map(renderButton)}
         </div>
       )}
       {artifact?.available === true && MANUAL_STATES.includes(resting) && (
         <Manual artifact={artifact} open={resting === 'install_failed'} />
-      )}
-      {state !== 'uninstalling' && LOGIN_NOTE_STATES.includes(resting) && (
-        <p id="solidworks-login-note" className="field-help">
-          The tool works only while this account is logged in on the machine. A disconnected remote
-          desktop session counts as logged in.
-        </p>
       )}
     </section>
   );

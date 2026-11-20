@@ -7720,7 +7720,7 @@ export function ToolWizard({
             className="wizard-content sw-step"
           >
             <p className="wizard-help">
-              Install the host on the machine, choose how SolidWorks is started, then test.
+              Install the host, choose how SolidWorks starts, then test.
             </p>
             <SolidWorksHostPanel
               toolId={existingTool?.id ?? createdToolId}

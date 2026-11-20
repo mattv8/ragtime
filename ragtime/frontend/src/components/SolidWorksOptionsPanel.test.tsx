@@ -64,7 +64,7 @@ describe('SolidWorksOptionsPanel', () => {
     expect(document.getElementById('solidworks-instance-mode')?.getAttribute('role')).toBe(
       'radiogroup',
     );
-    expect(document.getElementById('solidworks-timeout-range')).not.toBeNull();
+    expect(document.getElementById('solidworks-timeout-range')).toBeNull();
     expect(document.getElementById('solidworks-timeout-help')).not.toBeNull();
     expect(document.getElementById('solidworks-max-instances-help')).not.toBeNull();
     expect(document.getElementById('solidworks-idle-minutes-help')).not.toBeNull();
@@ -107,12 +107,12 @@ describe('SolidWorksOptionsPanel', () => {
 
   it('lists only Any installed version while the host status is unknown', () => {
     renderPanel({ hostStatus: null });
-    const select = screen.getByLabelText('SolidWorks version') as HTMLSelectElement;
+    const select = screen.getByLabelText('Version') as HTMLSelectElement;
     expect([...select.options].map((option) => option.textContent)).toEqual([
       'Any installed version',
     ]);
     expect(document.getElementById('solidworks-version-warning')?.textContent).toContain(
-      'Install and start the host',
+      'Start the host to choose from installed versions.',
     );
     expect(document.getElementById('solidworks-version-warning')?.getAttribute('data-tone')).toBe(
       'info',
@@ -121,7 +121,7 @@ describe('SolidWorksOptionsPanel', () => {
 
   it('keeps a saved pin as "saved, not checked" while the status is unknown', () => {
     renderPanel({ value: { solidworks_version: 2022 }, hostStatus: null });
-    const select = screen.getByLabelText('SolidWorks version') as HTMLSelectElement;
+    const select = screen.getByLabelText('Version') as HTMLSelectElement;
     expect(select.value).toBe('2022');
     expect(
       screen.getByRole('option', { name: 'SolidWorks 2022 (saved, not checked)' }),
@@ -130,7 +130,7 @@ describe('SolidWorksOptionsPanel', () => {
 
   it('lists the installed versions newest first when the host is running', () => {
     renderPanel({ hostStatus: hostStatus({ versions: [2022, 2024] }) });
-    const select = screen.getByLabelText('SolidWorks version') as HTMLSelectElement;
+    const select = screen.getByLabelText('Version') as HTMLSelectElement;
     expect([...select.options].map((option) => option.textContent)).toEqual([
       'Any installed version',
       'SolidWorks 2024',
@@ -144,7 +144,7 @@ describe('SolidWorksOptionsPanel', () => {
       value: { solidworks_version: 2019 },
       hostStatus: hostStatus({ versions: [2024, 2022] }),
     });
-    const select = screen.getByLabelText('SolidWorks version') as HTMLSelectElement;
+    const select = screen.getByLabelText('Version') as HTMLSelectElement;
     expect(select.value).toBe('2019');
     expect(screen.getByRole('option', { name: 'SolidWorks 2019 (not installed)' })).toBeTruthy();
     const warning = document.getElementById('solidworks-version-warning');
@@ -177,7 +177,7 @@ describe('SolidWorksOptionsPanel', () => {
         onTimeoutMaxSecondsChange={vi.fn()}
       />,
     );
-    fireEvent.change(screen.getByLabelText('SolidWorks version'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Version'), { target: { value: '' } });
     expect(onChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ solidworks_version: null }),
     );
@@ -199,7 +199,8 @@ describe('SolidWorksOptionsPanel', () => {
       value: { solidworks_version: 2024, instance_mode: 'background' },
       hostStatus: hostStatus(),
     });
-    expect(document.getElementById('solidworks-version-help')?.textContent).toBe(
+    fireEvent.click(screen.getByRole('button', { name: 'About version' }));
+    expect(document.getElementById('solidworks-version-help-content')?.textContent).toBe(
       'The host only starts SolidWorks 2024. Calls fail if it is not installed.',
     );
     rerender(
@@ -211,7 +212,7 @@ describe('SolidWorksOptionsPanel', () => {
         onTimeoutMaxSecondsChange={vi.fn()}
       />,
     );
-    expect(document.getElementById('solidworks-version-help')?.textContent).toBe(
+    expect(document.getElementById('solidworks-version-help-content')?.textContent).toBe(
       'Calls fail if the open SolidWorks is not 2024.',
     );
   });
@@ -287,11 +288,13 @@ describe('SolidWorksOptionsPanel', () => {
     expect(onTimeoutMaxSecondsChange).toHaveBeenLastCalledWith(15);
   });
 
-  it('keeps the timeout range element tied to the same value', () => {
+  it('uses a number input without a timeout slider', () => {
     renderPanel({ timeoutMaxSeconds: 200 });
-    const range = document.getElementById('solidworks-timeout-range') as HTMLInputElement;
-    expect(range.type).toBe('range');
-    expect(range.value).toBe('200');
+    expect(document.getElementById('solidworks-timeout-range')).toBeNull();
+    expect(screen.getByLabelText('Timeout (seconds)')).toBe(
+      input('solidworks-timeout-max-seconds'),
+    );
+    expect(input('solidworks-timeout-max-seconds').value).toBe('200');
   });
 
   it('converts idle minutes to seconds', () => {
@@ -321,13 +324,32 @@ describe('SolidWorksOptionsPanel', () => {
     );
   });
 
-  it('disables the whole fieldset while disabled and keeps its help text', () => {
+  it('disables the whole fieldset while disabled', () => {
     renderPanel({ disabled: true });
     const panel = document.getElementById('solidworks-options-panel') as HTMLFieldSetElement;
     expect(panel.disabled).toBe(true);
-    expect(document.getElementById('solidworks-max-instances-help')?.textContent).toContain(
-      'How many SolidWorks processes',
+    expect(screen.getByRole('button', { name: 'About max instances' }).matches(':disabled')).toBe(
+      true,
     );
+  });
+
+  it('shows option help in popovers and puts messages below the field row', () => {
+    renderPanel({ timeoutMaxSeconds: 120 });
+    const fields = document.getElementById('solidworks-options-fields')!;
+    expect(fields.contains(document.getElementById('solidworks-version-warning'))).toBe(false);
+    expect(fields.contains(document.getElementById('solidworks-timeout-warning'))).toBe(false);
+    expect(screen.getByLabelText('Close idle after (minutes)')).toBe(
+      input('solidworks-idle-minutes'),
+    );
+    for (const [label, id, text] of [
+      ['About instance mode', 'solidworks-instance-mode-help', 'Background instance:'],
+      ['About max instances', 'solidworks-max-instances-help', 'How many SolidWorks processes'],
+      ['About timeout', 'solidworks-timeout-help', 'Longest a single SolidWorks call'],
+      ['About idle shutdown', 'solidworks-idle-minutes-help', 'A background instance exits'],
+    ]) {
+      fireEvent.click(screen.getByRole('button', { name: label }));
+      expect(document.getElementById(`${id}-content`)?.textContent).toContain(text);
+    }
   });
 
   it('emits full options from the defaults when nothing was saved', () => {

@@ -167,14 +167,19 @@ describe('SolidWorksHostPanel states', () => {
     await waitFor(() => expect(panelState()).toBe('running_current'));
     expect(pillText()).toBe('Running');
     expect(liveText()).toBe('The host is installed and answering.');
-    expect(factKeys()).toEqual(['host-version', 'account', 'session', 'solidworks', 'starts']);
+    expect(document.getElementById('solidworks-host-state')?.className).toBe('sw-visually-hidden');
+    expect(factKeys()).toEqual(['account', 'session', 'solidworks', 'starts', 'host-version']);
     expect(
       document.querySelector('#solidworks-host-facts [data-sw-fact="solidworks"] dd')?.textContent,
     ).toBe('2024, 2022');
-    expect(actionButtons().map((b) => b.getAttribute('data-sw-action'))).toEqual(['uninstall']);
+    expect(actionButtons()).toHaveLength(0);
     expect(screen.getByRole('button', { name: 'Uninstall host' })).toBeTruthy();
+    expect(document.querySelector('header #solidworks-host-uninstall')).not.toBeNull();
     expect(document.querySelectorAll('.sw-pill')).toHaveLength(1);
-    expect(document.getElementById('solidworks-login-note')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'About session' }));
+    expect(document.getElementById('solidworks-session-help-content')?.textContent).toBe(
+      'The tool works only while this account is logged in on the machine. A disconnected remote desktop session counts as logged in.',
+    );
   });
 
   it('running with no SolidWorks found shows the warning message', async () => {
@@ -200,13 +205,12 @@ describe('SolidWorksHostPanel states', () => {
     await waitFor(() => expect(panelState()).toBe('running_update'));
     expect(pillText()).toBe('Running');
     expect(document.querySelectorAll('.sw-pill')[1]?.textContent).toBe('Update available');
-    expect(liveText()).toBe(
-      'Version 0.1.0 is running; version 0.2.0 is available. Updating restarts the host and closes any SolidWorks it started. Calls in progress fail.',
+    expect(liveText()).toBe('Version 0.1.0 is running; version 0.2.0 is available.');
+    fireEvent.click(screen.getByRole('button', { name: 'About updating' }));
+    expect(document.getElementById('solidworks-host-update-help-content')?.textContent).toBe(
+      'Updating restarts the host and closes any SolidWorks it started. Calls in progress fail.',
     );
-    expect(actionButtons().map((b) => b.getAttribute('data-sw-action'))).toEqual([
-      'update',
-      'uninstall',
-    ]);
+    expect(actionButtons().map((b) => b.getAttribute('data-sw-action'))).toEqual(['update']);
     expect(document.getElementById('solidworks-host-update')?.textContent).toBe('Update host');
   });
 
@@ -220,7 +224,7 @@ describe('SolidWorksHostPanel states', () => {
     expect(actionButtons().map((b) => b.getAttribute('data-sw-action'))).toEqual(['install']);
     const manual = document.getElementById('solidworks-manual-install') as HTMLDetailsElement;
     expect(manual.open).toBe(false);
-    expect(document.getElementById('solidworks-login-note')).not.toBeNull();
+    expect(document.getElementById('solidworks-session-help')).not.toBeNull();
   });
 
   it('artifact unavailable: installer missing, no install button and no manual checklist', async () => {
@@ -255,7 +259,7 @@ describe('SolidWorksHostPanel states', () => {
     expect(pillText()).toBe('Waiting for desktop session');
     expect(liveText()).toContain('has no desktop session on this machine');
     expect(document.querySelector('#solidworks-host-panel .rc-polling-indicator')).not.toBeNull();
-    expect(factKeys()).toEqual(['host-version', 'account', 'session', 'solidworks']);
+    expect(factKeys()).toEqual(['account', 'session', 'solidworks', 'host-version']);
     expect(actionButtons()).toHaveLength(0);
   });
 
@@ -460,8 +464,11 @@ describe('SolidWorksHostPanel account warning and manual checklist', () => {
     await waitFor(() => expect(panelState()).toBe('running_current'));
     const warning = document.getElementById('solidworks-account-warning');
     expect(warning?.getAttribute('role')).toBe('note');
-    expect(warning?.textContent).toContain('HAMMERTON\\mvisnovsky.admin');
-    expect(warning?.textContent).toContain('an account with administrator rights');
+    expect(warning?.textContent).toContain('Runs as an administrator account.');
+    fireEvent.click(screen.getByRole('button', { name: 'About the administrator account' }));
+    expect(
+      document.getElementById('solidworks-account-warning-help-content')?.textContent,
+    ).toContain('HAMMERTON\\mvisnovsky.admin');
     unmount();
     getStatus.mockResolvedValue(ST_RUNNING);
     renderPanel();
