@@ -6,6 +6,7 @@ import {
   Info,
   RefreshCw,
   XCircle,
+  ExternalLink,
   type LucideIcon,
 } from 'lucide-react';
 import { api } from '../api/client';
@@ -19,7 +20,6 @@ import type {
 } from '../types/api';
 import {
   findMatchingView,
-  formatPdmSchedule,
   resolveLinkState,
   resolveMachineState,
   type PdmLinkState,
@@ -28,6 +28,7 @@ import {
 } from '../utils/solidworksPdmLink';
 import { SolidWorksApprovedFolders } from './SolidWorksApprovedFolders';
 import { SolidWorksPdmSetupForm } from './SolidWorksPdmSetupForm';
+import { InfoPopover } from './shared/InfoPopover';
 
 export interface PdmLinkValue {
   pdm_tool_id: string | null;
@@ -97,7 +98,7 @@ const INDEX_ACTION_STATES: readonly PdmLinkState[] = [
 ];
 
 const PDM_TOOL_HELP =
-  "Optional. Link a SolidWorks PDM tool so the AI can search the vault, find a file's path in this machine's vault view, get the latest copy and open it. Everyone who can use this tool can search that vault through it.";
+  'Optional. Lets the AI search the vault, find a file’s path in this machine’s vault view, get the latest copy and open it. Everyone who can use this tool can search that vault. The SQL connection, index and schedule live on the PDM tool card in Tools.';
 const ALLOW_CHANGES_HELP =
   'Off by default. When off, the AI can search the vault, find paths, get the latest copy and open files, but cannot add files, check out or check in. When on, it can add files, check out, undo check-out and check in, only in the approved folders below. It never deletes files or changes workflow state.';
 
@@ -162,12 +163,8 @@ function findSuggestion(tools: ToolConfig[], views: PdmViewFacts[]): Suggestion 
   return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
-function indexedText(status: PdmIndexStatusResponse): string {
-  return `${formatCount(status.document_count)} documents, ${formatCount(status.embedding_count)} embeddings`;
-}
-
-function indexFailedText(named: string, status: PdmIndexStatusResponse | null): string {
-  const failure = `The last index of ${named} failed: ${status?.current_job?.error_message ?? 'no details were recorded'}.`;
+function indexFailedText(status: PdmIndexStatusResponse | null): string {
+  const failure = `The last index failed: ${status?.current_job?.error_message ?? 'no details were recorded'}.`;
   if (status && status.document_count > 0 && status.last_indexed) {
     return `${failure} The AI uses the index from ${formatDate(status.last_indexed)}.`;
   }
@@ -187,23 +184,23 @@ function linkText(
     case 'loading':
       return 'Loading your PDM tools.';
     case 'load_failed':
-      return `Ragtime could not load your PDM tools: ${loadError}`;
+      return `Could not load PDM tools: ${loadError}`;
     case 'no_tools':
-      return 'No SolidWorks PDM tools exist yet. Set up a connection to your PDM vault database so the AI can search it through this tool. You can skip this: the tool works on SolidWorks models without a vault link.';
+      return 'No PDM tools yet. Linking one is optional.';
     case 'none_linked':
       return '';
     case 'linked_missing':
-      return 'The linked PDM tool no longer exists. Choose another PDM tool or set up a new one. Until then the AI cannot use the vault and all changes are refused.';
+      return 'The linked PDM tool no longer exists. Vault access and all changes are off.';
     case 'linked_disabled':
-      return `${named} is disabled, so the AI cannot search it. Enable it or choose another tool.`;
+      return `${named} is disabled, so the AI cannot search it.`;
     case 'never_indexed':
-      return `${named} has not been indexed yet, so the AI cannot find vault files. Start the first index.`;
+      return `${named} has not been indexed, so the AI cannot find vault files.`;
     case 'indexing':
-      return `Indexing ${named}. You can continue. Vault search is complete when indexing finishes.`;
+      return `Indexing ${named}. You can continue.`;
     case 'index_failed':
-      return indexFailedText(named, status);
+      return indexFailedText(status);
     case 'index_empty':
-      return `${named} finished indexing but holds no documents. Check the database name and the file extension filter in the PDM tool.`;
+      return `${named} finished indexing but holds no documents.`;
     case 'linked_ready':
       return `Linked to ${named}.`;
   }
@@ -235,36 +232,6 @@ function machineMessage(
   }
 }
 
-function clientText(pdm: PdmHostStatus): string {
-  if (!pdm.client_installed) return 'Not installed';
-  return pdm.client_version ? `Installed, ${pdm.client_version}` : 'Installed';
-}
-
-function changesWarning(user: string | null): ReactNode {
-  if (!user) {
-    return 'The AI can now add files, check out, undo check-out and check in inside the approved folders. Engineers review the results in PDM.';
-  }
-  return (
-    <>
-      The AI can now add files, check out, undo check-out and check in inside the approved folders,
-      as <strong>{user}</strong>. Engineers review the results in PDM.
-    </>
-  );
-}
-
-function identityText(user: string | null): ReactNode {
-  if (!user) {
-    return 'PDM records changes under the PDM user logged in to the vault view on this machine. Install the host and log in to the vault view to see which user that is.';
-  }
-  return (
-    <>
-      Changes appear in PDM as <strong>{user}</strong>, the PDM user logged in to the vault view on
-      this machine. Ragtime adds the tool name and the Ragtime user to each check-in comment. Use a
-      dedicated PDM user with only the permissions this tool needs.
-    </>
-  );
-}
-
 export function PdmMessage({
   id,
   tone,
@@ -294,55 +261,26 @@ export function PdmMessage({
   );
 }
 
-function Fact({ name, label, children }: { name: string; label: string; children: ReactNode }) {
+function MachineCheck({
+  name,
+  tone,
+  children,
+}: {
+  name: string;
+  tone: 'success' | 'warning' | 'muted';
+  children: ReactNode;
+}) {
+  const Icon = TONE_ICON[tone];
+  const prefix =
+    tone === 'success' ? 'Passed: ' : tone === 'warning' ? 'Needs attention: ' : 'Not checked: ';
   return (
-    <div data-sw-fact={name}>
-      <dt>{label}</dt>
-      <dd>{children}</dd>
-    </div>
-  );
-}
-
-function IndexFacts({ tool, status }: { tool: ToolConfig; status: PdmIndexStatusResponse | null }) {
-  const config = pdmConfigOf(tool);
-  return (
-    <dl id="solidworks-pdm-index-facts" className="rc-facts-list">
-      <Fact name="database" label="Vault database">
-        {config.database}
-      </Fact>
-      <Fact name="server" label="SQL server">
-        {`${config.host}:${config.port ?? 1433}`}
-      </Fact>
-      <Fact name="documents" label="Documents indexed">
-        {status ? indexedText(status) : 'Unknown'}
-      </Fact>
-      <Fact name="last-indexed" label="Last indexed">
-        {formatLastIndexed(status)}
-      </Fact>
-      <Fact name="updates" label="Updates">
-        {formatPdmSchedule(config.reindex_interval_hours)}
-      </Fact>
-    </dl>
-  );
-}
-
-function MachineFacts({ pdm, view }: { pdm: PdmHostStatus; view: PdmViewFacts | null }) {
-  return (
-    <dl id="solidworks-pdm-machine-facts" className="rc-facts-list">
-      <Fact name="pdm-client" label="PDM client">
-        {clientText(pdm)}
-      </Fact>
-      {view && (
-        <Fact name="vault-view" label="Vault view">
-          {`${view.vault} at ${view.root}`}
-        </Fact>
-      )}
-      {view && (
-        <Fact name="pdm-user" label="PDM user">
-          {view.user ?? 'Unknown'}
-        </Fact>
-      )}
-    </dl>
+    <li className="sw-check" data-sw-check={name} data-tone={tone}>
+      <Icon size={14} aria-hidden="true" />
+      <span>
+        <span className="sw-visually-hidden">{prefix}</span>
+        {children}
+      </span>
+    </li>
   );
 }
 
@@ -434,11 +372,11 @@ export function SolidWorksPdmLinkPanel({
   const machineText = machineMessage(machineState, { pdm, database: database ?? '', view });
   const vaultRoot = view?.root ?? null;
   const user = view?.user || null;
-  const loadAlert = !!loadError && state === 'load_failed' && refreshRequested;
+  const loadAlert = state === 'load_failed' && refreshRequested;
   const stateText = indexError
-    ? `Ragtime could not load the index status: ${statusError}`
+    ? `Could not load the index status: ${statusError}`
     : !loading && state === 'loading' && linkedTool
-      ? 'Loading index status…'
+      ? 'Loading index status.'
       : linkText(state, {
           name,
           loadError: loadError ?? '',
@@ -452,9 +390,45 @@ export function SolidWorksPdmLinkPanel({
   const PillIcon = TONE_ICON[pill.tone];
   const suggestion = linked ? null : findSuggestion(tools, views);
   const noFolders = allowChanges && value.approved_folders.length === 0;
-  const allowDescribedBy = allowChanges
-    ? 'solidworks-allow-changes-help solidworks-allow-changes-warning'
-    : 'solidworks-allow-changes-help';
+  const machineShort: Record<Exclude<PdmMachineState, 'ready'>, string> = {
+    unknown: 'Start the SolidWorks host above to check this machine.',
+    client_missing: 'Without the PDM client the AI cannot get, open or change vault files here.',
+    no_views: 'No vault view on this machine, so the AI cannot open or change vault files.',
+    vault_mismatch: `This machine has no vault view for “${database}”.`,
+    logged_out:
+      'The AI can search the vault but cannot open or change files here until the vault view is logged in.',
+  };
+  const stateHelp: Partial<Record<PdmLinkState, { id: string; label: string; text: string }>> = {
+    no_tools: {
+      id: 'solidworks-pdm-no-tools-help',
+      label: 'About linking a PDM tool',
+      text: 'No SolidWorks PDM tools exist yet. Set up a connection to your PDM vault database so the AI can search it through this tool. You can skip this: the tool works on SolidWorks models without a vault link.',
+    },
+    linked_missing: {
+      id: 'solidworks-pdm-missing-help',
+      label: 'About the missing PDM tool',
+      text: 'Choose another PDM tool or set up a new one. Until then the AI cannot use the vault and all changes are refused.',
+    },
+    indexing: {
+      id: 'solidworks-pdm-indexing-help',
+      label: 'About indexing',
+      text: 'Vault search is complete when indexing finishes.',
+    },
+    index_empty: {
+      id: 'solidworks-pdm-index-empty-help',
+      label: 'About the empty index',
+      text: 'Check the database name and the file extension filter in the PDM tool.',
+    },
+  };
+  const help = stateHelp[state];
+  const hiddenState = state === 'loading' || state === 'none_linked' || state === 'linked_ready';
+  const stateTone: PdmMessageTone =
+    state === 'load_failed' || state === 'linked_missing' || state === 'index_failed'
+      ? 'error'
+      : state === 'no_tools' || state === 'indexing'
+        ? 'info'
+        : 'warning';
+  const StateIcon = MESSAGE_ICON[stateTone];
 
   // The target is reported after every change in the linked tool or its index status.
   useEffect(() => {
@@ -648,106 +622,322 @@ export function SolidWorksPdmLinkPanel({
           <RefreshCw size={14} aria-hidden="true" /> Refresh
         </button>
       </header>
-      <p id="solidworks-pdm-link-state" role="status" aria-live="polite">
-        {loadAlert ? null : stateText}
+      <p id="solidworks-pdm-link-notice" role="status" aria-live="polite">
+        {notice}
       </p>
       {alertText && (
         <PdmMessage id="solidworks-pdm-link-error" tone="error" alert>
           {alertText}
         </PdmMessage>
       )}
-      <p id="solidworks-pdm-link-notice" role="status" aria-live="polite">
-        {notice}
-      </p>
+      {formOpen && (
+        <p
+          id="solidworks-pdm-link-state"
+          role="status"
+          aria-live="polite"
+          className="sw-visually-hidden"
+        >
+          {loadAlert ? null : stateText}
+        </p>
+      )}
 
       {!formOpen && (
-        <>
-          {state !== 'no_tools' && (
-            <div className="form-group">
-              <label htmlFor="solidworks-pdm-tool">PDM tool</label>
-              <select
-                id="solidworks-pdm-tool"
-                ref={selectRef}
-                value={linkedId ?? ''}
-                disabled={disabled || loading || setupBusy || pending !== null}
-                aria-describedby="solidworks-pdm-tool-help"
-                onChange={(event) => selectTool(event.target.value || null)}
+        <div id="solidworks-pdm-columns" className="sw-vault-grid">
+          <div
+            id="solidworks-pdm-vault"
+            className="sw-box"
+            data-sw-box="vault"
+            aria-labelledby="solidworks-pdm-vault-title"
+          >
+            <h4 id="solidworks-pdm-vault-title" className="sw-box-title">
+              Vault
+            </h4>
+            {state !== 'no_tools' && (
+              <div className="form-group">
+                <div className="sw-field-label">
+                  <label htmlFor="solidworks-pdm-tool">PDM tool</label>
+                  <InfoPopover id="solidworks-pdm-tool-help" label="About PDM tool">
+                    {PDM_TOOL_HELP}
+                  </InfoPopover>
+                </div>
+                <select
+                  id="solidworks-pdm-tool"
+                  ref={selectRef}
+                  value={linkedId ?? ''}
+                  disabled={disabled || loading || setupBusy || pending !== null}
+                  onChange={(event) => selectTool(event.target.value || null)}
+                >
+                  {toolOptions}
+                </select>
+              </div>
+            )}
+            {state === 'no_tools' && (
+              <div
+                id="solidworks-pdm-link-state"
+                role="status"
+                aria-live="polite"
+                className="sw-message"
+                data-tone="info"
               >
-                {toolOptions}
-              </select>
-              <p id="solidworks-pdm-tool-help" className="field-help">
-                {PDM_TOOL_HELP}
-              </p>
+                <Info size={14} className="sw-message-icon" aria-hidden="true" />
+                <span>
+                  {stateText}{' '}
+                  {help && (
+                    <InfoPopover id={help.id} label={help.label}>
+                      {help.text}
+                    </InfoPopover>
+                  )}
+                </span>
+              </div>
+            )}
+            <div className="sw-actions">
+              {state === 'no_tools' ? (
+                <button
+                  id="solidworks-pdm-setup-open"
+                  ref={triggerRef}
+                  type="button"
+                  className="btn"
+                  disabled={disabled || setupBusy || pending !== null}
+                  onClick={openSetup}
+                >
+                  Set up a PDM connection
+                </button>
+              ) : (
+                <button
+                  id="solidworks-pdm-setup-open"
+                  ref={triggerRef}
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  aria-label="Set up a new PDM connection"
+                  disabled={disabled || setupBusy || pending !== null}
+                  onClick={openSetup}
+                >
+                  New…
+                </button>
+              )}
+              {linkedTool && (
+                <a
+                  id="solidworks-pdm-open-tools"
+                  className="sw-inline-link"
+                  href="?view=tools#tools-connections"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Open in Tools (opens in a new tab)"
+                >
+                  Open in Tools <ExternalLink size={12} aria-hidden="true" />
+                </a>
+              )}
+              {state === 'no_tools' && (
+                <a href="?view=tools#tools-connections" target="_blank" rel="noopener noreferrer">
+                  Or add one in Tools
+                </a>
+              )}
             </div>
-          )}
-          {createdNote && (
-            <PdmMessage id="solidworks-pdm-created-note" tone="info">
-              The PDM tool stays in your Tools list even if you cancel this wizard. To change
-              filters, schedule or SSH tunnel, edit it in{' '}
-              <a href="?view=tools#tools-connections" target="_blank" rel="noopener noreferrer">
-                Tools
-              </a>
-              .
-            </PdmMessage>
-          )}
-          {suggestion && (
-            <PdmMessage id="solidworks-pdm-suggestion" tone="info">
-              {`${suggestion.tool.name} matches the vault view ${suggestion.view.vault} on this machine.`}{' '}
-              <button
-                id="solidworks-pdm-suggestion-link"
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={disabled || setupBusy}
-                onClick={() => selectTool(suggestion.tool.id)}
+            {state !== 'no_tools' && (
+              <div
+                id="solidworks-pdm-link-state"
+                role="status"
+                aria-live="polite"
+                className={hiddenState ? 'sw-visually-hidden' : 'sw-message'}
+                data-tone={hiddenState ? undefined : stateTone}
               >
-                {`Link ${suggestion.tool.name}`}
-              </button>
-            </PdmMessage>
-          )}
-          <div className="sw-actions">
-            {state === 'no_tools' ? (
-              <button
-                id="solidworks-pdm-setup-open"
-                ref={triggerRef}
-                type="button"
-                className="btn"
-                disabled={disabled || setupBusy || pending !== null}
-                onClick={openSetup}
-              >
-                Set up a PDM connection
-              </button>
-            ) : (
-              <button
-                id="solidworks-pdm-setup-open"
-                ref={triggerRef}
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={disabled || setupBusy || pending !== null}
-                onClick={openSetup}
-              >
-                Set up new…
-              </button>
+                {!hiddenState && !loadAlert && (
+                  <StateIcon className="sw-message-icon" size={14} aria-hidden="true" />
+                )}
+                <span>
+                  {loadAlert ? null : stateText}
+                  {!loadAlert && help && (
+                    <>
+                      {' '}
+                      <InfoPopover id={help.id} label={help.label}>
+                        {help.text}
+                      </InfoPopover>
+                    </>
+                  )}
+                </span>
+              </div>
+            )}
+            {createdNote && (
+              <div id="solidworks-pdm-created-note" className="sw-message" data-tone="info">
+                <Info className="sw-message-icon" size={14} aria-hidden="true" />
+                <span>
+                  The PDM tool stays in your Tools list if you cancel this wizard.{' '}
+                  <InfoPopover id="solidworks-pdm-created-help" label="About the new PDM tool">
+                    To change filters, schedule or SSH tunnel, edit it in Tools.
+                  </InfoPopover>
+                </span>
+              </div>
             )}
             {state === 'load_failed' && (
-              <button
-                id="solidworks-pdm-retry"
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={disabled}
-                onClick={indexError ? () => void refreshStatus() : reload}
-              >
-                Try again
-              </button>
+              <div className="sw-actions">
+                <button
+                  id="solidworks-pdm-retry"
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={disabled}
+                  onClick={indexError ? () => void refreshStatus() : reload}
+                >
+                  Try again
+                </button>
+              </div>
+            )}
+            {linkedTool && (
+              <>
+                {statusError && !indexError && (
+                  <PdmMessage id="solidworks-pdm-index-error" tone="warning">
+                    {`Could not load the index status: ${statusError}`}
+                  </PdmMessage>
+                )}
+                {state === 'indexing' && job && <IndexProgress name={name} job={job} />}
+                {INDEX_ACTION_STATES.includes(state) && (
+                  <div className="sw-actions">
+                    <button
+                      id="solidworks-pdm-index-start"
+                      type="button"
+                      className="btn"
+                      disabled={disabled || setupBusy || pending !== null}
+                      onClick={() => void startIndex()}
+                    >
+                      {pending === 'index'
+                        ? 'Starting…'
+                        : state === 'index_failed'
+                          ? 'Try again'
+                          : 'Index now'}
+                    </button>
+                  </div>
+                )}
+                {state === 'linked_disabled' && (
+                  <div className="sw-actions">
+                    <button
+                      id="solidworks-pdm-enable-tool"
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={disabled || setupBusy || pending !== null}
+                      onClick={() => void enableTool()}
+                    >
+                      {`Enable ${quoted(name)}`}
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
-          {state === 'no_tools' && (
-            <p className="field-help">
-              <a href="?view=tools#tools-connections" target="_blank" rel="noopener noreferrer">
-                Or add one in Tools
-              </a>
-            </p>
-          )}
-        </>
+          <div
+            id="solidworks-pdm-machine"
+            className="sw-box"
+            data-sw-box="machine"
+            aria-labelledby="solidworks-pdm-machine-title"
+          >
+            <h4 id="solidworks-pdm-machine-title" className="sw-box-title">
+              This machine
+            </h4>
+            {linked ? (
+              <ul id="solidworks-pdm-machine-checks" className="sw-checks">
+                <MachineCheck
+                  name="client"
+                  tone={
+                    machineState === 'unknown'
+                      ? 'muted'
+                      : machineState === 'client_missing'
+                        ? 'warning'
+                        : 'success'
+                  }
+                >
+                  {machineState === 'unknown' ? (
+                    'PDM client not checked'
+                  ) : machineState === 'client_missing' ? (
+                    <>
+                      PDM client <strong>not installed</strong>
+                    </>
+                  ) : (
+                    <>
+                      PDM client <strong>{pdm?.client_version || 'installed'}</strong>
+                    </>
+                  )}
+                </MachineCheck>
+                <MachineCheck
+                  name="view"
+                  tone={
+                    machineState === 'unknown' || machineState === 'client_missing'
+                      ? 'muted'
+                      : machineState === 'no_views' || machineState === 'vault_mismatch'
+                        ? 'warning'
+                        : 'success'
+                  }
+                >
+                  {machineState === 'unknown' || machineState === 'client_missing' ? (
+                    'Vault view not checked'
+                  ) : machineState === 'no_views' ? (
+                    <strong>No vault view</strong>
+                  ) : machineState === 'vault_mismatch' ? (
+                    <>
+                      No view for <strong>{quoted(database ?? '')}</strong>
+                    </>
+                  ) : (
+                    <>
+                      Vault view <strong>{view?.vault}</strong> at <strong>{view?.root}</strong>
+                    </>
+                  )}
+                </MachineCheck>
+                <MachineCheck
+                  name="user"
+                  tone={
+                    machineState === 'ready'
+                      ? 'success'
+                      : machineState === 'logged_out'
+                        ? 'warning'
+                        : 'muted'
+                  }
+                >
+                  {machineState === 'ready' ? (
+                    user ? (
+                      <>
+                        Logged in as <strong>{user}</strong>
+                      </>
+                    ) : (
+                      'Logged in, user unknown'
+                    )
+                  ) : machineState === 'logged_out' ? (
+                    <>
+                      Vault view <strong>not logged in</strong>
+                    </>
+                  ) : (
+                    'Logged-in user not checked'
+                  )}
+                </MachineCheck>
+              </ul>
+            ) : suggestion ? (
+              <div id="solidworks-pdm-suggestion" className="sw-box">
+                <ul className="sw-checks">
+                  <li className="sw-check" data-tone="success">
+                    <CheckCircle size={14} aria-hidden="true" />
+                    <span>
+                      PDM client{' '}
+                      <strong>{pdm?.client_version ? pdm.client_version : 'installed'}</strong>
+                    </span>
+                  </li>
+                  <li className="sw-check" data-tone="success">
+                    <CheckCircle size={14} aria-hidden="true" />
+                    <span>
+                      Vault view <strong>{suggestion.view.vault}</strong>
+                    </span>
+                  </li>
+                </ul>
+                <button
+                  id="solidworks-pdm-suggestion-link"
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={disabled || setupBusy}
+                  onClick={() => selectTool(suggestion.tool.id)}
+                >
+                  Link {suggestion.tool.name}
+                </button>
+              </div>
+            ) : (
+              <p className="sw-muted">Link a PDM tool to check this machine.</p>
+            )}
+          </div>
+        </div>
       )}
       <div ref={setupRef} hidden={!formOpen}>
         <SolidWorksPdmSetupForm
@@ -758,58 +948,25 @@ export function SolidWorksPdmLinkPanel({
           onIndexError={handleIndexError}
         />
       </div>
-
-      {linkedTool && (
-        <>
-          <h4 className="sw-group-label">Vault index</h4>
-          <IndexFacts tool={linkedTool} status={indexStatus} />
-          {statusError && !indexError && (
-            <PdmMessage id="solidworks-pdm-index-error" tone="warning">
-              {`Ragtime could not load the index status: ${statusError}`}
-            </PdmMessage>
+      {!formOpen && linked && machineState !== 'ready' && machineText && (
+        <div
+          id="solidworks-pdm-machine-message"
+          className="sw-message"
+          data-tone={machineState === 'unknown' ? 'info' : 'warning'}
+          data-boxed={machineState !== 'unknown' ? 'true' : undefined}
+        >
+          {machineState === 'unknown' ? (
+            <Info className="sw-message-icon" size={14} aria-hidden="true" />
+          ) : (
+            <AlertTriangle className="sw-message-icon" size={14} aria-hidden="true" />
           )}
-          {state === 'indexing' && job && <IndexProgress name={name} job={job} />}
-          {INDEX_ACTION_STATES.includes(state) && (
-            <div className="sw-actions">
-              <button
-                id="solidworks-pdm-index-start"
-                type="button"
-                className="btn"
-                disabled={disabled || setupBusy || pending !== null}
-                onClick={() => void startIndex()}
-              >
-                {pending === 'index'
-                  ? 'Starting…'
-                  : state === 'index_failed'
-                    ? 'Try again'
-                    : 'Index now'}
-              </button>
-            </div>
-          )}
-          {state === 'linked_disabled' && (
-            <div className="sw-actions">
-              <button
-                id="solidworks-pdm-enable-tool"
-                type="button"
-                className="btn btn-sm"
-                disabled={disabled || setupBusy || pending !== null}
-                onClick={() => void enableTool()}
-              >
-                {`Enable ${quoted(name)}`}
-              </button>
-            </div>
-          )}
-          <h4 className="sw-group-label">On this machine</h4>
-          {pdm && machineState !== 'unknown' && <MachineFacts pdm={pdm} view={view} />}
-          {machineText && (
-            <PdmMessage
-              id="solidworks-pdm-machine-message"
-              tone={machineState === 'unknown' ? 'info' : 'warning'}
-            >
+          <span>
+            {machineShort[machineState]}{' '}
+            <InfoPopover id="solidworks-pdm-machine-help" label="About this check">
               {machineText}
-            </PdmMessage>
-          )}
-        </>
+            </InfoPopover>
+          </span>
+        </div>
       )}
 
       {linked && (
@@ -818,39 +975,59 @@ export function SolidWorksPdmLinkPanel({
           className="sw-pdm-controls"
           disabled={disabled || setupBusy}
         >
-          <legend>Changes</legend>
-          <label className="checkbox-label">
-            <input
-              id="solidworks-allow-changes"
-              type="checkbox"
-              checked={allowChanges}
-              aria-describedby={allowDescribedBy}
-              onChange={(event) => onAllowChangesChange(event.target.checked)}
-            />
-            Allow changes
-          </label>
-          <p id="solidworks-allow-changes-help" className="field-help">
-            {ALLOW_CHANGES_HELP}
-          </p>
-          <p id="solidworks-pdm-identity">{identityText(user)}</p>
+          <legend className="sw-visually-hidden">Vault changes</legend>
+          <div id="solidworks-allow-changes-row" className="sw-switch-row">
+            <label>
+              <input
+                id="solidworks-allow-changes"
+                type="checkbox"
+                role="switch"
+                className="sw-switch"
+                checked={allowChanges}
+                aria-describedby="solidworks-allow-changes-summary"
+                onChange={(event) => onAllowChangesChange(event.target.checked)}
+              />
+              Allow vault changes
+            </label>
+            <InfoPopover id="solidworks-allow-changes-help" label="About vault changes">
+              {ALLOW_CHANGES_HELP}
+            </InfoPopover>
+            <span id="solidworks-allow-changes-summary" className="sw-switch-summary">
+              {allowChanges
+                ? 'Add, check out and check in, approved folders only'
+                : 'Off: search, get latest and open only'}
+            </span>
+          </div>
           {allowChanges && (
-            <PdmMessage id="solidworks-allow-changes-warning" tone="warning" boxed>
-              {changesWarning(user)}
-            </PdmMessage>
+            <div id="solidworks-pdm-changes-detail" className="sw-subsection">
+              <div id="solidworks-pdm-identity">
+                {user ? (
+                  <>
+                    Changes appear in PDM as <strong>{user}</strong>
+                  </>
+                ) : (
+                  'Changes appear in PDM as the vault view user.'
+                )}{' '}
+                <InfoPopover id="solidworks-pdm-identity-help" label="About the PDM user">
+                  {user
+                    ? 'The PDM user logged in to the vault view on this machine. Ragtime adds the tool name and the Ragtime user to each check-in comment. Use a dedicated PDM user with only the permissions this tool needs.'
+                    : 'PDM records changes under the PDM user logged in to the vault view on this machine. Install the host and log in to the vault view to see which user that is.'}
+                </InfoPopover>
+              </div>
+              {noFolders && (
+                <PdmMessage id="solidworks-pdm-folders-warning" tone="warning">
+                  Changes are on, but no folders are approved. The AI cannot change anything in the
+                  vault.
+                </PdmMessage>
+              )}
+              <SolidWorksApprovedFolders
+                folders={value.approved_folders}
+                onChange={changeFolders}
+                vaultRoot={vaultRoot}
+                disabled={disabled || setupBusy}
+              />
+            </div>
           )}
-          {noFolders && (
-            <PdmMessage id="solidworks-pdm-folders-warning" tone="warning">
-              Changes are on, but no folders are approved, so the AI cannot change anything in the
-              vault. Add a folder below.
-            </PdmMessage>
-          )}
-          <SolidWorksApprovedFolders
-            folders={value.approved_folders}
-            onChange={changeFolders}
-            vaultRoot={vaultRoot}
-            disabled={disabled || setupBusy}
-          />
-          {/* Reserved: solidworks-allow-scripts, a later switch below the folders (ux-spec §8, Decision 9). Nothing renders yet. */}
         </fieldset>
       )}
     </section>

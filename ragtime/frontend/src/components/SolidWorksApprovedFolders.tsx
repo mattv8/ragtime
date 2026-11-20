@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { Info, XCircle, type LucideIcon } from 'lucide-react';
+import { Info, X, XCircle, type LucideIcon } from 'lucide-react';
 import {
   addApprovedFolder,
   removeApprovedFolder,
   vaultFolderKey,
 } from '../utils/solidworksPdmLink';
+import { InfoPopover } from './shared/InfoPopover';
 
 export interface SolidWorksApprovedFoldersProps {
   folders: string[];
@@ -18,7 +19,6 @@ const TONE_ICON: Record<Tone, LucideIcon> = { info: Info, error: XCircle };
 
 const EXAMPLE_FOLDER = '\\13_Ragtime';
 const INPUT_ID = 'solidworks-pdm-folder-input';
-const HELP_ID = 'solidworks-pdm-folder-input-help';
 const ERROR_ID = 'solidworks-pdm-folder-input-error';
 const REMOVE_BUTTON_SELECTOR = '[data-sw-action="remove-folder"]';
 
@@ -94,7 +94,7 @@ export function SolidWorksApprovedFolders({
   };
 
   const hasError = feedback !== null && !feedback.info;
-  const describedBy = [HELP_ID, feedback ? ERROR_ID : null].filter(Boolean).join(' ');
+  const describedBy = feedback ? ERROR_ID : undefined;
 
   return (
     <div
@@ -104,20 +104,51 @@ export function SolidWorksApprovedFolders({
       data-testid="solidworks-pdm-folders"
       className="form-group"
     >
-      <span id="solidworks-pdm-folders-label" className="sw-group-label">
-        Approved vault folders
-      </span>
-      <p id={HELP_ID} className="field-help">
-        Vault-relative paths, for example <code>{EXAMPLE_FOLDER}</code>. Includes subfolders.
-        Changes anywhere else in the vault are refused.
-      </p>
-      <label htmlFor={INPUT_ID}>Folder path</label>
-      <div className="sw-input-with-action">
+      <div className="sw-field-label">
+        <span id="solidworks-pdm-folders-label" className="sw-group-label">
+          Approved folders
+        </span>
+        <InfoPopover id="solidworks-pdm-folders-help" label="About approved folders">
+          Vault-relative paths, for example <code>{EXAMPLE_FOLDER}</code>. Includes subfolders.
+          Changes anywhere else in the vault are refused.
+        </InfoPopover>
+      </div>
+      <label htmlFor={INPUT_ID} className="sw-visually-hidden">
+        Folder path
+      </label>
+      <div id="solidworks-pdm-folder-box" className="sw-chip-input">
+        {folders.length > 0 && (
+          <ul
+            id="solidworks-pdm-folder-list"
+            ref={listRef}
+            className="sw-chip-list"
+            data-testid="solidworks-pdm-folder-list"
+          >
+            {folders.map((folder, index) => {
+              const key = vaultFolderKey(folder);
+              return (
+                <li key={key} className="sw-chip" data-sw-folder={key}>
+                  <code>{folder}</code>
+                  <button
+                    type="button"
+                    className="sw-chip-remove"
+                    data-sw-action="remove-folder"
+                    aria-label={`Remove folder ${folder}`}
+                    disabled={disabled}
+                    onClick={() => remove(index)}
+                  >
+                    <X size={12} aria-hidden="true" />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
         <input
           id={INPUT_ID}
           ref={inputRef}
           type="text"
-          placeholder={EXAMPLE_FOLDER}
+          placeholder="Add a vault folder and press Enter"
           value={draft}
           disabled={disabled}
           aria-invalid={hasError}
@@ -129,10 +160,11 @@ export function SolidWorksApprovedFolders({
           id="solidworks-pdm-folder-add"
           type="button"
           className="btn btn-secondary btn-sm"
+          aria-label="Add folder"
           disabled={disabled}
           onClick={add}
         >
-          Add folder
+          Add
         </button>
       </div>
       {feedback && (
@@ -140,40 +172,14 @@ export function SolidWorksApprovedFolders({
           {feedback.message}
         </Message>
       )}
-      <p id="solidworks-pdm-folders-status" role="status" aria-live="polite" className="field-help">
+      <p
+        id="solidworks-pdm-folders-status"
+        role="status"
+        aria-live="polite"
+        className="sw-visually-hidden"
+      >
         {status}
       </p>
-      {folders.length === 0 ? (
-        <p id="solidworks-pdm-folders-empty" className="field-help">
-          No folders approved. The AI cannot change anything in the vault.
-        </p>
-      ) : (
-        <ul
-          id="solidworks-pdm-folder-list"
-          ref={listRef}
-          className="sw-folder-list"
-          data-testid="solidworks-pdm-folder-list"
-        >
-          {folders.map((folder, index) => {
-            const key = vaultFolderKey(folder);
-            return (
-              <li key={key} className="sw-folder-row" data-sw-folder={key}>
-                <code>{folder}</code>
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  data-sw-action="remove-folder"
-                  aria-label={`Remove folder ${folder}`}
-                  disabled={disabled}
-                  onClick={() => remove(index)}
-                >
-                  Remove
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
     </div>
   );
 }

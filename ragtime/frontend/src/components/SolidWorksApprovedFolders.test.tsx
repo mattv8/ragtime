@@ -50,12 +50,14 @@ function typeFolder(value: string) {
 }
 
 describe('SolidWorksApprovedFolders', () => {
-  it('names the group and shows the empty text when no folders are approved', () => {
+  it('names the group and exposes folder help', () => {
     render(<Harness />);
-    expect(screen.getByRole('group', { name: 'Approved vault folders' })).toBeTruthy();
-    expect(
-      screen.getByText('No folders approved. The AI cannot change anything in the vault.'),
-    ).toBeTruthy();
+    expect(screen.getByRole('group', { name: 'Approved folders' })).toBeTruthy();
+    expect(input().getAttribute('aria-describedby')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'About approved folders' }));
+    expect(document.getElementById('solidworks-pdm-folders-help-content')?.textContent).toContain(
+      'Changes anywhere else in the vault are refused.',
+    );
     expect(document.getElementById('solidworks-pdm-folder-list')).toBeNull();
   });
 
@@ -161,9 +163,7 @@ describe('SolidWorksApprovedFolders', () => {
   it('moves focus to the input when the last folder is removed', () => {
     render(<Harness initial={['\\Alpha']} />);
     fireEvent.click(removeButton('\\Alpha'));
-    expect(
-      screen.getByText('No folders approved. The AI cannot change anything in the vault.'),
-    ).toBeTruthy();
+    expect(document.getElementById('solidworks-pdm-folder-list')).toBeNull();
     expect(document.activeElement).toBe(input());
   });
 

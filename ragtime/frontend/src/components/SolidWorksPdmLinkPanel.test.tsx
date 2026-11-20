@@ -137,7 +137,7 @@ describe('SolidWorksPdmLinkPanel link states', () => {
 
   it.each([
     ['none_linked', [pdmTool()], null, READY, 'Not linked', ''],
-    ['no_tools', [], null, READY, 'Not linked', 'No SolidWorks PDM tools exist yet.'],
+    ['no_tools', [], null, READY, 'Not linked', 'No PDM tools yet. Linking one is optional.'],
     [
       'linked_missing',
       [],
@@ -160,7 +160,7 @@ describe('SolidWorksPdmLinkPanel link states', () => {
       'pdm-a',
       EMPTY_INDEX,
       'Not indexed',
-      '“PDM Ragtime” has not been indexed yet',
+      '“PDM Ragtime” has not been indexed',
     ],
     ['linked_ready', [pdmTool()], 'pdm-a', READY, 'Linked', 'Linked to “PDM Ragtime”.'],
   ])(
@@ -188,9 +188,7 @@ describe('SolidWorksPdmLinkPanel link states', () => {
     renderPanel();
     await settled('load_failed');
     expect(section().querySelector('.sw-pill')?.textContent).toBe('Load failed');
-    expect(textOf('solidworks-pdm-link-state')).toBe(
-      'Ragtime could not load your PDM tools: offline',
-    );
+    expect(textOf('solidworks-pdm-link-state')).toBe('Could not load PDM tools: offline');
     expect(byId('solidworks-pdm-link-error')).toBeNull();
     expect(byId('solidworks-pdm-retry')?.textContent).toBe('Try again');
   });
@@ -204,9 +202,7 @@ describe('SolidWorksPdmLinkPanel link states', () => {
     renderPanel({ value: { pdm_tool_id: 'pdm-a', approved_folders: [] } });
     await settled('index_failed');
     expect(section().querySelector('.sw-pill')?.textContent).toBe('Index outdated');
-    expect(textOf('solidworks-pdm-link-state')).toContain(
-      'The last index of “PDM Ragtime” failed: boom.',
-    );
+    expect(textOf('solidworks-pdm-link-state')).toContain('The last index failed: boom.');
     expect(textOf('solidworks-pdm-link-state')).toContain('The AI uses the index from');
   });
 
@@ -236,26 +232,26 @@ describe('SolidWorksPdmLinkPanel link states', () => {
   });
 
   it.each([
-    ['unknown', null, 'Install the SolidWorks host and start it above'],
+    ['unknown', null, 'Start the SolidWorks host above to check this machine.'],
     [
       'client_missing',
       hostWithPdm({ client_installed: false, client_version: null, views: [] }),
-      'The PDM client is not installed on this machine.',
+      'Without the PDM client the AI cannot get, open or change vault files here.',
     ],
     [
       'no_views',
       hostWithPdm({ client_installed: true, client_version: '2024', views: [] }),
-      'The PDM client 2024 is installed but has no vault view.',
+      'No vault view on this machine, so the AI cannot open or change vault files.',
     ],
     [
       'vault_mismatch',
       hostWithPdm({ ...PDM_OK, views: [{ ...VIEW, vault: 'Other' }] }),
-      'This machine has vault views for Other, but the linked PDM tool reads “Ragtime”.',
+      'This machine has no vault view for “Ragtime”.',
     ],
     [
       'logged_out',
       hostWithPdm({ ...PDM_OK, views: [{ ...VIEW, logged_in: false }] }),
-      'The vault view “Ragtime” is not logged in.',
+      'The AI can search the vault but cannot open or change files here until the vault view is logged in.',
     ],
     ['ready', hostWithPdm(PDM_OK), ''],
   ])('shows the %s machine state', async (machine, hostStatus, sentence) => {
@@ -264,6 +260,17 @@ describe('SolidWorksPdmLinkPanel link states', () => {
     await settled('linked_ready');
     expect(section().dataset.swPdmMachineState).toBe(machine);
     expect(textOf('solidworks-pdm-machine-message')).toContain(sentence);
+    expect(byId('solidworks-pdm-machine-checks')?.querySelectorAll('[data-sw-check]').length).toBe(
+      3,
+    );
+    if (machine === 'logged_out') {
+      expect(section().querySelector('[data-sw-check="user"]')?.getAttribute('data-tone')).toBe(
+        'warning',
+      );
+      expect(section().querySelector('[data-sw-check="user"]')?.textContent).toContain(
+        'not logged in',
+      );
+    }
     if (machine === 'ready') expect(byId('solidworks-pdm-machine-message')).toBeNull();
   });
 });
@@ -313,9 +320,7 @@ describe('SolidWorksPdmLinkPanel picker and link rules', () => {
       hostStatus: hostWithPdm({ ...PDM_OK, views: [{ ...VIEW, vault: 'ragtime' }] }),
     });
     await waitFor(() => expect(byId('solidworks-pdm-suggestion')).not.toBeNull());
-    expect(textOf('solidworks-pdm-suggestion')).toContain(
-      'PDM Ragtime matches the vault view ragtime on this machine.',
-    );
+    expect(textOf('solidworks-pdm-suggestion')).toContain('Vault view ragtime');
     fireEvent.click(byId('solidworks-pdm-suggestion-link') as HTMLButtonElement);
     expect(props.onChange).toHaveBeenCalledWith({ pdm_tool_id: 'pdm-a', approved_folders: [] });
   });
@@ -323,8 +328,9 @@ describe('SolidWorksPdmLinkPanel picker and link rules', () => {
   it('shows the picker help with the who-can-search sentence', async () => {
     renderPanel();
     await settled('none_linked');
-    expect(textOf('solidworks-pdm-tool-help')).toContain(
-      'Everyone who can use this tool can search that vault through it.',
+    fireEvent.click(byId('solidworks-pdm-tool-help') as HTMLButtonElement);
+    expect(textOf('solidworks-pdm-tool-help-content')).toContain(
+      'Everyone who can use this tool can search that vault.',
     );
   });
 
@@ -437,7 +443,7 @@ describe('SolidWorksPdmLinkPanel picker and link rules', () => {
     const onResolutionChange = vi.fn();
     renderPanel({ value: { pdm_tool_id: 'pdm-a', approved_folders: [] }, onResolutionChange });
     await waitFor(() => expect(onResolutionChange).toHaveBeenLastCalledWith('ready'));
-    expect(textOf('solidworks-pdm-link-state')).toBe('Loading index status…');
+    expect(textOf('solidworks-pdm-link-state')).toBe('Loading index status.');
   });
 
   it('re-emits ready resolution when switching between resolved tools', async () => {
@@ -583,9 +589,7 @@ describe('SolidWorksPdmLinkPanel actions', () => {
     expect(client.listToolConfigs).toHaveBeenCalledTimes(2);
     await settled('load_failed');
     expect(byId('solidworks-pdm-link-error')?.getAttribute('role')).toBe('alert');
-    expect(textOf('solidworks-pdm-link-error')).toBe(
-      'Ragtime could not load your PDM tools: offline',
-    );
+    expect(textOf('solidworks-pdm-link-error')).toBe('Could not load PDM tools: offline');
   });
 });
 
@@ -612,46 +616,50 @@ describe('SolidWorksPdmLinkPanel Changes block', () => {
     expect(props.onAllowChangesChange).toHaveBeenCalledWith(true);
   });
 
-  it('shows the boxed warning with the PDM user when changes are on', async () => {
+  it('shows the summary and no boxed warning when changes are on', async () => {
     renderPanel({
       value: { pdm_tool_id: 'pdm-a', approved_folders: LINKED_FOLDERS },
       allowChanges: true,
       hostStatus: hostWithPdm(PDM_OK),
     });
     await settled('linked_ready');
-    const warning = byId('solidworks-allow-changes-warning') as HTMLElement;
-    expect(warning.dataset.boxed).toBe('true');
-    expect(warning.textContent).toContain(
-      'The AI can now add files, check out, undo check-out and check in inside the approved folders, as pdm.svc.',
+    expect(byId('solidworks-allow-changes-warning')).toBeNull();
+    expect(textOf('solidworks-allow-changes-summary')).toBe(
+      'Add, check out and check in, approved folders only',
     );
+    expect(byId('solidworks-pdm-index-facts')).toBeNull();
   });
 
   it('warns when changes are on but no folders are approved', async () => {
     renderPanel({ value: { pdm_tool_id: 'pdm-a', approved_folders: [] }, allowChanges: true });
     await settled('linked_ready');
     expect(textOf('solidworks-pdm-folders-warning')).toBe(
-      'Changes are on, but no folders are approved, so the AI cannot change anything in the vault. Add a folder below.',
+      'Changes are on, but no folders are approved. The AI cannot change anything in the vault.',
     );
   });
 
   it('shows the PDM user in the identity text when the vault view reports one', async () => {
     renderPanel({
       value: { pdm_tool_id: 'pdm-a', approved_folders: [] },
+      allowChanges: true,
       hostStatus: hostWithPdm(PDM_OK),
     });
     await settled('linked_ready');
-    expect(textOf('solidworks-pdm-identity')).toContain(
-      'Changes appear in PDM as pdm.svc, the PDM user',
-    );
-    expect(textOf('solidworks-pdm-identity')).toContain(
+    expect(textOf('solidworks-pdm-identity')).toContain('Changes appear in PDM as pdm.svc');
+    fireEvent.click(byId('solidworks-pdm-identity-help') as HTMLButtonElement);
+    expect(textOf('solidworks-pdm-identity-help-content')).toContain(
       'Ragtime adds the tool name and the Ragtime user',
     );
   });
 
   it('shows the fallback identity text when no PDM user is known', async () => {
-    renderPanel({ value: { pdm_tool_id: 'pdm-a', approved_folders: [] } });
+    renderPanel({ value: { pdm_tool_id: 'pdm-a', approved_folders: [] }, allowChanges: true });
     await settled('linked_ready');
     expect(textOf('solidworks-pdm-identity')).toContain(
+      'Changes appear in PDM as the vault view user.',
+    );
+    fireEvent.click(byId('solidworks-pdm-identity-help') as HTMLButtonElement);
+    expect(textOf('solidworks-pdm-identity-help-content')).toContain(
       'PDM records changes under the PDM user logged in to the vault view on this machine.',
     );
   });

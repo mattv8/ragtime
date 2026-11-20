@@ -2425,11 +2425,11 @@ describe('ToolWizard', () => {
     fireEvent.change(document.getElementById('solidworks-pdm-tool')!, {
       target: { value: 'pdm-vault' },
     });
+    fireEvent.click(pdmInput('solidworks-allow-changes'));
     fireEvent.change(pdmInput('solidworks-pdm-folder-input'), {
       target: { value: '\\13_Ragtime' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
-    fireEvent.click(pdmInput('solidworks-allow-changes'));
     const payload = expect.objectContaining({
       allow_write: true,
       connection_config: expect.objectContaining({
@@ -2550,6 +2550,9 @@ describe('ToolWizard', () => {
     fireEvent.change(document.getElementById('solidworks-pdm-tool')!, {
       target: { value: 'pdm-vault' },
     });
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+    await pass();
+    fireEvent.click(pdmInput('solidworks-allow-changes'));
     expect(screen.queryByTestId('mock-sw-result')).toBeNull();
     await pass();
     fireEvent.change(pdmInput('solidworks-pdm-folder-input'), { target: { value: '\\Approved' } });
