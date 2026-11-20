@@ -6,48 +6,93 @@ from mcp.server import Server
 from mcp.types import (
     CallToolRequest,
     CallToolRequestParams,
+    CallToolResult,
     ListResourcesRequest,
+    ListResourcesResult,
     ListToolsRequest,
+    ListToolsResult,
     ReadResourceRequest,
     ReadResourceRequestParams,
+    ReadResourceResult,
+    Resource,
+    TextContent,
+    TextResourceContents,
+    Tool,
 )
+from pydantic import AnyUrl
 
 import ragtime.mcp.server as mcp_server
 from ragtime.content_protection import service as protection_service
 from ragtime.content_protection.models import ClassifierConfig, ContentProtectionConfig, ContentProtectionError, Requirement
 from ragtime.mcp.skills import read_skill_description, route_instructions
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, MCPToolDefinition
-from ragtime.skills.contract import build_skill_uri
+from ragtime.skills.contract import SkillMode, SkillRecord, build_skill_uri
 
 
-def skill(mode="on_demand", content="Follow these instructions."):
-    return {"id": "s1", "name": "example", "description": "Helpful guidance", "content": content, "mode": mode, "sort_order": 0}
+def skill(mode: SkillMode = "on_demand", content: str = "Follow these instructions.", name: str = "example") -> SkillRecord:
+    return {"id": "s1", "name": name, "description": "Helpful guidance", "content": content, "mode": mode, "sort_order": 0}
+
+
+async def list_tools(server: Server) -> list[Tool]:
+    result = await server.request_handlers[ListToolsRequest](ListToolsRequest())
+    assert isinstance(result.root, ListToolsResult)
+    return result.root.tools
+
+
+async def call_read_skill(server: Server, uri: str) -> CallToolResult:
+    request = CallToolRequest(params=CallToolRequestParams(name="read_skill", arguments={"uri": uri}))
+    result = await server.request_handlers[CallToolRequest](request)
+    assert isinstance(result.root, CallToolResult)
+    return result.root
+
+
+def first_text(result: CallToolResult) -> str:
+    content = result.content[0]
+    assert isinstance(content, TextContent)
+    return content.text
+
+
+async def list_resources(server: Server) -> list[Resource]:
+    result = await server.request_handlers[ListResourcesRequest](ListResourcesRequest())
+    assert isinstance(result.root, ListResourcesResult)
+    return result.root.resources
+
+
+def read_resource_request(uri: str) -> ReadResourceRequest:
+    return ReadResourceRequest(params=ReadResourceRequestParams(uri=AnyUrl(uri)))
+
+
+async def read_resource_text(server: Server, uri: str) -> str:
+    result = await server.request_handlers[ReadResourceRequest](read_resource_request(uri))
+    assert isinstance(result.root, ReadResourceResult)
+    contents = result.root.contents[0]
+    assert isinstance(contents, TextResourceContents)
+    return contents.text
 
 
 class InstructionSkillsMcpTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.config = {"id": "tool-1", "name": "Example", "tool_type": "postgres", "skills": [skill()]}
         self.adapter = MCPToolAdapter()
-        definition = MCPToolDefinition(
+        self.definition = MCPToolDefinition(
             name="query_example",
             description=self.adapter._build_tool_description(self.config),
             input_schema={"type": "object"},
             tool_config=self.config,
             execute_fn=mock.AsyncMock(),
         )
-        self.adapter.get_available_tools = mock.AsyncMock(return_value=[definition])
+        self.adapter.get_available_tools = mock.AsyncMock(return_value=[self.definition])
         self.adapter.resolve_canonical_tool_id = mock.AsyncMock(return_value=None)
         self.adapter.is_tool_allowed_by_route_filter = mock.AsyncMock(return_value=False)
         self.server = Server("test")
         mcp_server._register_handlers(self.server, self.adapter, McpRouteFilter(tool_config_ids=["tool-1"]))
         self.uri = build_skill_uri("tool", "tool-1", "example")
 
-    async def list_tools(self):
-        return (await self.server.request_handlers[ListToolsRequest](ListToolsRequest())).root.tools
+    async def list_tools(self) -> list[Tool]:
+        return await list_tools(self.server)
 
-    async def call(self, uri):
-        request = CallToolRequest(params=CallToolRequestParams(name="read_skill", arguments={"uri": uri}))
-        return (await self.server.request_handlers[CallToolRequest](request)).root
+    async def call(self, uri: str) -> CallToolResult:
+        return await call_read_skill(self.server, uri)
 
     def test_description_inline_pointer_and_unchanged(self):
         config = dict(self.config, skills=[])
@@ -67,14 +112,11 @@ class InstructionSkillsMcpTests(unittest.IsolatedAsyncioTestCase):
             tools = await self.list_tools()
             self.assertIn("read_skill", [tool.name for tool in tools])
             result = await self.call(self.uri)
-            self.assertIn("Follow these instructions.", result.content[0].text)
+            self.assertIn("Follow these instructions.", first_text(result))
             denied = await self.call("skill://tools/other/example/SKILL.md")
             self.assertTrue(denied.isError)
-            listed = await self.server.request_handlers[ListResourcesRequest](ListResourcesRequest())
-            self.assertEqual(str(listed.root.resources[0].uri), self.uri)
-            request = ReadResourceRequest(params=ReadResourceRequestParams(uri=self.uri))
-            resource = await self.server.request_handlers[ReadResourceRequest](request)
-            self.assertIn("Follow these instructions.", resource.root.contents[0].text)
+            self.assertEqual(str((await list_resources(self.server))[0].uri), self.uri)
+            self.assertIn("Follow these instructions.", await read_resource_text(self.server, self.uri))
             self.assertTrue(any(call.kwargs.get("operation") == "resources/read" for call in guard.await_args_list))
 
     async def test_tool_scoped_policy_denies_skill_outputs(self):
@@ -102,10 +144,9 @@ class InstructionSkillsMcpTests(unittest.IsolatedAsyncioTestCase):
             await self.list_tools()
             result = await self.call(self.uri)
             self.assertTrue(result.isError)
-            self.assertIn("content_denied", result.content[0].text)
-            request = ReadResourceRequest(params=ReadResourceRequestParams(uri=self.uri))
+            self.assertIn("content_denied", first_text(result))
             with self.assertRaises(ContentProtectionError) as raised:
-                await self.server.request_handlers[ReadResourceRequest](request)
+                await self.server.request_handlers[ReadResourceRequest](read_resource_request(self.uri))
             self.assertEqual(raised.exception.code, "content_denied")
         self.assertEqual([entry["tool_id"] for entry in classified], ["tool-1", "tool-1"])
 
@@ -114,9 +155,9 @@ class InstructionSkillsMcpTests(unittest.IsolatedAsyncioTestCase):
         mcp_server._register_handlers(server, self.adapter, route_id="route-1", route_skills=[skill()])
         uri = build_skill_uri("route", "route-1", "example")
         with mock.patch.object(mcp_server, "authorize_external_content", new=mock.AsyncMock()) as guard:
-            await server.request_handlers[ListToolsRequest](ListToolsRequest())
-            await server.request_handlers[CallToolRequest](CallToolRequest(params=CallToolRequestParams(name="read_skill", arguments={"uri": uri})))
-            await server.request_handlers[ReadResourceRequest](ReadResourceRequest(params=ReadResourceRequestParams(uri=uri)))
+            await list_tools(server)
+            await call_read_skill(server, uri)
+            await read_resource_text(server, uri)
         outbound = [call.kwargs for call in guard.await_args_list if call.kwargs.get("direction") == "outbound"]
         self.assertEqual([call["tool_id"] for call in outbound], [None, None])
 
@@ -124,10 +165,10 @@ class InstructionSkillsMcpTests(unittest.IsolatedAsyncioTestCase):
         self.config["skills"] = []
         self.assertNotIn("read_skill", [tool.name for tool in await self.list_tools()])
         self.config["skills"] = [skill()]
-        self.adapter.get_available_tools.return_value[0].name = "read_skill"
+        self.definition.name = "read_skill"
         tools = await self.list_tools()
         self.assertEqual([tool.name for tool in tools].count("read_skill"), 1)
-        self.assertNotIn("Skills:", tools[0].description)
+        self.assertNotIn("Skills:", tools[0].description or "")
 
     async def test_development_only_has_no_skill_surfaces(self):
         principal = SimpleNamespace(general_tools_allowed=False)
@@ -137,13 +178,13 @@ class InstructionSkillsMcpTests(unittest.IsolatedAsyncioTestCase):
         ):
             with mock.patch.object(mcp_server, "_development_tools_for_principal", mock.AsyncMock(return_value=[])):
                 self.assertEqual(await self.list_tools(), [])
-            listed = await self.server.request_handlers[ListResourcesRequest](ListResourcesRequest())
-            self.assertEqual(listed.root.resources, [])
+            self.assertEqual(await list_resources(self.server), [])
             self.assertTrue((await self.call(self.uri)).isError)
 
     def test_route_instructions_and_description(self):
-        route = [skill("always", "Route rules."), dict(skill(), name="second")]
+        route = [skill("always", "Route rules."), skill(name="second")]
         instructions = route_instructions("route-1", route)
+        assert instructions is not None
         self.assertIn("Route rules.", instructions)
         self.assertIn("with the read_skill tool when it is listed, otherwise resources/read:", instructions)
         self.assertIn("- second: Helpful guidance (uri skill://routes/route-1/second/SKILL.md)", instructions)
@@ -190,8 +231,9 @@ class InstructionSkillsMcpTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(mcp_server, "get_app_settings", mock.AsyncMock(return_value={"server_name": "Test"})),
             ):
                 result = await mcp_server.get_custom_route_server("skills-test")
-                self.assertIsNotNone(result)
+                assert result is not None
                 instructions = result[0].instructions
+                assert instructions is not None
                 self.assertLess(instructions.index("First rules"), instructions.index("Second rules"))
                 self.assertNotIn("Hidden rules", instructions)
                 self.assertEqual(db.mcprouteconfig.find_unique.await_args.kwargs["include"], {"toolSelections": True, "instructionSkills": True})
