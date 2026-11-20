@@ -721,14 +721,16 @@ def _register_handlers(
             # tools, never the legacy global tool catalog.
             if _general_tools_allowed(principal):
                 tool_definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
+                timeout_limit = await tool_adapter.get_http_call_timeout_limit() if tool_adapter.http_call_limit_enabled else None
 
                 for tool_def in tool_definitions:
+                    input_schema = tool_adapter.limit_input_schema(tool_def.input_schema, timeout_limit)
                     if tool_def.is_synthetic:
                         tools.append(
                             Tool(
                                 name=tool_def.name,
                                 description=tool_def.description,
-                                inputSchema=tool_def.input_schema,
+                                inputSchema=input_schema,
                                 annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True),
                             )
                         )
@@ -737,7 +739,7 @@ def _register_handlers(
                             Tool(
                                 name=tool_def.name,
                                 description=tool_def.description,
-                                inputSchema=tool_def.input_schema,
+                                inputSchema=input_schema,
                                 annotations=(
                                     ToolAnnotations(
                                         readOnlyHint=not (
@@ -1028,10 +1030,12 @@ async def run_mcp_server(transport: str = "stdio") -> None:
     except Exception as e:
         logger.warning(f"RAG initialization failed (knowledge search unavailable): {e}")
 
+    previous_http_call_limit_enabled = mcp_tool_adapter.http_call_limit_enabled
     try:
         if transport == "stdio":
             from mcp.server.stdio import stdio_server
 
+            mcp_tool_adapter.http_call_limit_enabled = False
             default_server = await get_mcp_server()
 
             async with stdio_server() as (read_stream, write_stream):
@@ -1045,6 +1049,7 @@ async def run_mcp_server(transport: str = "stdio") -> None:
         else:
             raise ValueError(f"Unsupported transport: {transport}")
     finally:
+        mcp_tool_adapter.http_call_limit_enabled = previous_http_call_limit_enabled
         await disconnect_db()
         logger.info("MCP server stopped")
 
