@@ -359,6 +359,7 @@ from ragtime.indexer.models import (
     SchemaIndexJobResponse,
     SendMessageRequest,
     SharedConversationResponse,
+    SolidworksConnectionConfig,
     SwitchConversationBranchRequest,
     SwitchVisualizationBranchRequest,
     SwitchVisualizationBranchResponse,
@@ -410,6 +411,7 @@ from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
 from ragtime.remote_client.removal import execute_windows_cleanup, is_windows_pairing_tool, validate_cleanup_request
 from ragtime.remote_client.repository import remote_pairing_repository
+from ragtime.solidworks.service import solidworks_service
 from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
 from ragtime.tools.mysql import test_mysql_connection
@@ -483,6 +485,44 @@ def _format_validation_error(exc: Exception) -> str:
         message = str(error.get("msg", "Invalid value"))
         parts.append(f"{location}: {message}")
     return "; ".join(parts) or "Invalid configuration"
+
+
+def _parse_solidworks_connection_config(config: dict[str, Any]) -> dict[str, Any]:
+    config = {key: value for key, value in config.items() if key not in {"pdm_link", "pdm_link_name"}}
+    try:
+        parsed = SolidworksConnectionConfig.model_validate(config).model_dump()
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid SolidWorks configuration: {_format_validation_error(exc)}") from exc
+    return {**config, **parsed}
+
+
+async def _validate_solidworks_pdm_link(config: dict[str, Any]) -> None:
+    tool_id = config.get("pdm_tool_id")
+    if not tool_id:
+        if config.get("pdm_approved_folders"):
+            raise HTTPException(status_code=400, detail="Approved folders need a linked PDM tool.")
+        return
+    tool = await repository.get_tool_config(tool_id)
+    if tool is None or tool.tool_type != ToolType.SOLIDWORKS_PDM:
+        raise HTTPException(status_code=400, detail="The linked PDM tool does not exist.")
+
+
+def _with_pdm_link(config: ToolConfig, tools: list[ToolConfig]) -> ToolConfig:
+    if config.tool_type != ToolType.SOLIDWORKS:
+        return config
+    tool_id = (config.connection_config or {}).get("pdm_tool_id")
+    linked = next((tool for tool in tools if tool.id == tool_id and tool.tool_type == ToolType.SOLIDWORKS_PDM), None)
+    link = (
+        None
+        if not tool_id
+        else {
+            "tool_id": tool_id,
+            "tool_name": linked.name if linked else None,
+            "enabled": linked.enabled if linked else False,
+            "exists": linked is not None,
+        }
+    )
+    return config.model_copy(update={"pdm_link": link})
 
 
 async def _validate_vision_ocr_target(config: IndexConfig) -> None:
@@ -2586,7 +2626,8 @@ async def normalize_http_api_openapi(
 @router.get("/tools", response_model=List[ToolConfig], tags=["Tools"])
 async def list_tool_configs(enabled_only: bool = False, _user: User = Depends(require_admin)):
     """List all tool configurations. Admin only."""
-    return await repository.list_tool_configs(enabled_only=enabled_only)
+    tools = await repository.list_tool_configs()
+    return [_with_pdm_link(tool, tools) for tool in tools if not enabled_only or tool.enabled]
 
 
 # =========================================================================
@@ -2807,6 +2848,9 @@ async def create_tool_config(request: CreateToolConfigRequest, _user: User = Dep
         connection_config = _parse_http_api_connection_config(connection_config)
     elif request.tool_type == ToolType.SOLIDWORKS_PDM:
         connection_config = _validate_pdm_schedule(connection_config)
+    elif request.tool_type == ToolType.SOLIDWORKS:
+        connection_config = _parse_solidworks_connection_config(connection_config)
+        await _validate_solidworks_pdm_link(connection_config)
 
     # For filesystem indexers, ensure index_name is sanitized for safe filesystem/DB usage
     if request.tool_type == ToolType.FILESYSTEM_INDEXER:
@@ -2830,6 +2874,7 @@ async def create_tool_config(request: CreateToolConfigRequest, _user: User = Dep
     config = ToolConfig(
         name=request.name,
         tool_type=request.tool_type,
+        enabled=request.enabled,
         description=request.description,
         connection_config=connection_config,
         max_results=request.max_results,
@@ -2994,6 +3039,8 @@ async def get_tool_config(tool_id: str, _user: User = Depends(require_admin)):
     config = await repository.get_tool_config(tool_id)
     if config is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
+    if config.tool_type == ToolType.SOLIDWORKS:
+        return _with_pdm_link(config, await repository.list_tool_configs())
     return config
 
 
@@ -3035,6 +3082,15 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
                 updates["connection_config"].update(_oauth_credentials_payload(credentials))
     elif original_config.tool_type == ToolType.SOLIDWORKS_PDM and isinstance(updates.get("connection_config"), dict):
         updates["connection_config"] = _validate_pdm_schedule({**(original_config.connection_config or {}), **updates["connection_config"]})
+    elif original_config.tool_type == ToolType.SOLIDWORKS and isinstance(updates.get("connection_config"), dict):
+        incoming = dict(updates["connection_config"])
+        if incoming.get("pdm_tool_id") and incoming["pdm_tool_id"] != (original_config.connection_config or {}).get("pdm_tool_id"):
+            incoming.setdefault("pdm_approved_folders", [])
+        for field in ("password", "key_content", "key_passphrase"):
+            if incoming.get(field) in (None, "", "********"):
+                incoming.pop(field, None)
+        updates["connection_config"] = _parse_solidworks_connection_config({**(original_config.connection_config or {}), **incoming})
+        await _validate_solidworks_pdm_link(updates["connection_config"])
 
     # Check if name is being changed - if so, use rename_tool_config for consistency
     if "name" in updates and updates["name"] is not None:
@@ -3496,8 +3552,16 @@ async def import_tool_config(
     connection_config = _sanitize_tool_connection_int_fields(payload.get("connection_config") or {})
     if tool_type == ToolType.HTTP_API:
         connection_config = _parse_http_api_connection_config(connection_config)
+    elif tool_type == ToolType.SOLIDWORKS:
+        connection_config = _parse_solidworks_connection_config(connection_config)
 
     existing_tools = await repository.list_tool_configs()
+    if tool_type == ToolType.SOLIDWORKS:
+        linked_id = connection_config.get("pdm_tool_id")
+        if linked_id and not any(tool.id == linked_id and tool.tool_type == ToolType.SOLIDWORKS_PDM for tool in existing_tools):
+            connection_config.update(pdm_tool_id=None, pdm_approved_folders=[])
+        if connection_config.get("pdm_approved_folders") and not connection_config.get("pdm_tool_id"):
+            raise HTTPException(status_code=400, detail="Approved folders need a linked PDM tool.")
     existing_names = {tool.name for tool in existing_tools}
     imported_name = _deduplicate_tool_name(str(payload["name"]), existing_names)
 
@@ -3640,10 +3704,17 @@ async def test_tool_connection(request: ToolTestRequest, _user: User = Depends(r
         return await _test_filesystem_connection(config)
     elif tool_type == ToolType.SOLIDWORKS_PDM:
         return await _test_pdm_connection(config)
+    elif tool_type == ToolType.SOLIDWORKS:
+        return await _test_solidworks_connection({"connection_config": config, "timeout_max_seconds": 100})
     elif tool_type == ToolType.HTTP_API:
         return await _test_http_api_connection(config)
     else:
         return ToolTestResponse(success=False, message=f"Unknown tool type: {tool_type}")
+
+
+async def _test_solidworks_connection(config: dict) -> ToolTestResponse:
+    success, message, details = await solidworks_service.test_connection(config)
+    return ToolTestResponse(success=success, message=message, details=details)
 
 
 async def _test_http_api_connection(config: dict) -> ToolTestResponse:
@@ -4654,7 +4725,10 @@ async def test_saved_tool_connection(tool_id: str, _user: User = Depends(require
         raise HTTPException(status_code=404, detail="Tool configuration not found")
 
     # Test the connection
-    result = await test_tool_connection(ToolTestRequest(tool_type=config.tool_type, connection_config=config.connection_config))
+    if config.tool_type == ToolType.SOLIDWORKS:
+        result = await _test_solidworks_connection(config.model_dump())
+    else:
+        result = await test_tool_connection(ToolTestRequest(tool_type=config.tool_type, connection_config=config.connection_config))
 
     # Update shared health state and persisted last-test fields.
     health_result = await tool_health_monitor.record_tool_test_result(
@@ -4691,8 +4765,8 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
         return await _heartbeat_influxdb(config)
     elif tool_type_str == "odoo_shell":
         return await _heartbeat_odoo(config)
-    elif tool_type_str in {"ssh_shell", "windows_shell"}:
-        return await _heartbeat_ssh({**config, "shell": "powershell" if tool_type_str == "windows_shell" else "posix"})
+    elif tool_type_str in {"ssh_shell", "windows_shell", "solidworks"}:
+        return await _heartbeat_ssh({**config, "shell": "powershell" if tool_type_str != "ssh_shell" else "posix"})
     elif tool_type_str == "filesystem_indexer":
         return await _heartbeat_filesystem(config)
     elif tool_type_str == "solidworks_pdm":

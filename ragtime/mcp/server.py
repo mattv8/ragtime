@@ -738,6 +738,20 @@ def _register_handlers(
                                 name=tool_def.name,
                                 description=tool_def.description,
                                 inputSchema=tool_def.input_schema,
+                                annotations=(
+                                    ToolAnnotations(
+                                        readOnlyHint=not (
+                                            tool_def.tool_config.get("allow_write")
+                                            and (tool_def.tool_config.get("connection_config") or {}).get("pdm_approved_folders")
+                                        ),
+                                        destructiveHint=bool(
+                                            tool_def.tool_config.get("allow_write")
+                                            and (tool_def.tool_config.get("connection_config") or {}).get("pdm_approved_folders")
+                                        ),
+                                    )
+                                    if tool_def.tool_config.get("tool_type") == "solidworks"
+                                    else None
+                                ),
                             )
                         )
 

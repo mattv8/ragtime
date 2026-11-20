@@ -13,6 +13,7 @@ from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 from ragtime.core.ssh import SSHConfig, execute_ssh_command, ssh_config_from_dict
+from ragtime.remote_client.models import WINDOWS_PAIRING_TOOL_TYPES
 
 CleanupMode = Literal["disable_ssh", "pairing_only"]
 StepStatus = Literal["confirmed", "failed", "unconfirmed", "not_requested"]
@@ -58,7 +59,7 @@ def validate_cleanup_request(mode: str | None, confirm_machine_wide: bool | None
 
 def is_windows_pairing_tool(tool_type: Any, connection_config: dict[str, Any] | None) -> bool:
     type_value = str(getattr(tool_type, "value", tool_type))
-    return type_value == "windows_shell" and is_paired_tool(connection_config)
+    return type_value in WINDOWS_PAIRING_TOOL_TYPES and is_paired_tool(connection_config)
 
 
 def is_paired_tool(connection_config: dict[str, Any] | None) -> bool:

@@ -15,6 +15,7 @@ from ragtime.core.encryption import decrypt_secret
 from ragtime.core.ssh import SSHConfig, test_ssh_connection
 from ragtime.indexer.models import ToolType
 from ragtime.indexer.repository import repository as tool_repository
+from ragtime.remote_client.models import WINDOWS_PAIRING_TOOL_TYPES
 from ragtime.remote_client.repository import remote_pairing_repository
 
 MAX_PROBE_TARGETS = 8
@@ -109,7 +110,7 @@ class RemotePairingService:
         if candidate is None:
             return None
         tool = await tool_repository.get_tool_config(str(candidate["toolId"]))
-        if tool is None or (facts["os"] == "windows") != (tool.tool_type == ToolType.WINDOWS_SHELL):
+        if tool is None or (facts["os"] == "windows") != (tool.tool_type in WINDOWS_PAIRING_TOOL_TYPES):
             return None
         transport = "tunnel" if mode == "tunnel" else "direct"
         pairing = await remote_pairing_repository.redeem(token, nonce, facts, transport)
@@ -153,7 +154,7 @@ class RemotePairingService:
         if candidate is None:
             return None
         tool = await tool_repository.get_tool_config(str(candidate["toolId"]))
-        if tool is None or (facts["os"] == "windows") != (tool.tool_type == ToolType.WINDOWS_SHELL):
+        if tool is None or (facts["os"] == "windows") != (tool.tool_type in WINDOWS_PAIRING_TOOL_TYPES):
             return None
         pairing = await remote_pairing_repository.redeem_offline(pairing_id, nonce, facts)
         if pairing is None:

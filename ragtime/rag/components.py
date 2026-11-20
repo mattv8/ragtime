@@ -5026,6 +5026,7 @@ class RAGComponents:
             "mysql": self._create_mysql_tool,
             "influxdb": self._create_influxdb_tool,
             "http_api": self._create_http_api_tool,
+            "solidworks": self._create_solidworks_tool,
             "odoo_shell": self._create_odoo_tool,
             "ssh_shell": self._create_ssh_tool,
             "windows_shell": self._create_ssh_tool,
@@ -5189,6 +5190,14 @@ class RAGComponents:
         )
         logger.info(f"Created schema search tool: search_{tool_name}_schema")
         return schema_tool
+
+    async def _create_solidworks_tool(self, config: dict, tool_name: str, _tool_id: str):
+        from ragtime.solidworks.tool import create_solidworks_tool
+
+        linked_id = (config.get("connection_config") or {}).get("pdm_tool_id")
+        linked = await repository.get_tool_config(linked_id) if linked_id else None
+        link_name = linked.name if linked and linked.tool_type.value == "solidworks_pdm" and linked.enabled else None
+        return create_solidworks_tool({**config, "pdm_link_name": link_name}, tool_name)
 
     async def _create_http_api_tool(self, config: dict, tool_name: str, tool_id: str):
         """Create an HTTP API request tool from config."""
@@ -8948,6 +8957,10 @@ class RAGComponents:
             catalog = get_http_api_catalog_from_config(config)
             if catalog and catalog.operations:
                 names.add(build_http_api_catalog_search_tool_name(tool_name))
+        elif tool_type == "solidworks":
+            from ragtime.solidworks.tool import build_solidworks_tool_name
+
+            names.add(build_solidworks_tool_name(tool_name))
         elif tool_type == "odoo_shell":
             names.add(f"odoo_{tool_name}")
         elif tool_type in {"ssh_shell", "windows_shell"}:

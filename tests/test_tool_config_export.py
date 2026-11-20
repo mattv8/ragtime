@@ -8,6 +8,7 @@ from typing import cast
 from unittest import mock
 
 from cryptography.fernet import InvalidToken
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from ragtime.core import encryption
@@ -934,6 +935,87 @@ class ClearUndecryptableCredentialsRouteTests(unittest.IsolatedAsyncioTestCase):
                 await routes.clear_tool_undecryptable_credentials("missing")
 
         self.assertEqual(getattr(ctx.exception, "status_code", None), 404)
+
+
+SOLIDWORKS_CONNECTION = {
+    "host": "render-pc.example.com",
+    "port": 22,
+    "user": "ragtime",
+    "password": "hunter2",
+    "pairing_id": "pair-1",
+    "transport": "relay",
+    "host_keys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5"],
+    "solidworks_version": 2024,
+    "instance_mode": "attach",
+    "max_instances": 3,
+    "idle_shutdown_seconds": 1200,
+}
+
+
+class SolidworksExportImportTests(unittest.IsolatedAsyncioTestCase):
+    def solidworks_tool(self, connection_config: dict) -> ToolConfig:
+        return ToolConfig(
+            id="tool-sw",
+            name="Render SolidWorks",
+            tool_type=ToolType.SOLIDWORKS,
+            enabled=True,
+            description="Read-only SolidWorks host",
+            connection_config=connection_config,
+            timeout_max_seconds=100,
+            allow_write=False,
+        )
+
+    async def export_envelope(self, config: ToolConfig) -> tuple[str, dict]:
+        mock_repo = mock.AsyncMock()
+        mock_repo.get_tool_config = mock.AsyncMock(return_value=config)
+        mock_repo.get_settings = mock.AsyncMock(return_value=AppSettings())
+        with mock.patch("ragtime.indexer.routes.repository", mock_repo):
+            response = await routes.export_tool_config("tool-sw", routes.ToolExportRequest(password=EXPORT_PASSWORD))
+        body = bytes(response.body).decode("utf-8")
+        return body, json.loads(body)
+
+    async def import_envelope(self, envelope: dict) -> ToolConfig:
+        created: dict[str, ToolConfig] = {}
+
+        async def fake_create(config: ToolConfig) -> ToolConfig:
+            created["config"] = config
+            return ToolConfig(**{**config.model_dump(), "id": "imported-sw"})
+
+        mock_repo = mock.AsyncMock()
+        mock_repo.list_tool_configs = mock.AsyncMock(return_value=[])
+        mock_repo.create_tool_config = fake_create
+        with (
+            mock.patch("ragtime.indexer.routes.repository", mock_repo),
+            mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
+            mock.patch("ragtime.indexer.routes.notify_tools_changed"),
+            mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
+            mock.patch("ragtime.indexer.routes.ensure_tool_access_policy", mock.AsyncMock()),
+        ):
+            imported = await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
+        self.assertIsNotNone(created.get("config"))
+        return imported
+
+    async def test_solidworks_options_and_secret_survive_export_and_import(self) -> None:
+        body, envelope = await self.export_envelope(self.solidworks_tool(dict(SOLIDWORKS_CONNECTION)))
+
+        self.assertNotIn("hunter2", body)
+        self.assertNotIn("pair-1", body)
+
+        imported = await self.import_envelope(envelope)
+
+        self.assertEqual(imported.tool_type, ToolType.SOLIDWORKS)
+        self.assertFalse(imported.enabled)
+        self.assertEqual(imported.timeout_max_seconds, 100)
+        for field, value in SOLIDWORKS_CONNECTION.items():
+            with self.subTest(field=field):
+                self.assertEqual(imported.connection_config[field], value)
+
+    async def test_solidworks_envelope_with_out_of_range_option_is_rejected(self) -> None:
+        _, envelope = await self.export_envelope(self.solidworks_tool({**SOLIDWORKS_CONNECTION, "max_instances": 9}))
+
+        with self.assertRaises(HTTPException) as ctx:
+            await self.import_envelope(envelope)
+        self.assertEqual(ctx.exception.status_code, 400)
 
 
 if __name__ == "__main__":

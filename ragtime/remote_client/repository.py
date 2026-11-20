@@ -60,7 +60,11 @@ class RemotePairingRepository:
         if tool is None:
             tool = await tool_repository.create_tool_config(
                 ToolConfig(
-                    name="Remote client (pending)", tool_type=tool_type, enabled=False, description="Remote client enrollment draft", connection_config={}
+                    name="SolidWorks remote client (pending)" if tool_type == ToolType.SOLIDWORKS else "Remote client (pending)",
+                    tool_type=tool_type,
+                    enabled=False,
+                    description="Remote client enrollment draft",
+                    connection_config={"shell": "powershell"} if tool_type == ToolType.SOLIDWORKS else {},
                 )
             )
         if not tool.id:
