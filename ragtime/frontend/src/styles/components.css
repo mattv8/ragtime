@@ -6336,6 +6336,69 @@ textarea {
   outline-offset: 2px;
 }
 
+/* Info popover (i) trigger, see components/shared/InfoPopover.tsx */
+.info-popover-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  vertical-align: middle;
+  border: 1px solid var(--color-accent-light);
+  border-radius: var(--radius-full);
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.info-popover-trigger[data-size='md'] {
+  width: 28px;
+  height: 28px;
+}
+
+.info-popover-trigger:hover,
+.info-popover-trigger[aria-expanded='true'] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-text-inverse);
+}
+
+.info-popover-trigger:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* Larger touch target without changing layout: the pseudo-element overlays the 18px trigger */
+@media (pointer: coarse) {
+  .info-popover-trigger[data-size='sm'] {
+    position: relative;
+  }
+
+  .info-popover-trigger[data-size='sm']::after {
+    content: '';
+    position: absolute;
+    inset: -13px;
+  }
+}
+
+.info-popover-content {
+  max-width: 300px;
+}
+
+.info-popover-content p {
+  margin: 0;
+}
+
+.info-popover-content p + p {
+  margin-top: var(--space-xs);
+}
+
 /* Error Message Section */
 .error-message-section {
   margin-top: var(--space-lg);
