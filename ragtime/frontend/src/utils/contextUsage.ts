@@ -15,8 +15,12 @@ export function parseStoredModelIdentifier(storedModel: string): ParsedStoredMod
     : { modelId: parsed.modelId };
 }
 
+export function estimateTokensForLength(characterCount: number): number {
+  return Math.ceil(characterCount / CHARS_PER_TOKEN);
+}
+
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
+  return estimateTokensForLength(text.length);
 }
 
 export function estimateTokensFromObject(value: unknown): number {

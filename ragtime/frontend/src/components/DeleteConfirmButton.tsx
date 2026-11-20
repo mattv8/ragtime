@@ -1,4 +1,4 @@
-import { useState, useEffect, type CSSProperties } from 'react';
+import { useState, useEffect, type CSSProperties, type ReactNode } from 'react';
 
 interface DeleteConfirmButtonProps {
   onDelete: () => void;
@@ -7,6 +7,8 @@ interface DeleteConfirmButtonProps {
   style?: CSSProperties;
   title?: string;
   buttonText?: string;
+  icon?: ReactNode;
+  id?: string;
   deleting?: boolean;
 }
 
@@ -17,6 +19,8 @@ export function DeleteConfirmButton({
   style,
   title = 'Delete',
   buttonText = 'Delete',
+  icon,
+  id,
   deleting = false,
 }: DeleteConfirmButtonProps) {
   const [confirming, setConfirming] = useState(false);
@@ -53,6 +57,7 @@ export function DeleteConfirmButton({
   return (
     <button
       type="button"
+      id={id}
       className={className}
       data-delete-state={deleting ? 'deleting' : confirming ? 'confirming' : 'idle'}
       onClick={handleClick}
@@ -68,6 +73,7 @@ export function DeleteConfirmButton({
         setConfirming(false);
       }}
     >
+      {icon}
       {deleting
         ? 'Deleting...'
         : confirming
