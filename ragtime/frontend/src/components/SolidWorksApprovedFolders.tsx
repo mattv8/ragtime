@@ -1,0 +1,179 @@
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Info, XCircle, type LucideIcon } from 'lucide-react';
+import {
+  addApprovedFolder,
+  removeApprovedFolder,
+  vaultFolderKey,
+} from '../utils/solidworksPdmLink';
+
+export interface SolidWorksApprovedFoldersProps {
+  folders: string[];
+  onChange: (next: string[]) => void;
+  vaultRoot: string | null;
+  disabled?: boolean;
+}
+
+type Tone = 'info' | 'error';
+const TONE_ICON: Record<Tone, LucideIcon> = { info: Info, error: XCircle };
+
+const EXAMPLE_FOLDER = '\\13_Ragtime';
+const INPUT_ID = 'solidworks-pdm-folder-input';
+const HELP_ID = 'solidworks-pdm-folder-input-help';
+const ERROR_ID = 'solidworks-pdm-folder-input-error';
+const REMOVE_BUTTON_SELECTOR = '[data-sw-action="remove-folder"]';
+
+interface FolderFeedback {
+  message: string;
+  info: boolean;
+}
+
+function Message({ id, tone, children }: { id: string; tone: Tone; children: ReactNode }) {
+  const Icon = TONE_ICON[tone];
+  return (
+    <p id={id} className="sw-message" data-tone={tone}>
+      <Icon className="sw-message-icon" size={14} aria-hidden="true" />
+      <span>{children}</span>
+    </p>
+  );
+}
+
+function approvedCountLabel(count: number): string {
+  return `${count} ${count === 1 ? 'folder' : 'folders'} approved.`;
+}
+
+export function SolidWorksApprovedFolders({
+  folders,
+  onChange,
+  vaultRoot,
+  disabled,
+}: SolidWorksApprovedFoldersProps) {
+  const [draft, setDraft] = useState('');
+  const [feedback, setFeedback] = useState<FolderFeedback | null>(null);
+  const [status, setStatus] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const pendingRemoveIndex = useRef<number | null>(null);
+
+  // Runs once the parent has committed the shorter list, so the focus target exists in the DOM.
+  useEffect(() => {
+    const index = pendingRemoveIndex.current;
+    if (index === null) return;
+    pendingRemoveIndex.current = null;
+    const buttons = Array.from(
+      listRef.current?.querySelectorAll<HTMLButtonElement>(REMOVE_BUTTON_SELECTOR) ?? [],
+    );
+    const target = buttons[Math.min(index, buttons.length - 1)] ?? inputRef.current;
+    target?.focus();
+  }, [folders]);
+
+  const add = () => {
+    const result = addApprovedFolder(folders, draft, vaultRoot);
+    if (!result.ok) {
+      setFeedback({ message: result.error, info: result.info });
+      return;
+    }
+    setFeedback(null);
+    setDraft('');
+    onChange(result.folders);
+    const notice = result.notice ? `${result.notice} ` : '';
+    setStatus(`${notice}Added ${result.added}. ${approvedCountLabel(result.folders.length)}`);
+    inputRef.current?.focus();
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    add();
+  };
+
+  const remove = (index: number) => {
+    const folder = folders[index];
+    pendingRemoveIndex.current = index;
+    onChange(removeApprovedFolder(folders, folder));
+    setStatus(`Removed ${folder}.`);
+  };
+
+  const hasError = feedback !== null && !feedback.info;
+  const describedBy = [HELP_ID, feedback ? ERROR_ID : null].filter(Boolean).join(' ');
+
+  return (
+    <div
+      id="solidworks-pdm-folders"
+      role="group"
+      aria-labelledby="solidworks-pdm-folders-label"
+      data-testid="solidworks-pdm-folders"
+      className="form-group"
+    >
+      <span id="solidworks-pdm-folders-label" className="sw-group-label">
+        Approved vault folders
+      </span>
+      <p id={HELP_ID} className="field-help">
+        Vault-relative paths, for example <code>{EXAMPLE_FOLDER}</code>. Includes subfolders.
+        Changes anywhere else in the vault are refused.
+      </p>
+      <label htmlFor={INPUT_ID}>Folder path</label>
+      <div className="sw-input-with-action">
+        <input
+          id={INPUT_ID}
+          ref={inputRef}
+          type="text"
+          placeholder={EXAMPLE_FOLDER}
+          value={draft}
+          disabled={disabled}
+          aria-invalid={hasError}
+          aria-describedby={describedBy}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={handleKeyDown}
+        />
+        <button
+          id="solidworks-pdm-folder-add"
+          type="button"
+          className="btn btn-secondary btn-sm"
+          disabled={disabled}
+          onClick={add}
+        >
+          Add folder
+        </button>
+      </div>
+      {feedback && (
+        <Message id={ERROR_ID} tone={feedback.info ? 'info' : 'error'}>
+          {feedback.message}
+        </Message>
+      )}
+      <p id="solidworks-pdm-folders-status" role="status" aria-live="polite" className="field-help">
+        {status}
+      </p>
+      {folders.length === 0 ? (
+        <p id="solidworks-pdm-folders-empty" className="field-help">
+          No folders approved. The AI cannot change anything in the vault.
+        </p>
+      ) : (
+        <ul
+          id="solidworks-pdm-folder-list"
+          ref={listRef}
+          className="sw-folder-list"
+          data-testid="solidworks-pdm-folder-list"
+        >
+          {folders.map((folder, index) => {
+            const key = vaultFolderKey(folder);
+            return (
+              <li key={key} className="sw-folder-row" data-sw-folder={key}>
+                <code>{folder}</code>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  data-sw-action="remove-folder"
+                  aria-label={`Remove folder ${folder}`}
+                  disabled={disabled}
+                  onClick={() => remove(index)}
+                >
+                  Remove
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}

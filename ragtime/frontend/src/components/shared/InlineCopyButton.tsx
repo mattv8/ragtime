@@ -4,6 +4,7 @@ import { Check, Copy } from 'lucide-react';
 type CopySource = string | (() => string | null | undefined | Promise<string | null | undefined>);
 
 interface InlineCopyButtonProps {
+  id?: string;
   copyText: CopySource;
   className: string;
   title: string;
@@ -51,6 +52,7 @@ async function writeTextToClipboard(value: string, allowDomFallback: boolean): P
 }
 
 export function InlineCopyButton({
+  id,
   copyText,
   className,
   title,
@@ -105,6 +107,7 @@ export function InlineCopyButton({
 
   return (
     <button
+      id={id}
       type="button"
       className={`${className} ${copied ? 'is-copied' : ''}`.trim()}
       onClick={() => {

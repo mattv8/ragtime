@@ -2259,7 +2259,7 @@ export const api = {
   },
 
   async createRemotePairing(
-    toolType: 'ssh_shell' | 'windows_shell',
+    toolType: 'ssh_shell' | 'windows_shell' | 'solidworks',
     toolId?: string,
   ): Promise<RemotePairingCreatedResponse> {
     const response = await apiFetch(`${API_BASE}/remote/pairings`, {

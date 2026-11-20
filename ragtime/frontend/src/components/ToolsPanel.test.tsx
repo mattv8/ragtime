@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { HTMLAttributes, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +14,7 @@ const apiMock = vi.hoisted(() => ({
   getToolHeartbeats: vi.fn(),
   subscribeToolHealthEvents: vi.fn(),
   updateToolConfig: vi.fn(),
+  toggleToolConfig: vi.fn(),
   deleteToolConfig: vi.fn(),
   createToolConfig: vi.fn(),
   reorderTools: vi.fn(),
@@ -28,6 +29,7 @@ const apiMock = vi.hoisted(() => ({
 
 const toastMock = {
   success: vi.fn(),
+  info: vi.fn(),
   error: vi.fn(),
   dismiss: vi.fn(),
 };
@@ -136,6 +138,7 @@ vi.mock('./Popover', () => ({
       data-require-hover-idle-ms={requireHoverIdleMs ?? undefined}
       data-focus-trigger={focusTrigger === undefined ? undefined : String(focusTrigger)}
       data-position={position}
+      data-popover-content={typeof _content === 'string' ? _content : undefined}
       data-ignore-selector={ignoreSelector}
     >
       {children}
@@ -290,6 +293,20 @@ const pairedWindowsTool: ToolConfig = {
   },
 };
 
+const linkedSolidworksTool: ToolConfig = {
+  ...ungroupedTool,
+  id: 'tool-solidworks',
+  name: 'CAD workstation',
+  tool_type: 'solidworks',
+  connection_config: {
+    host: 'cad.example.org',
+    user: 'cad',
+    port: 22,
+    pdm_tool_id: pdmTool.id,
+    pdm_approved_folders: ['\\Designs', '\\Parts'],
+  },
+};
+
 const toolGroup: ToolGroup = {
   id: 'group-1',
   name: 'Alpha Group',
@@ -362,6 +379,250 @@ describe('ToolsPanel', () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+  });
+
+  it.each([
+    ['healthy', true, true, 'PDM: PDM Tool', 'Linked to SolidWorks PDM tool PDM Tool, vault PDM'],
+    ['missing', false, false, 'PDM unavailable', 'The linked PDM tool no longer exists.'],
+    [
+      'disabled',
+      true,
+      false,
+      'PDM unavailable',
+      '“PDM Tool” is disabled, so the AI cannot search it. Enable it or choose another tool.',
+    ],
+  ])('shows the %s PDM link badge', async (_state, exists, enabled, label, description) => {
+    apiMock.listToolConfigs.mockResolvedValue([
+      {
+        ...linkedSolidworksTool,
+        pdm_link: { tool_id: pdmTool.id, tool_name: pdmTool.name, exists, enabled },
+      },
+      pdmTool,
+    ]);
+    render(<ToolsPanel />);
+    await screen.findByRole('heading', { name: 'CAD workstation' });
+    const badge = document.querySelector('[data-solidworks-pdm-badge]')!;
+    expect(badge.textContent).toBe(label);
+    expect(badge.parentElement?.getAttribute('data-popover-content')).toBe(description);
+    expect(badge.classList.contains('badge-warning')).toBe(!exists || !enabled);
+  });
+
+  it.each([
+    ['healthy', [pdmTool], 'PDM: PDM Tool'],
+    ['missing', [], 'PDM unavailable'],
+    ['disabled', [{ ...pdmTool, enabled: false }], 'PDM unavailable'],
+  ])('derives a %s link from loaded tools without API metadata', async (_state, targets, label) => {
+    apiMock.listToolConfigs.mockResolvedValue([linkedSolidworksTool, ...targets]);
+    render(<ToolsPanel />);
+    await screen.findByRole('heading', { name: 'CAD workstation' });
+    expect(document.querySelector('[data-solidworks-pdm-badge]')?.textContent).toBe(label);
+  });
+
+  it.each([
+    [
+      true,
+      ['\\Designs', '\\Parts'],
+      'Can add files, check out and check in in 2 approved vault folders',
+    ],
+    [true, [], 'No approved folders: changes are refused'],
+    [false, ['\\Designs'], null],
+  ])(
+    'shows write badge for allow_write=%s and folders=%j',
+    async (allowWrite, folders, content) => {
+      apiMock.listToolConfigs.mockResolvedValue([
+        {
+          ...linkedSolidworksTool,
+          allow_write: allowWrite,
+          connection_config: {
+            ...linkedSolidworksTool.connection_config,
+            pdm_approved_folders: folders,
+          },
+        },
+        pdmTool,
+      ]);
+      render(<ToolsPanel />);
+      await screen.findByRole('heading', { name: 'CAD workstation' });
+      const badge = document.querySelector('[data-solidworks-write-badge]');
+      if (content === null) expect(badge).toBeNull();
+      else {
+        expect(badge?.textContent).toBe('Write');
+        expect(badge?.parentElement?.getAttribute('data-popover-content')).toBe(content);
+      }
+    },
+  );
+
+  it.each([true, false])('offers the changes kill switch only when on=%s', async (allowWrite) => {
+    apiMock.listToolConfigs.mockResolvedValue([
+      { ...linkedSolidworksTool, allow_write: allowWrite },
+      pdmTool,
+    ]);
+    apiMock.updateToolConfig.mockResolvedValue({ ...linkedSolidworksTool, allow_write: false });
+    render(<ToolsPanel />);
+    fireEvent.contextMenu(await screen.findByRole('heading', { name: 'CAD workstation' }));
+    const toggle = screen.queryByRole('button', { name: 'Allow changes' });
+    if (!allowWrite) {
+      expect(toggle).toBeNull();
+      return;
+    }
+    expect(toggle?.getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(toggle!);
+    await waitFor(() =>
+      expect(apiMock.updateToolConfig).toHaveBeenCalledWith(linkedSolidworksTool.id, {
+        allow_write: false,
+      }),
+    );
+    expect(screen.queryByRole('heading', { name: 'Enable Write Access' })).toBeNull();
+  });
+
+  it.each([true, false])('shows Used by only for a linked PDM tool: %s', async (linked) => {
+    apiMock.listToolConfigs.mockResolvedValue(linked ? [linkedSolidworksTool, pdmTool] : [pdmTool]);
+    render(<ToolsPanel />);
+    await screen.findByText('PDM Tool');
+    const row = screen.queryByTestId(`pdm-linked-from-${pdmTool.id}`);
+    if (linked) expect(row?.textContent).toBe('Used by:CAD workstation');
+    else expect(row).toBeNull();
+  });
+
+  it.each([true, false])(
+    'confirms linked PDM card deletion with changes on=%s',
+    async (allowWrite) => {
+      apiMock.getSettings.mockResolvedValue({ settings: { show_tool_card_footer_actions: true } });
+      apiMock.listToolConfigs.mockResolvedValue([
+        { ...linkedSolidworksTool, allow_write: allowWrite },
+        pdmTool,
+      ]);
+      render(<ToolsPanel />);
+      await screen.findByText('PDM Tool');
+      const card = document.getElementById(`tools-tool-${pdmTool.id}`)!;
+      const deleteButton = card.querySelector('[title="Delete tool"]')!;
+      expect(deleteButton.hasAttribute('data-delete-confirm-button')).toBe(false);
+      fireEvent.click(deleteButton);
+      expect(apiMock.deleteToolConfig).not.toHaveBeenCalled();
+      expect(screen.getByRole('heading', { name: 'Delete Tool' })).toBeTruthy();
+      const note = screen.getByRole('note');
+      expect(note.id).toBe('tool-delete-linked-note');
+      expect(note.textContent).toContain(
+        '“PDM Tool” is linked to the SolidWorks tool “CAD workstation”. If you delete it, that tool can no longer search the vault or open, add, check out or check in vault files until you link another PDM tool. The SolidWorks tool keeps its other settings and shows a warning.',
+      );
+      expect(note.textContent?.includes('Changes are currently on in 2 approved folders.')).toBe(
+        allowWrite,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Delete Tool' }));
+      await waitFor(() => expect(apiMock.deleteToolConfig).toHaveBeenCalledWith(pdmTool.id));
+      expect(apiMock.updateToolConfig).not.toHaveBeenCalled();
+      expect(document.querySelector('[data-solidworks-pdm-badge]')?.textContent).toBe(
+        'PDM unavailable',
+      );
+    },
+  );
+
+  it('shows every linked SolidWorks tool in the PDM row and context-menu delete note', async () => {
+    apiMock.listToolConfigs.mockResolvedValue([
+      linkedSolidworksTool,
+      { ...linkedSolidworksTool, id: 'cad-second', name: 'Second workstation', allow_write: true },
+      pdmTool,
+    ]);
+    render(<ToolsPanel />);
+    fireEvent.contextMenu(await screen.findByRole('heading', { name: 'PDM Tool' }));
+    expect(screen.getByTestId(`pdm-linked-from-${pdmTool.id}`).textContent).toBe(
+      'Used by:CAD workstation, Second workstation',
+    );
+    fireEvent.click(
+      within(document.querySelector('.userspace-tool-context-menu') as HTMLElement).getByRole(
+        'button',
+        { name: 'Delete' },
+      ),
+    );
+    const note = screen.getByRole('note');
+    expect(note.textContent).toContain('SolidWorks tool “CAD workstation”');
+    expect(note.textContent).toContain('SolidWorks tool “Second workstation”');
+    expect(note.textContent).toContain('Changes are currently on in 2 approved folders.');
+    expect(apiMock.deleteToolConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps the unlinked PDM card deletion path unchanged', async () => {
+    apiMock.getSettings.mockResolvedValue({ settings: { show_tool_card_footer_actions: true } });
+    apiMock.listToolConfigs.mockResolvedValue([pdmTool]);
+    render(<ToolsPanel />);
+    await screen.findByText('PDM Tool');
+    const deleteButton = document.querySelector('[title="Delete tool"]')!;
+    expect(deleteButton.hasAttribute('data-delete-confirm-button')).toBe(true);
+    fireEvent.click(deleteButton);
+    await waitFor(() => expect(apiMock.deleteToolConfig).toHaveBeenCalledWith(pdmTool.id));
+    expect(screen.queryByRole('heading', { name: 'Delete Tool' })).toBeNull();
+  });
+
+  it('shows linked-tool consequences after disabling PDM succeeds', async () => {
+    apiMock.listToolConfigs.mockResolvedValue([
+      {
+        ...linkedSolidworksTool,
+        pdm_link: { tool_id: pdmTool.id, tool_name: pdmTool.name, enabled: true, exists: true },
+      },
+      pdmTool,
+    ]);
+    apiMock.toggleToolConfig.mockResolvedValue({ enabled: false });
+    render(<ToolsPanel />);
+    fireEvent.contextMenu(await screen.findByText('PDM Tool'));
+    fireEvent.click(screen.getByRole('button', { name: 'Enabled' }));
+    await waitFor(() =>
+      expect(toastMock.info).toHaveBeenCalledWith(
+        '“PDM Tool” is disabled. The SolidWorks tool “CAD workstation” cannot search the vault until you enable it again.',
+      ),
+    );
+    expect(apiMock.toggleToolConfig).toHaveBeenCalledWith(pdmTool.id, false);
+    expect(document.querySelector('[data-solidworks-pdm-badge]')?.textContent).toBe(
+      'PDM unavailable',
+    );
+  });
+
+  it('shows SolidWorks connection and relevant badges without write or working directory', async () => {
+    apiMock.listToolConfigs.mockResolvedValue([
+      {
+        ...pairedWindowsTool,
+        id: 'solidworks-pinned',
+        name: 'SolidWorks pinned',
+        tool_type: 'solidworks',
+        allow_write: true,
+        connection_config: {
+          host: 'cad.example.org',
+          user: 'cad',
+          port: 2222,
+          solidworks_version: 2024,
+          instance_mode: 'attach',
+          working_directory: 'C:\\work',
+        },
+      },
+      {
+        ...pairedWindowsTool,
+        id: 'solidworks-default',
+        name: 'SolidWorks default',
+        tool_type: 'solidworks',
+        connection_config: { host: 'other.example.org', user: 'cad', port: 22 },
+      },
+    ]);
+    render(<ToolsPanel />);
+    await screen.findByText('SolidWorks pinned');
+    const cards = document.querySelectorAll('[data-tool-type="solidworks"]');
+    expect(cards).toHaveLength(2);
+    const pinned = Array.from(cards).find((card) =>
+      card.textContent?.includes('SolidWorks pinned'),
+    )!;
+    const defaults = Array.from(cards).find((card) =>
+      card.textContent?.includes('SolidWorks default'),
+    )!;
+    expect(pinned.querySelector('[data-tool-summary]')?.textContent).toBe(
+      'cad@cad.example.org:2222',
+    );
+    expect(pinned.querySelector('[data-solidworks-version-badge]')?.textContent).toBe(
+      'SolidWorks 2024',
+    );
+    expect(pinned.querySelector('[data-solidworks-mode-badge]')?.textContent).toBe('Attach');
+    expect(pinned.textContent).not.toContain('Write');
+    expect(pinned.textContent).not.toContain('C:\\work');
+    expect(defaults.querySelector('[data-solidworks-version-badge]')).toBeNull();
+    expect(defaults.querySelector('[data-solidworks-mode-badge]')).toBeNull();
+    fireEvent.contextMenu(pinned);
+    expect(screen.queryByRole('button', { name: 'Write Access' })).toBeNull();
   });
 
   it('keeps the selected group open when the write confirmation modal is dismissed', async () => {
