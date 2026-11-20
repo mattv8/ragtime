@@ -284,6 +284,8 @@ from ragtime.rag.tool_skills import (
     resolve_tool_skill_bindings,
 )
 from ragtime.rag.userspace_window_validator import find_cross_origin_window_access
+from ragtime.skills.chat_tool import build_read_skill_tool
+from ragtime.skills.contract import READ_SKILL_TOOL_NAME
 from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import (
     CHAT_CHART_DESCRIPTION_SUFFIX,
@@ -416,6 +418,7 @@ STREAM_DISPLAY_COMPACT_USERSPACE_WRITE_TOOL_NAMES = frozenset(
         "delete_userspace_file",
     }
 )
+INSTRUCTION_SKILL_UNTRUNCATED_TOOL_NAMES = frozenset({READ_SKILL_TOOL_NAME})
 STREAM_DISPLAY_UNTRUNCATED_TOOL_NAMES = frozenset(
     {
         *VISUALIZATION_TOOL_NAMES,
@@ -423,6 +426,7 @@ STREAM_DISPLAY_UNTRUNCATED_TOOL_NAMES = frozenset(
         "list_userspace_files",
         *FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES,
         *STREAM_DISPLAY_COMPACT_USERSPACE_WRITE_TOOL_NAMES,
+        *INSTRUCTION_SKILL_UNTRUNCATED_TOOL_NAMES,
     }
 )
 
@@ -15916,6 +15920,22 @@ class RAGComponents:
             binding_state_override=tool_skill_binding_state_override,
         )
         runtime_tools = list(tool_skill_resolution["runtime_tools"])
+        instruction_skill_runnable_ids = self._map_runtime_tools_to_runnable_tool_config_ids(runtime_tools)
+        instruction_skill_hidden_ids = set(tool_skill_resolution["tool_skill_hidden_ids"])
+        instruction_skill_allowed_ids = set(allowed_tool_config_ids) if allowed_tool_config_ids is not None else None
+        instruction_skill_configs = [
+            config
+            for config in self._tool_configs or []
+            if config.get("id") in instruction_skill_runnable_ids
+            and config.get("id") not in instruction_skill_hidden_ids
+            and (instruction_skill_allowed_ids is None or config.get("id") in instruction_skill_allowed_ids)
+        ]
+        instruction_skill_loader = build_read_skill_tool(instruction_skill_configs)
+        if instruction_skill_loader is not None and READ_SKILL_TOOL_NAME not in (blocked_tool_names or set()):
+            if any(getattr(tool, "name", "") == READ_SKILL_TOOL_NAME for tool in runtime_tools):
+                logger.warning("Omitting instruction skill loader because a runtime tool already uses read_skill")
+            else:
+                runtime_tools.append(instruction_skill_loader)
         self._seed_tool_skill_request_state(
             request_tool_state=request_tool_state,
             binding_state=tool_skill_resolution["tool_skill_binding_state"],
@@ -16055,11 +16075,17 @@ class RAGComponents:
         hidden_id_set = set(hidden_tool_config_ids or [])
         if runtime_tools is not None:
             runnable_ids = self._map_runtime_tools_to_runnable_tool_config_ids(runtime_tools)
-            filtered_tool_configs = [config for config in candidate_tool_configs if (config.get("id") or "") in runnable_ids]
+            filtered_tool_configs = [
+                config for config in candidate_tool_configs if (config.get("id") or "") in runnable_ids and (config.get("id") or "") not in hidden_id_set
+            ]
             unavailable_tool_configs = [
                 config for config in candidate_tool_configs if (config.get("id") or "") not in runnable_ids and (config.get("id") or "") not in hidden_id_set
             ]
 
+        instruction_skill_loader_available = any(
+            getattr(tool, "name", "") == READ_SKILL_TOOL_NAME and (getattr(tool, "metadata", None) or {}).get("instruction_skill_loader") is True
+            for tool in runtime_tools or []
+        )
         cache_key = (
             "request_system_prompt",
             bool(is_ui),
@@ -16070,6 +16096,7 @@ class RAGComponents:
             tool_skill_mode,
             tuple(sorted(loaded_tool_skill_ids or [])),
             bool(tool_skill_has_loadable),
+            instruction_skill_loader_available,
             bool(self._app_settings and self._app_settings.get("tool_output_mode", "default") == "auto"),
             bool(tool_configs and allowed_tool_config_ids is not None and len(allowed_tool_config_ids) == 0),
         )
@@ -16084,6 +16111,7 @@ class RAGComponents:
             no_tools_selected=(bool(tool_configs) and allowed_tool_config_ids is not None and len(allowed_tool_config_ids) == 0),
             tool_skill_mode=tool_skill_mode,
             has_loadable_tool_skills=bool(tool_skill_has_loadable),
+            instruction_skill_loader_available=instruction_skill_loader_available,
         )
 
         base_prompt = BASE_USERSPACE_SYSTEM_PROMPT if mode == "userspace" else BASE_CHAT_SYSTEM_PROMPT
