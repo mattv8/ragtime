@@ -272,7 +272,7 @@ class SettingsCache:
             return self._enabled_tool_configs
 
         db = await get_db()
-        prisma_configs = await db.toolconfig.find_many(where={"enabled": True}, order={"createdAt": "desc"})
+        prisma_configs = await db.toolconfig.find_many(where={"enabled": True}, order={"createdAt": "desc"}, include={"instructionSkills": True})
 
         self._enabled_tool_configs = [
             {
@@ -284,6 +284,20 @@ class SettingsCache:
                 "max_results": cfg.maxResults,
                 "timeout_max_seconds": getattr(cfg, "timeoutMaxSeconds", 300),
                 "allow_write": cfg.allowWrite,
+                "skills": [
+                    {
+                        "id": item.id,
+                        "name": item.name,
+                        "description": item.description,
+                        "content": item.content,
+                        "mode": item.mode,
+                        "sort_order": item.sortOrder,
+                    }
+                    for item in sorted(
+                        (item for item in (getattr(cfg, "instructionSkills", None) or []) if item.enabled),
+                        key=lambda item: (item.sortOrder, item.name),
+                    )
+                ],
             }
             for cfg in prisma_configs
         ]
