@@ -455,6 +455,17 @@ def _wrap_powershell_command(timeout_seconds: int | float) -> str:
     """
     timeout_value = max(0.0, float(timeout_seconds))
     timeout_literal = str(int(timeout_value)) if timeout_value.is_integer() else str(timeout_value)
+    # Windows PowerShell's async ConsoleStream reader can stall on OpenSSH pipes
+    # once stdin exceeds the pipe buffer. Keep the synchronous reader in its own
+    # runspace so the supervisor can still enforce the deadline.
+    # Read the child's payload without buffering past its newline: native commands
+    # must receive the remaining stdin, and payloads must not hit CreateProcess's
+    # command-line length limit.
+    child_bootstrap = (
+        "$s = [Console]::OpenStandardInput(); $b = [Text.StringBuilder]::new(); "
+        "while (($c = $s.ReadByte()) -ge 0 -and $c -ne 10) { [void]$b.Append([char]$c) }; "
+        "& ([scriptblock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($b.ToString()))))"
+    )
     script = f"""$ErrorActionPreference = 'Stop'
 $utf8NoBom = [Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = $utf8NoBom
@@ -462,41 +473,41 @@ $utf8NoBom = [Text.UTF8Encoding]::new($false)
 $OutputEncoding = $utf8NoBom
 $deadlineSeconds = {timeout_literal}
 $deadline = if ($deadlineSeconds -gt 0) {{ [DateTime]::UtcNow.AddSeconds($deadlineSeconds) }} else {{ $null }}
-$stdinReader = [IO.StreamReader]::new([Console]::OpenStandardInput(), $utf8NoBom)
-$stdinTask = $stdinReader.ReadToEndAsync()
-while (-not $stdinTask.IsCompleted) {{
+$reader = [PowerShell]::Create().AddScript('[Console]::In.ReadToEnd()')
+$read = $reader.BeginInvoke()
+while (-not $read.IsCompleted) {{
     if ($deadline -and [DateTime]::UtcNow -ge $deadline) {{ [Console]::Error.WriteLine('{POWERSHELL_TIMEOUT_SENTINEL}'); [Environment]::Exit(1) }}
     [Threading.Thread]::Sleep(25)
 }}
-$stdinText = $stdinTask.GetAwaiter().GetResult()
-$newline = $stdinText.IndexOf([char]10)
-if ($newline -lt 0) {{ $payload = $stdinText; $stdinPayload = '' }} else {{ $payload = $stdinText.Substring(0, $newline); $stdinPayload = $stdinText.Substring($newline + 1) }}
-$payload = $payload.TrimEnd([char]13)
+$text = [string]$reader.EndInvoke($read)[0]
+$reader.Dispose()
+$parts = $text -split "`n", 2
+$payload = $parts[0].TrimEnd([char]13)
+$stdinPayload = if ($parts.Length -gt 1) {{ $parts[1] }} else {{ '' }}
 if ([string]::IsNullOrWhiteSpace($payload)) {{ [Console]::Error.WriteLine('Missing PowerShell payload'); exit 1 }}
-$processInfo = [System.Diagnostics.ProcessStartInfo]::new()
-$processInfo.FileName = 'powershell.exe'
-$processInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $payload
-$processInfo.UseShellExecute = $false
-$processInfo.RedirectStandardInput = $true
-$processInfo.RedirectStandardOutput = $true
-$processInfo.RedirectStandardError = $true
-$processInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
-$processInfo.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+$info = [System.Diagnostics.ProcessStartInfo]::new()
+$info.FileName = 'powershell.exe'
+$info.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "{child_bootstrap}"'
+$info.UseShellExecute = $false
+$info.RedirectStandardInput = $true
+$info.RedirectStandardOutput = $true
+$info.RedirectStandardError = $true
+$info.StandardOutputEncoding = $utf8NoBom
+$info.StandardErrorEncoding = $utf8NoBom
 if ($deadline -and [DateTime]::UtcNow -ge $deadline) {{ [Console]::Error.WriteLine('{POWERSHELL_TIMEOUT_SENTINEL}'); exit 1 }}
-$process = [System.Diagnostics.Process]::new()
-$process.StartInfo = $processInfo
-[void]$process.Start()
-$stdoutTask = $process.StandardOutput.ReadToEndAsync()
-$stderrTask = $process.StandardError.ReadToEndAsync()
-if ($stdinPayload.Length -gt 0) {{
-    $stdinBytes = $utf8NoBom.GetBytes($stdinPayload)
-    $stdinStream = $process.StandardInput.BaseStream
-    $stdinStream.Write($stdinBytes, 0, $stdinBytes.Length)
-    $stdinStream.Flush()
-}}
-$process.StandardInput.Close()
+$child = [System.Diagnostics.Process]::new()
+$child.StartInfo = $info
+[void]$child.Start()
+$stdoutTask = $child.StandardOutput.ReadToEndAsync()
+$stderrTask = $child.StandardError.ReadToEndAsync()
+$stdinPayload = $payload + "`n" + $stdinPayload
+$stdinBytes = $utf8NoBom.GetBytes($stdinPayload)
+$stdinStream = $child.StandardInput.BaseStream
+$stdinStream.Write($stdinBytes, 0, $stdinBytes.Length)
+$stdinStream.Flush()
+$child.StandardInput.Close()
 $timedOut = $false
-while (-not $process.HasExited) {{
+while (-not $child.HasExited) {{
     if ($deadline -and [DateTime]::UtcNow -ge $deadline) {{
         $timedOut = $true
         break
@@ -505,11 +516,11 @@ while (-not $process.HasExited) {{
 }}
 if ($timedOut) {{
     if ($env:OS -eq 'Windows_NT') {{
-        & "$env:SystemRoot\\System32\\taskkill.exe" /PID $process.Id /T /F 2>$null
-    }} elseif (-not $process.HasExited) {{
-        try {{ $process.Kill($true) }} catch {{ $process.Kill() }}
+        & "$env:SystemRoot\\System32\\taskkill.exe" /PID $child.Id /T /F 2>$null
+    }} elseif (-not $child.HasExited) {{
+        try {{ $child.Kill($true) }} catch {{ $child.Kill() }}
     }}
-    $process.WaitForExit()
+    $child.WaitForExit()
 }}
 [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask))
 [Console]::Out.Write($stdoutTask.Result)
@@ -518,7 +529,7 @@ if ($timedOut) {{
     [Console]::Error.WriteLine('{POWERSHELL_TIMEOUT_SENTINEL}')
     exit 1
 }}
-exit $process.ExitCode
+exit $child.ExitCode
 """
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     return f"powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}"
