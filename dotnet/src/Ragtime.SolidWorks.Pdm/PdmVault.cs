@@ -119,23 +119,14 @@ namespace Ragtime.SolidWorks.Pdm
             && file.LockedByUserID == _userId
             && string.Equals(file.LockedOnComputer, Environment.MachineName, StringComparison.OrdinalIgnoreCase);
 
-        /// <summary>Vault path of a folder, built from its parent chain up to the vault root.</summary>
-        private string FolderVaultPath(IEdmFolder5 folder)
+        /// <summary>Only references backed by a real file in this local view can be fetched.</summary>
+        private bool TryReferenceVaultPath(IEdmFolder5? folder, string name, out string vaultPath)
         {
-            var segments = new List<string>();
-            var rootId = _vault.RootFolderID;
-            var current = folder;
-            while (current != null && current.ID != rootId)
-            {
-                segments.Insert(0, current.Name);
-                current = current.ParentFolder;
-            }
-
-            return segments.Count == 0 ? @"\" : @"\" + string.Join(@"\", segments);
+            var resolved = folder == null ? null : ReferencePaths.VaultPath(Root, folder.LocalPath, name);
+            // Display name only: it labels a skipped entry (virtual or cut-list rows have no real folder). Never a local path.
+            vaultPath = resolved ?? @"\" + name;
+            return resolved != null;
         }
-
-        private string VaultPathOf(IEdmFolder5? folder, string name) =>
-            folder == null ? @"\" + name : JoinVault(FolderVaultPath(folder), name);
 
         /// <summary>Names of every vault variable, read once per session.</summary>
         private HashSet<string> VariableNames()

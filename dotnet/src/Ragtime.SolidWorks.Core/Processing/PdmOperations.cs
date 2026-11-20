@@ -366,7 +366,7 @@ namespace Ragtime.SolidWorks.Core
 
             RequireMutationDeadline();
             var fileId = vault.AddFile(source, folder, name);
-            return CompleteClaim(vault, link, fileId, target);
+            return CompleteClaim(vault, link, fileId, target, addedByTool: true);
         }
 
         private PdmFileState CheckOutFile(IPdmVault vault, PdmContext link, string path)
@@ -386,7 +386,7 @@ namespace Ragtime.SolidWorks.Core
 
             RequireMutationDeadline();
             vault.CheckOut(path);
-            return CompleteClaim(vault, link, state.FileId, path);
+            return CompleteClaim(vault, link, state.FileId, path, addedByTool: false);
         }
 
         private PdmFileState UndoCheckOutFile(IPdmVault vault, PdmContext link, string path)
@@ -395,7 +395,7 @@ namespace Ragtime.SolidWorks.Core
             var state = ReadFile(vault, link, path);
             RequireCheckedOutHere(state);
             RequireClaimed(link, state);
-            if (!state.EverCheckedIn)
+            if (_claims.Find(link.Vault, state.FileId)!.AddedByTool)
             {
                 throw Conflict("never_checked_in", "A file that was added and never checked in cannot be undone. Check it in instead.");
             }
@@ -423,7 +423,7 @@ namespace Ragtime.SolidWorks.Core
             }
 
             return keepCheckedOut
-                ? CompleteClaim(vault, link, state.FileId, path)
+                ? CompleteClaim(vault, link, state.FileId, path, addedByTool: false)
                 : ReadFile(vault, link, path);
         }
 
@@ -495,7 +495,11 @@ namespace Ragtime.SolidWorks.Core
         {
             if (!HasValidClaim(link, state))
             {
-                _claims.Remove(link.Vault, state.FileId);
+                var claim = _claims.Find(link.Vault, state.FileId);
+                if (claim != null && string.Equals(claim.ToolId, link.ToolId, StringComparison.Ordinal))
+                {
+                    _claims.Remove(link.Vault, state.FileId);
+                }
                 throw Conflict(
                     "not_checked_out_by_tool",
                     "This file was checked out on this machine outside the tool; leave it to the person who did.");
@@ -512,10 +516,14 @@ namespace Ragtime.SolidWorks.Core
             return state;
         }
 
-        private PdmFileState CompleteClaim(IPdmVault vault, PdmContext link, int fileId, string path)
+        private PdmFileState CompleteClaim(IPdmVault vault, PdmContext link, int fileId, string path, bool addedByTool)
         {
             // Record success before the follow-up read; incomplete evidence must never authorize another write.
-            _claims.Put(new PdmClaim { Vault = link.Vault, FileId = fileId, ToolId = link.ToolId, ClaimedUtc = _utcNow() });
+            _claims.Put(new PdmClaim
+            {
+                Vault = link.Vault, FileId = fileId, ToolId = link.ToolId,
+                AddedByTool = addedByTool, ClaimedUtc = _utcNow(),
+            });
             var state = ReadFile(vault, link, path);
             if (state.CheckedOutHere)
             {
@@ -524,6 +532,7 @@ namespace Ragtime.SolidWorks.Core
                     Vault = link.Vault,
                     FileId = fileId,
                     ToolId = link.ToolId,
+                    AddedByTool = addedByTool,
                     LockedByUserId = state.LockedByUserId ?? 0,
                     LockedOnComputer = state.CheckedOutOn ?? string.Empty,
                     LockPath = state.LockPath ?? string.Empty,

@@ -108,6 +108,7 @@ namespace Ragtime.SolidWorks.Pdm
             var localPath = LocalPath(vaultPath);
             var existsLocally = File.Exists(localPath);
             var locked = file.IsLocked;
+            var latestVersion = LatestVersionOf(file);
             return new PdmFileState
             {
                 VaultPath = vaultPath,
@@ -116,20 +117,40 @@ namespace Ragtime.SolidWorks.Pdm
                 FileId = file.ID,
                 ExistsLocally = existsLocally,
                 LocalVersion = existsLocally ? ReadLocalVersion(file, folder) : null,
-                LatestVersion = LatestVersionOf(file),
-                EverCheckedIn = file.CurrentVersion > 0,
+                LatestVersion = latestVersion,
+                EverCheckedIn = HasCheckedInVersion(file, latestVersion),
                 CheckedOut = locked,
                 CheckedOutBy = locked ? file.LockedByUser?.Name : null,
                 CheckedOutOn = locked ? file.LockedOnComputer : null,
                 LockedByUserId = locked ? file.LockedByUserID : (int?)null,
                 LockPath = locked ? file.LockPath : null,
                 CheckedOutHere = IsCheckedOutHere(file),
-                WorkflowState = file.CurrentState?.Name,
+                WorkflowState = ReadWorkflowState(file),
             };
         }
 
-        /// <summary>The current version, or 0 for a file that was never checked in.</summary>
+        /// <summary>The version reported by PDM, or 0 when it is not positive.</summary>
         private static int LatestVersionOf(IEdmFile5 file) => file.CurrentVersion > 0 ? file.CurrentVersion : 0;
+
+        /// <summary>Positive evidence of a checked-in version; false means unknown, not never.</summary>
+        private static bool HasCheckedInVersion(IEdmFile5 file, int currentVersion)
+        {
+            if (currentVersion > 1) return true;
+            try
+            {
+                return file.CurrentState is IEdmState6 state && state.WorkflowID > 0;
+            }
+            catch (COMException)
+            {
+                return false;
+            }
+        }
+
+        private static string? ReadWorkflowState(IEdmFile5 file)
+        {
+            try { return file.CurrentState?.Name; }
+            catch (COMException) { return null; }
+        }
 
         private static int? ReadLocalVersion(IEdmFile5 file, IEdmFolder5 folder)
         {
@@ -211,6 +232,8 @@ namespace Ragtime.SolidWorks.Pdm
         private void CollectReferences(IEdmFile5 root, IEdmFolder5 rootFolder, List<FetchTarget> targets, List<PdmSkippedFile> skipped, int maxFiles)
         {
             var seen = new HashSet<int> { root.ID };
+            // A child without a File is reached once per parent; report each of its display paths once.
+            var skippedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var stack = new Stack<IEdmReference5>();
             stack.Push(root.GetReferenceTree(rootFolder.ID, 0));
             while (stack.Count > 0)
@@ -220,22 +243,23 @@ namespace Ragtime.SolidWorks.Pdm
                 var position = parent.GetFirstChildPosition(ref configuration, false, false, 0);
                 while (!position.IsNull)
                 {
-                var child = parent.GetNextChild(position);
-                var file = child.File;
-                if (file == null)
-                {
-                    skipped.Add(new PdmSkippedFile { VaultPath = VaultPathOf(child.Folder, child.Name), Reason = "not_in_vault" });
-                    continue;
-                }
+                    var child = parent.GetNextChild(position);
+                    var file = child.File;
+                    if (file != null && !seen.Add(file.ID)) continue;
 
-                if (!seen.Add(file.ID))
-                {
-                    continue;
-                }
+                    var hasPath = TryReferenceVaultPath(child.Folder, file?.Name ?? child.Name, out var vaultPath);
+                    // Internal components can report a folder/path but live inside their parent, not as fetchable files.
+                    if (file is IEdmFile8 kind && kind.FileType == EdmFileType.Edmft_Normal && child.FolderID > 0 && hasPath)
+                    {
+                        targets.Add(new FetchTarget(vaultPath, file, child.FolderID));
+                        if (targets.Count > maxFiles) throw PdmErrors.TooManyFiles(maxFiles);
+                    }
+                    else if (file != null || skippedPaths.Add(vaultPath))
+                    {
+                        skipped.Add(new PdmSkippedFile { VaultPath = vaultPath, Reason = "not_in_vault" });
+                    }
 
-                targets.Add(new FetchTarget(VaultPathOf(child.Folder, file.Name), file, child.FolderID));
-                if (targets.Count > maxFiles) throw PdmErrors.TooManyFiles(maxFiles);
-                stack.Push(child);
+                    if (file != null) stack.Push(child);
                 }
             }
         }

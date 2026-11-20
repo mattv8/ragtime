@@ -761,10 +761,10 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         public DateTime UtcNow { get; set; } = new DateTime(2026, 11, 20, 12, 0, 0, DateTimeKind.Utc);
 
-        public void Claim(PdmFileState file, string toolId = TestData.ToolId) =>
+        public void Claim(PdmFileState file, string toolId = TestData.ToolId, bool addedByTool = false) =>
             Claims.Put(new PdmClaim
             {
-                Vault = FakePdmVault.VaultName, FileId = file.FileId, ToolId = toolId,
+                Vault = FakePdmVault.VaultName, FileId = file.FileId, ToolId = toolId, AddedByTool = addedByTool,
                 LockedByUserId = file.LockedByUserId ?? 0, LockedOnComputer = file.CheckedOutOn ?? string.Empty,
                 LockPath = file.LockPath ?? string.Empty, ClaimedUtc = UtcNow,
             });

@@ -58,7 +58,7 @@ namespace Ragtime.SolidWorks.Core
         /// <summary>Null when there is no local copy.</summary>
         public int? LocalVersion { get; set; }
         public int LatestVersion { get; set; }
-        /// <summary>False for a file that was added but never checked in.</summary>
+        /// <summary>True only with positive evidence of a checked-in version. False means unknown, not never. Core does not use this for decisions.</summary>
         public bool EverCheckedIn { get; set; }
         public bool CheckedOut { get; set; }
         public string? CheckedOutBy { get; set; }
@@ -165,6 +165,8 @@ namespace Ragtime.SolidWorks.Core
         public string Vault { get; set; } = string.Empty;
         public int FileId { get; set; }
         public string ToolId { get; set; } = string.Empty;
+        /// <summary>True until this tool checks in a file it added. Missing legacy evidence defaults to true, refusing undo safely.</summary>
+        public bool AddedByTool { get; set; } = true;
         public int LockedByUserId { get; set; }
         public string LockedOnComputer { get; set; } = string.Empty;
         public string LockPath { get; set; } = string.Empty;

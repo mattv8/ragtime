@@ -85,7 +85,7 @@ The index can be stale, so confirm with `pdm.file.info` before you report what t
 | `local_untracked` | A local file exists that PDM does not track for this file. Keep it; tell the user. |
 | `local_modified` | The local copy changed since it was fetched. Keep it; tell the user it has local changes. |
 | `deadline` | Time ran out before this file was reached. Fetch fewer files, or set `include_references` to false. |
-| `not_in_vault` | The file is no longer in the vault. Find the current path with `pdm.search` or `pdm.folder.list`. |
+| `not_in_vault` | Nothing to fetch for this entry: it is a virtual, cut-list or embedded component (part of its parent file), or the file is no longer in the vault. Expected for assemblies, so do not treat it as a failure. For a file you expected, find its current path with `pdm.search` or `pdm.folder.list`. The `vault_path` of such an entry is a display name, not a usable path. |
 
 A link (symbolic link or junction) in the local path of the file or any reference fails the whole call with `invalid_arguments`; nothing is fetched.
 
@@ -163,8 +163,8 @@ Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
 | `pdm_conflict` `never_checked_in` | A file added but never checked in cannot be undone. Check it in with a comment. |
 | `pdm_error` | The PDM API reported a failure (`hresult`, `pdm_error`). Report both. Retry only if the user asks. |
 | `invalid_arguments` on `source` | The source is outside an approved folder's view and outside `work_folder`: "Add files from an approved vault folder or from the tool's work folder <work folder>." Save the file there first. |
-| `invalid_arguments` on `comment` or on a path or name | The comment has control characters or is empty, or a path or name uses non-ASCII characters ("Vault changes are limited to paths with plain ASCII characters."). Fix it; do not repeat the call. |
-| `invalid_arguments` on a path | The path is malformed or goes through a symbolic link or junction. Fix it or report it. |
+| `invalid_arguments` on `comment` or on a path or name | The comment has control characters or is empty; or a path or name uses non-ASCII characters ("Vault changes are limited to paths with plain ASCII characters."), is malformed, or goes through a symbolic link or junction. Fix it or report it; do not repeat the call. |
+| `operation_timeout` on a vault change | The outcome is unknown: the change may or may not have happened. Read the state with `pdm.file.info` or `pdm.folder.list` first, and retry only if the change is missing. |
 | `unknown_operation` on `pdm.*` | The SolidWorks host predates PDM support. Tell the user: "Update the SolidWorks host to use PDM operations." Do not retry. |
 | `write_not_allowed` | Changes are not enabled for this tool. Do not retry; tell the user. |
 | `result_too_large` on `pdm.file.get_latest` | More than 500 files. Set `include_references` to false or fetch fewer files. |

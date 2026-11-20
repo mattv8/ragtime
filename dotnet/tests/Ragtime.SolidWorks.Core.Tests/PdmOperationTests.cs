@@ -657,7 +657,8 @@ namespace Ragtime.SolidWorks.Core.Tests
         public async Task UndoOfAClaimedFileNeverCheckedInIsRefused()
         {
             var h = new Harness();
-            CheckedOutHere(h, ApprovedFile, claimed: true, everCheckedIn: false);
+            var file = CheckedOutHere(h, ApprovedFile, claimed: true, everCheckedIn: false);
+            h.Claim(file, addedByTool: true);
             var response = await h.CallAsync("pdm.file.undo_checkout", Args(("path", S(ApprovedFile))), TestData.LinkedContext());
             AssertError(response, "pdm_conflict");
             Assert.Equal("never_checked_in", (string?)Details(response)["reason"]);
@@ -1052,7 +1053,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         [Theory]
         [MemberData(nameof(InvalidClaims))]
-        public async Task ChangedOrExpiredClaimsAreRefusedAndPurged(string operation, string change)
+        public async Task InvalidClaimsAreRefusedButOnlyThisToolsStaleClaimsArePurged(string operation, string change)
         {
             var h = new Harness();
             var file = CheckedOutHere(h, ApprovedFile, claimed: true);
@@ -1070,7 +1071,76 @@ namespace Ragtime.SolidWorks.Core.Tests
             var response = await h.CallAsync(operation, ArgumentsFor(operation, ApprovedFile), TestData.LinkedContext());
             AssertError(response, "pdm_conflict");
             Assert.Equal("not_checked_out_by_tool", (string?)Details(response)["reason"]);
+            if (change == "tool")
+            {
+                Assert.Equal("other-tool", h.Claims.Find(Vault, file.FileId)!.ToolId);
+            }
+            else
+            {
+                Assert.Null(h.Claims.Find(Vault, file.FileId));
+            }
+            Assert.Empty(WriteCalls(h));
+        }
+
+        [Theory]
+        [InlineData("pdm.file.checkin")]
+        [InlineData("pdm.file.undo_checkout")]
+        [InlineData("pdm.variables.set")]
+        [InlineData("pdm.file.checkout")]
+        public async Task AnotherToolsRefusedAttemptPreservesTheOwnersClaimAndTheOwnerCanCheckIn(string operation)
+        {
+            var h = new Harness();
+            var file = CheckedOutHere(h, ApprovedFile, claimed: true);
+            var original = h.Claims.Find(Vault, file.FileId);
+            var otherContext = TestData.LinkedContext();
+            otherContext["pdm"]!["tool_id"] = "tool-B";
+            h.Claims.Calls.Clear();
+
+            var response = await h.CallAsync(operation, ArgumentsFor(operation, ApprovedFile), otherContext);
+
+            AssertError(response, "pdm_conflict");
+            Assert.Equal("not_checked_out_by_tool", (string?)Details(response)["reason"]);
+            Assert.Equal("This file was checked out on this machine outside the tool; leave it to the person who did.",
+                (string?)response["error"]!["message"]);
+            Assert.Same(original, h.Claims.Find(Vault, file.FileId));
+            Assert.Empty(h.Claims.Calls);
+            Assert.Empty(WriteCalls(h));
+            var otherInfo = Result(await h.CallAsync("pdm.file.info", Args(("path", S(ApprovedFile))), otherContext));
+            Assert.False((bool)otherInfo["checked_out_by_tool"]!);
+            var ownerInfo = Result(await h.CallAsync("pdm.file.info", Args(("path", S(ApprovedFile))), TestData.LinkedContext()));
+            Assert.True((bool)ownerInfo["checked_out_by_tool"]!);
+
+            Result(await h.CallAsync("pdm.file.checkin", ArgumentsFor("pdm.file.checkin", ApprovedFile), TestData.LinkedContext()));
+            Assert.Single(h.Pdm.Vault.CheckIns);
             Assert.Null(h.Claims.Find(Vault, file.FileId));
+        }
+
+        [Theory]
+        [InlineData("pdm.file.checkin")]
+        [InlineData("pdm.file.undo_checkout")]
+        [InlineData("pdm.variables.set")]
+        [InlineData("pdm.file.checkout")]
+        public async Task AnotherToolLeavesAnExpiredClaimForItsOwnerToPurge(string operation)
+        {
+            var h = new Harness();
+            var file = CheckedOutHere(h, ApprovedFile, claimed: true);
+            var original = h.Claims.Find(Vault, file.FileId);
+            h.UtcNow = h.UtcNow.AddHours(24);
+            var otherContext = TestData.LinkedContext();
+            otherContext["pdm"]!["tool_id"] = "tool-B";
+            h.Claims.Calls.Clear();
+
+            var response = await h.CallAsync(operation, ArgumentsFor(operation, ApprovedFile), otherContext);
+            AssertError(response, "pdm_conflict");
+            Assert.Equal("not_checked_out_by_tool", (string?)Details(response)["reason"]);
+            Assert.Same(original, h.Claims.Find(Vault, file.FileId));
+            Assert.Empty(h.Claims.Calls);
+
+            response = await h.CallAsync(operation, ArgumentsFor(operation, ApprovedFile), TestData.LinkedContext());
+            AssertError(response, "pdm_conflict");
+            Assert.Equal("not_checked_out_by_tool", (string?)Details(response)["reason"]);
+            Assert.Null(h.Claims.Find(Vault, file.FileId));
+            Assert.Equal(new[] { "Remove" }, h.Claims.Calls);
             Assert.Empty(WriteCalls(h));
         }
 
@@ -1243,6 +1313,118 @@ namespace Ragtime.SolidWorks.Core.Tests
             Assert.Null(h.Claims.Find(Vault, file.FileId));
             Assert.Contains(restoreFailure, h.Unexpected);
             Assert.True(file.CheckedOutHere);
+        }
+
+        [Fact]
+        public async Task AddedFileCannotBeUndoneBeforeCheckInEvenWithMisleadingGatewayHistory()
+        {
+            var h = new Harness();
+            var added = Result(await h.CallAsync("pdm.file.add",
+                Args(("source", S(SourceFile)), ("folder", S(Approved))), TestData.LinkedContext()));
+            var id = (int)added["file_id"]!;
+            Assert.True(h.Claims.Find(Vault, id)!.AddedByTool);
+            // PDM may report this as checked in even though add has never been followed by check-in.
+            h.Pdm.Vault.GetFile(ApprovedFile).EverCheckedIn = true;
+            h.Pdm.Vault.Calls.Clear();
+            h.Claims.Calls.Clear();
+
+            var response = await h.CallAsync("pdm.file.undo_checkout", Args(("path", S(ApprovedFile))), TestData.LinkedContext());
+
+            AssertError(response, "pdm_conflict");
+            Assert.Equal("never_checked_in", (string?)Details(response)["reason"]);
+            Assert.Empty(WriteCalls(h));
+            Assert.Empty(h.Claims.Calls);
+            Assert.True(h.Claims.Find(Vault, id)!.AddedByTool);
+        }
+
+        [Fact]
+        public async Task CheckoutCanBeUndoneEvenWhenGatewayHistoryIsUnknown()
+        {
+            var h = new Harness();
+            var file = h.Pdm.Vault.SeedFile(ApprovedFile, state => state.EverCheckedIn = false);
+            Result(await h.CallAsync("pdm.file.checkout", Args(("path", S(ApprovedFile))), TestData.LinkedContext()));
+            Assert.False(h.Claims.Find(Vault, file.FileId)!.AddedByTool);
+
+            Result(await h.CallAsync("pdm.file.undo_checkout", Args(("path", S(ApprovedFile))), TestData.LinkedContext()));
+
+            Assert.False(file.CheckedOutHere);
+            Assert.Null(h.Claims.Find(Vault, file.FileId));
+            Assert.Contains("UndoCheckOut:" + ApprovedFile, h.Pdm.Vault.Calls);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task AddedFileCanBeUndoneAfterCheckInAndACurrentToolCheckout(bool keepCheckedOut)
+        {
+            var h = new Harness();
+            var added = Result(await h.CallAsync("pdm.file.add",
+                Args(("source", S(SourceFile)), ("folder", S(Approved))), TestData.LinkedContext()));
+            var id = (int)added["file_id"]!;
+            Result(await h.CallAsync("pdm.file.checkin", Args(("path", S(ApprovedFile)),
+                ("comment", S("First check-in")), ("keep_checked_out", new JValue(keepCheckedOut))), TestData.LinkedContext()));
+            if (!keepCheckedOut)
+            {
+                Assert.Null(h.Claims.Find(Vault, id));
+                Result(await h.CallAsync("pdm.file.checkout", Args(("path", S(ApprovedFile))), TestData.LinkedContext()));
+            }
+            Assert.False(h.Claims.Find(Vault, id)!.AddedByTool);
+            h.Pdm.Vault.GetFile(ApprovedFile).EverCheckedIn = false;
+
+            Result(await h.CallAsync("pdm.file.undo_checkout", Args(("path", S(ApprovedFile))), TestData.LinkedContext()));
+
+            Assert.Null(h.Claims.Find(Vault, id));
+            Assert.Contains("UndoCheckOut:" + ApprovedFile, h.Pdm.Vault.Calls);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task FailedFirstCheckInPreservesAddedProvenanceAndDoesNotRenewTheClaim(bool keepCheckedOut)
+        {
+            var h = new Harness();
+            var added = Result(await h.CallAsync("pdm.file.add",
+                Args(("source", S(SourceFile)), ("folder", S(Approved))), TestData.LinkedContext()));
+            var id = (int)added["file_id"]!;
+            var claimedUtc = h.Claims.Find(Vault, id)!.ClaimedUtc;
+            h.UtcNow = h.UtcNow.AddHours(1);
+            h.Pdm.Vault.Failures["CheckIn"] = new PdmGatewayException(PdmFailureKind.Api, "First check-in failed.");
+
+            var response = await h.CallAsync("pdm.file.checkin", Args(("path", S(ApprovedFile)),
+                ("comment", S("First check-in")), ("keep_checked_out", new JValue(keepCheckedOut))), TestData.LinkedContext());
+
+            AssertError(response, "pdm_error");
+            var claim = h.Claims.Find(Vault, id);
+            Assert.NotNull(claim);
+            Assert.True(claim!.AddedByTool);
+            Assert.Equal(claimedUtc, claim.ClaimedUtc);
+            h.Pdm.Vault.Calls.Clear();
+
+            response = await h.CallAsync("pdm.file.undo_checkout", Args(("path", S(ApprovedFile))), TestData.LinkedContext());
+
+            AssertError(response, "pdm_conflict");
+            Assert.Equal("never_checked_in", (string?)Details(response)["reason"]);
+            Assert.DoesNotContain("UndoCheckOut:" + ApprovedFile, h.Pdm.Vault.Calls);
+            Assert.Empty(WriteCalls(h));
+        }
+
+        [Fact]
+        public async Task LegacyClaimWithoutAddedByToolRefusesUndoButStillAllowsCheckIn()
+        {
+            var h = new Harness();
+            var file = CheckedOutHere(h, ApprovedFile, claimed: true);
+            var record = JObject.FromObject(h.Claims.Find(Vault, file.FileId)!);
+            record.Remove("AddedByTool");
+            h.Claims.Put(record.ToObject<PdmClaim>()!);
+            Assert.True(h.Claims.Find(Vault, file.FileId)!.AddedByTool);
+
+            var response = await h.CallAsync("pdm.file.undo_checkout", Args(("path", S(ApprovedFile))), TestData.LinkedContext());
+            AssertError(response, "pdm_conflict");
+            Assert.Equal("never_checked_in", (string?)Details(response)["reason"]);
+            Assert.Empty(WriteCalls(h));
+
+            Result(await h.CallAsync("pdm.file.checkin", ArgumentsFor("pdm.file.checkin", ApprovedFile), TestData.LinkedContext()));
+            Assert.Null(h.Claims.Find(Vault, file.FileId));
         }
 
         // ----- helpers -----

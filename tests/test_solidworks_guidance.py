@@ -287,6 +287,12 @@ class PdmTopicTests(unittest.TestCase):
         self.assertIn("fails the whole call with `invalid_arguments`", self.pdm)
         self.assertNotIn("`link`", self.pdm)
 
+    def test_not_in_vault_row_covers_virtual_and_embedded_components(self) -> None:
+        row = next(line for line in self.pdm.splitlines() if line.startswith("| `not_in_vault`"))
+        for phrase in ("virtual", "embedded"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, row)
+
     def test_pdm_topic_states_claim_expiry_and_source_rules(self) -> None:
         for phrase in (
             "24 hours",

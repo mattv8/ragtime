@@ -267,6 +267,7 @@ namespace Ragtime.SolidWorks.Host
                     Vault = record.Vault,
                     FileId = record.FileId,
                     ToolId = record.ToolId,
+                    AddedByTool = record.AddedByTool ?? true,
                     LockedByUserId = record.LockedByUserId,
                     LockedOnComputer = record.LockedOnComputer,
                     LockPath = record.LockPath,
@@ -284,6 +285,7 @@ namespace Ragtime.SolidWorks.Host
             Vault = claim.Vault,
             FileId = claim.FileId,
             ToolId = claim.ToolId,
+            AddedByTool = claim.AddedByTool,
             LockedByUserId = claim.LockedByUserId,
             LockedOnComputer = claim.LockedOnComputer,
             LockPath = claim.LockPath,
@@ -295,6 +297,7 @@ namespace Ragtime.SolidWorks.Host
             Vault = claim.Vault,
             FileId = claim.FileId,
             ToolId = claim.ToolId,
+            AddedByTool = claim.AddedByTool,
             LockedByUserId = claim.LockedByUserId,
             LockedOnComputer = claim.LockedOnComputer,
             LockPath = claim.LockPath,
@@ -310,6 +313,8 @@ namespace Ragtime.SolidWorks.Host
             public string? Vault { get; set; }
             public int FileId { get; set; }
             public string? ToolId { get; set; }
+            /// <summary>Null on lines written before the field existed; those read as true (fails closed).</summary>
+            public bool? AddedByTool { get; set; }
             public int LockedByUserId { get; set; }
             public string? LockedOnComputer { get; set; }
             public string? LockPath { get; set; }
