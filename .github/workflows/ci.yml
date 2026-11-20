@@ -46,6 +46,7 @@ jobs:
           BACKEND_RESULT: ${{ needs.quality.outputs.backend_result }}
           FRONTEND_RESULT: ${{ needs.quality.outputs.frontend_result }}
           STORAGE_RESULT: ${{ needs.quality.outputs.storage_result }}
+          SOLIDWORKS_RESULT: ${{ needs.quality.outputs.solidworks_result }}
         run: |
           set -euo pipefail
           test "$BASES_RESULT" = success
@@ -53,3 +54,4 @@ jobs:
           test "$BACKEND_RESULT" = success
           test "$FRONTEND_RESULT" = success
           test "$STORAGE_RESULT" = success
+          test "$SOLIDWORKS_RESULT" = success

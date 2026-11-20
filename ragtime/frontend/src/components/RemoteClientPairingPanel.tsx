@@ -12,7 +12,7 @@ const RETRY_INTERVAL_MS = 2500;
 const TARGET_USER_FLAG = "-TargetUser 'PCNAME\\username'";
 
 interface RemoteClientPairingPanelProps {
-  toolType: Extract<ToolType, 'ssh_shell' | 'windows_shell'>;
+  toolType: Extract<ToolType, 'ssh_shell' | 'windows_shell' | 'solidworks'>;
   pairingId: string | null;
   toolId?: string;
   onPairingCreated: (pairing: RemotePairingCreatedResponse) => void;
@@ -28,12 +28,16 @@ function initialTargetOs(): TargetOs {
 function targetOsOptions(
   toolType: RemoteClientPairingPanelProps['toolType'],
 ): Array<[TargetOs, string]> {
-  return toolType === 'windows_shell'
+  return isWindowsTarget(toolType)
     ? [['windows', 'Windows']]
     : [
         ['linux', 'Linux'],
         ['mac', 'macOS'],
       ];
+}
+
+function isWindowsTarget(toolType: RemoteClientPairingPanelProps['toolType']): boolean {
+  return toolType === 'windows_shell' || toolType === 'solidworks';
 }
 
 function secondsRemaining(expiresAt: string): number {

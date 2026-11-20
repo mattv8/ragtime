@@ -1680,6 +1680,7 @@ No tools configured. Answer from indexed knowledge sources only (code, documenta
         "odoo_shell": "Odoo ORM",
         "ssh_shell": "SSH Shell",
         "windows_shell": "Windows PowerShell",
+        "solidworks": "SolidWorks",
         "filesystem_indexer": "File Search",
     }
 

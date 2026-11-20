@@ -49,6 +49,8 @@ import { ToolAccessModal } from './ToolAccessModal';
 import { ToolDeleteDialog } from './ToolDeleteDialog';
 import type { ToolAccessPolicy } from '@/types';
 import { contentProtectionApi, type ContentProtectionConfig } from '@/api/contentProtection';
+import type { SolidworksConnectionConfig } from '@/api/solidworks';
+import { formatPdmSchedule, getPdmLinkRelations } from '@/utils/solidworksPdmLink';
 
 // Inline field being edited
 type EditingField = 'name' | 'description' | null;
@@ -86,7 +88,7 @@ function getToolWorkingDirectory(tool: ToolConfig): string | null {
 
 function isPairedWindowsTool(tool: ToolConfig): boolean {
   return (
-    tool.tool_type === 'windows_shell' &&
+    (tool.tool_type === 'windows_shell' || tool.tool_type === 'solidworks') &&
     typeof (tool.connection_config as { pairing_id?: unknown }).pairing_id === 'string' &&
     (tool.connection_config as { pairing_id: string }).pairing_id.length > 0
   );
@@ -107,14 +109,6 @@ function formatMountSourceInterval(seconds: number): string {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   return h > 0 ? `${d}d ${h}h` : `${d}d`;
-}
-
-function formatPdmSchedule(tool: ToolConfig): string | null {
-  if (tool.tool_type !== 'solidworks_pdm') return null;
-  const hours = (tool.connection_config as { reindex_interval_hours?: number })
-    .reindex_interval_hours;
-  if (!hours) return 'Manual only';
-  return hours === 1 ? 'Every hour' : `Every ${hours} hours`;
 }
 
 function isAutoSyncMountSource(source: UserspaceMountSource): boolean {
@@ -236,6 +230,7 @@ function getToolConnectionSummary(tool: ToolConfig): string {
       return `Container: ${'container' in config ? config.container : 'N/A'}`;
     case 'ssh_shell':
     case 'windows_shell':
+    case 'solidworks':
       if ('host' in config && 'user' in config) {
         const port = 'port' in config ? config.port : 22;
         return `${config.user}@${config.host}:${port}`;
@@ -278,6 +273,7 @@ function addHeartbeatErrorSoftWraps(error: string) {
 
 interface ToolCardProps {
   tool: ToolConfig;
+  tools: ToolConfig[];
   targetId?: string;
   heartbeat: HeartbeatStatus | null;
   showFooterActions: boolean;
@@ -301,6 +297,7 @@ interface ToolCardProps {
 
 function ToolCard({
   tool,
+  tools,
   targetId,
   heartbeat,
   showFooterActions,
@@ -328,7 +325,41 @@ function ToolCard({
     tool.tool_type === 'ssh_shell' ||
     tool.tool_type === 'windows_shell' ||
     tool.tool_type === 'odoo_shell';
-  const pdmSchedule = formatPdmSchedule(tool);
+  const pdmSchedule = formatPdmSchedule(
+    (tool.connection_config as { reindex_interval_hours?: number }).reindex_interval_hours,
+  );
+  const solidworksOptions =
+    tool.tool_type === 'solidworks' ? (tool.connection_config as SolidworksConnectionConfig) : null;
+  const linkedPdmTool = tools.find(
+    (candidate) =>
+      candidate.id === solidworksOptions?.pdm_tool_id && candidate.tool_type === 'solidworks_pdm',
+  );
+  const pdmLink = solidworksOptions
+    ? (tool.pdm_link ??
+      (solidworksOptions.pdm_tool_id
+        ? {
+            tool_id: solidworksOptions.pdm_tool_id,
+            tool_name: linkedPdmTool?.name ?? null,
+            enabled: linkedPdmTool?.enabled ?? false,
+            exists: Boolean(linkedPdmTool),
+          }
+        : null))
+    : null;
+  const pdmUnavailable = pdmLink && (!pdmLink.exists || !pdmLink.enabled);
+  const pdmDatabase = (linkedPdmTool?.connection_config as { database?: string } | undefined)
+    ?.database;
+  const pdmLinkDescription = pdmLink
+    ? !pdmLink.exists
+      ? 'The linked PDM tool no longer exists.'
+      : !pdmLink.enabled
+        ? `“${pdmLink.tool_name}” is disabled, so the AI cannot search it. Enable it or choose another tool.`
+        : `Linked to SolidWorks PDM tool ${pdmLink.tool_name}, vault ${pdmDatabase ?? 'unknown'}`
+    : '';
+  const approvedFolderCount = solidworksOptions?.pdm_approved_folders?.length ?? 0;
+  const linkedFrom =
+    tool.tool_type === 'solidworks_pdm'
+      ? getPdmLinkRelations(tools).filter((relation) => relation.pdmToolId === tool.id)
+      : [];
 
   // Inline editing state
   const [editingField, setEditingField] = useState<EditingField>(null);
@@ -455,7 +486,11 @@ function ToolCard({
   };
 
   return (
-    <div id={targetId} className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}>
+    <div
+      id={targetId}
+      data-tool-type={tool.tool_type}
+      className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}
+    >
       <div className="tool-card-header">
         <div className="tool-card-icon">
           <Icon name={getToolIconType(typeInfo?.icon)} size={28} />
@@ -515,7 +550,9 @@ function ToolCard({
             </div>
           </div>
           <div className="tool-card-meta-row">
-            <code className="tool-card-connection-sub">{getToolConnectionSummary(tool)}</code>
+            <code className="tool-card-connection-sub" data-tool-summary>
+              {getToolConnectionSummary(tool)}
+            </code>
             <div className="tool-card-badges">
               {hasActiveIndexingJob && (
                 <IndexingPill activeJob={activeSchemaJob} progressLabelPrefix="Indexing" />
@@ -536,13 +573,61 @@ function ToolCard({
                   </span>
                 </Popover>
               )}
-              {tool.allow_write && (
+              {solidworksOptions?.solidworks_version != null && (
                 <Popover
-                  content="Write access enabled"
+                  content={`Pinned to SolidWorks ${solidworksOptions.solidworks_version}`}
                   position="top"
                   style={{ display: 'inline-flex' }}
                 >
-                  <span className="tool-badge badge-warning">
+                  <span className="tool-badge" data-solidworks-version-badge>
+                    SolidWorks {solidworksOptions.solidworks_version}
+                  </span>
+                </Popover>
+              )}
+              {solidworksOptions?.instance_mode === 'attach' && (
+                <Popover
+                  content="Attaches to the SolidWorks the user has open"
+                  position="top"
+                  style={{ display: 'inline-flex' }}
+                >
+                  <span className="tool-badge" data-solidworks-mode-badge>
+                    Attach
+                  </span>
+                </Popover>
+              )}
+              {pdmLink && (
+                <Popover
+                  content={pdmLinkDescription}
+                  position="top"
+                  style={{ display: 'inline-flex' }}
+                >
+                  <span
+                    className={`tool-badge${pdmUnavailable ? ' badge-warning' : ''}`}
+                    data-solidworks-pdm-badge
+                  >
+                    <Icon name="database" size={12} />
+                    <span className="path-text">
+                      {pdmUnavailable ? 'PDM unavailable' : `PDM: ${pdmLink.tool_name}`}
+                    </span>
+                  </span>
+                </Popover>
+              )}
+              {tool.allow_write && (tool.tool_type !== 'solidworks' || pdmLink) && (
+                <Popover
+                  content={
+                    solidworksOptions
+                      ? approvedFolderCount
+                        ? `Can add files, check out and check in in ${approvedFolderCount} approved vault folders`
+                        : 'No approved folders: changes are refused'
+                      : 'Write access enabled'
+                  }
+                  position="top"
+                  style={{ display: 'inline-flex' }}
+                >
+                  <span
+                    className="tool-badge badge-warning"
+                    data-solidworks-write-badge={solidworksOptions ? true : undefined}
+                  >
                     <Icon name="alert-triangle" size={12} />
                     <span className="path-text">Write</span>
                   </span>
@@ -659,6 +744,15 @@ function ToolCard({
         </div>
       )}
 
+      {linkedFrom.length > 0 && (
+        <div className="tool-card-schema-stats" data-testid={`pdm-linked-from-${tool.id}`}>
+          <span className="schema-stats-label">Used by:</span>
+          <span className="schema-stats-value">
+            {linkedFrom.map((relation) => relation.solidworksToolName).join(', ')}
+          </span>
+        </div>
+      )}
+
       {showFooterActions && (
         <div className="tool-card-footer">
           <div className="tool-card-actions">
@@ -706,7 +800,7 @@ function ToolCard({
             <button type="button" className="btn btn-sm" onClick={() => onEdit(tool)}>
               Edit
             </button>
-            {isPairedWindowsTool(tool) ? (
+            {isPairedWindowsTool(tool) || linkedFrom.length > 0 ? (
               <button
                 type="button"
                 className="btn btn-sm btn-danger"
@@ -750,6 +844,7 @@ export function ToolsPanel({
   }, []);
 
   const [tools, setTools] = useState<ToolConfig[]>([]);
+  const pdmLinkRelations = useMemo(() => getPdmLinkRelations(tools), [tools]);
   const [groups, setGroups] = useState<ToolGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [toasts, toast] = useToast();
@@ -1340,7 +1435,15 @@ export function ToolsPanel({
     const response = options
       ? await api.deleteToolConfig(toolId, options)
       : await api.deleteToolConfig(toolId);
-    setTools((current) => current.filter((tool) => tool.id !== toolId));
+    setTools((current) =>
+      current
+        .filter((tool) => tool.id !== toolId)
+        .map((tool) =>
+          tool.pdm_link?.tool_id === toolId
+            ? { ...tool, pdm_link: { ...tool.pdm_link, exists: false, enabled: false } }
+            : tool,
+        ),
+    );
     setHeartbeats((current) => {
       const next = { ...current };
       delete next[toolId];
@@ -1359,6 +1462,13 @@ export function ToolsPanel({
       setWindowsDeleteTool(tool);
       return;
     }
+    if (
+      tool.tool_type === 'solidworks_pdm' &&
+      pdmLinkRelations.some((relation) => relation.pdmToolId === tool.id)
+    ) {
+      setDeleteConfirmTool(tool);
+      return;
+    }
     void handleDeleteTool(tool.id)
       .then(() => toast.success('Tool deleted successfully'))
       .catch((err) => toast.error(err instanceof Error ? err.message : 'Failed to delete tool'));
@@ -1368,6 +1478,27 @@ export function ToolsPanel({
     try {
       const result = await api.toggleToolConfig(toolId, enabled);
       patchToolInState(toolId, { enabled: result.enabled });
+      const pdmTool = tools.find(
+        (tool) => tool.id === toolId && tool.tool_type === 'solidworks_pdm',
+      );
+      if (pdmTool) {
+        setTools((current) =>
+          current.map((tool) =>
+            tool.pdm_link?.tool_id === toolId
+              ? { ...tool, pdm_link: { ...tool.pdm_link, enabled: result.enabled } }
+              : tool,
+          ),
+        );
+        if (!result.enabled) {
+          pdmLinkRelations
+            .filter((relation) => relation.pdmToolId === toolId)
+            .forEach((relation) => {
+              toast.info(
+                `“${pdmTool.name}” is disabled. The SolidWorks tool “${relation.solidworksToolName}” cannot search the vault until you enable it again.`,
+              );
+            });
+        }
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to toggle tool');
     }
@@ -2391,6 +2522,7 @@ export function ToolsPanel({
       >
         <ToolCard
           tool={tool}
+          tools={tools}
           targetId={`tools-tool-${tool.id}`}
           heartbeat={heartbeats[tool.id] || null}
           showFooterActions={showFooterActions}
@@ -2518,14 +2650,27 @@ export function ToolsPanel({
                           handleToggleTool(contextTool.id, !contextTool.enabled);
                         },
                       },
-                      {
-                        label: 'Write Access',
-                        type: 'toggle',
-                        checked: contextTool.allow_write,
-                        onSelect: () => {
-                          handleToggleWrite(contextTool.id, !contextTool.allow_write);
-                        },
-                      },
+                      ...(contextTool.tool_type === 'solidworks'
+                        ? contextTool.allow_write
+                          ? [
+                              {
+                                label: 'Allow changes',
+                                type: 'toggle' as const,
+                                checked: true,
+                                onSelect: () => handleToggleWrite(contextTool.id, false),
+                              },
+                            ]
+                          : []
+                        : [
+                            {
+                              label: 'Write Access',
+                              type: 'toggle' as const,
+                              checked: contextTool.allow_write,
+                              onSelect: () => {
+                                handleToggleWrite(contextTool.id, !contextTool.allow_write);
+                              },
+                            },
+                          ]),
                       {
                         label: 'Test',
                         icon: 'play',
@@ -3195,6 +3340,26 @@ export function ToolsPanel({
               <p className="field-help" style={{ marginTop: 8 }}>
                 This will permanently remove the tool configuration. This action cannot be undone.
               </p>
+              {deleteConfirmTool.tool_type === 'solidworks_pdm' &&
+                pdmLinkRelations.some(
+                  (relation) => relation.pdmToolId === deleteConfirmTool.id,
+                ) && (
+                  <div id="tool-delete-linked-note" role="note">
+                    {pdmLinkRelations
+                      .filter((relation) => relation.pdmToolId === deleteConfirmTool.id)
+                      .map((relation) => (
+                        <p key={relation.solidworksToolId}>
+                          “{deleteConfirmTool.name}” is linked to the SolidWorks tool “
+                          {relation.solidworksToolName}”. If you delete it, that tool can no longer
+                          search the vault or open, add, check out or check in vault files until you
+                          link another PDM tool. The SolidWorks tool keeps its other settings and
+                          shows a warning.
+                          {relation.allowWrite &&
+                            ` Changes are currently on in ${relation.approvedFolderCount} approved folders.`}
+                        </p>
+                      ))}
+                  </div>
+                )}
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={() => setDeleteConfirmTool(null)}>

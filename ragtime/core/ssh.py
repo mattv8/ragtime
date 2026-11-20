@@ -126,6 +126,7 @@ class SSHConfig:
     pairing_id: str | None = None
     transport: Literal["direct", "tunnel"] | None = None
     total_timeout: float | None = None
+    max_output_bytes: int | None = None
 
     @property
     def auth_method(self) -> SSHAuthMethod:
@@ -318,17 +319,54 @@ def _create_ssh_client(
     return client
 
 
-def _drain_channel(channel, stdout_chunks: list[bytes], stderr_chunks: list[bytes]) -> None:
-    """Drain any remaining data from the channel buffers."""
+def _drain_channel(
+    channel,
+    stdout_chunks: list[bytes],
+    stderr_chunks: list[bytes],
+    output_limit: int | None = None,
+) -> bool:
+    """Drain any remaining data from the channel buffers.
+
+    Returns True when the combined output cap was exceeded; reading stops at the first overflowing chunk.
+    """
     while channel.recv_ready():
         stdout_chunks.append(channel.recv(4096))
+        if _output_limit_exceeded(output_limit, stdout_chunks, stderr_chunks):
+            return True
     while channel.recv_stderr_ready():
         stderr_chunks.append(channel.recv_stderr(4096))
+        if _output_limit_exceeded(output_limit, stdout_chunks, stderr_chunks):
+            return True
+    return False
 
 
 def _error_result(message: str) -> SSHResult:
     """Create a failed SSHResult with the given error message."""
     return SSHResult(stdout="", stderr=message, exit_code=-1, success=False)
+
+
+RAGTIME_OUTPUT_LIMIT_MARKER = "[RAGTIME_OUTPUT_LIMIT]"
+
+
+def _output_limit_exceeded(limit: int | None, stdout_chunks: list[bytes], stderr_chunks: list[bytes]) -> bool:
+    """Return True when combined buffered stdout and stderr exceed the optional cap."""
+    if limit is None:
+        return False
+    buffered = sum(len(chunk) for chunk in stdout_chunks) + sum(len(chunk) for chunk in stderr_chunks)
+    return buffered > limit
+
+
+def _output_limit_result(limit: int | None) -> SSHResult:
+    """Build the failure returned when a command produced more output than allowed."""
+    message = f"{RAGTIME_OUTPUT_LIMIT_MARKER} Command output exceeded {limit} bytes and was stopped."
+    return SSHResult(stdout="", stderr=message, exit_code=-1, success=False)
+
+
+def _close_on_output_limit(channel, limit: int | None) -> SSHResult:
+    """Stop reading at the cap: close the channel and return the limit failure."""
+    logger.warning(f"SSH command output exceeded {limit} bytes; closing channel")
+    channel.close()
+    return _output_limit_result(limit)
 
 
 def _wrap_command_with_timeout(command: str, timeout_seconds: int | float) -> str:
@@ -562,8 +600,8 @@ def execute_ssh_command(
         # Read output with total timeout
         channel = stdout.channel
         start_time = time.monotonic() if deadline is not None else time.time()
-        stdout_chunks = []
-        stderr_chunks = []
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
         timed_out = False
 
         while True:
@@ -579,18 +617,23 @@ def execute_ssh_command(
             if channel.exit_status_ready():
                 break
 
-            # Check for data
+            # Check for data; the cap is enforced after every receive
             if channel.recv_ready():
                 stdout_chunks.append(channel.recv(4096))
+                if _output_limit_exceeded(config.max_output_bytes, stdout_chunks, stderr_chunks):
+                    return _close_on_output_limit(channel, config.max_output_bytes)
 
             if channel.recv_stderr_ready():
                 stderr_chunks.append(channel.recv_stderr(4096))
+                if _output_limit_exceeded(config.max_output_bytes, stdout_chunks, stderr_chunks):
+                    return _close_on_output_limit(channel, config.max_output_bytes)
 
             # Small sleep to yield CPU and prevent tight loop
             time.sleep(min(0.1, max(0.0, remaining_timeout())) if deadline is not None else 0.1)
 
         # Drain any remaining buffered data
-        _drain_channel(channel, stdout_chunks, stderr_chunks)
+        if _drain_channel(channel, stdout_chunks, stderr_chunks, config.max_output_bytes):
+            return _close_on_output_limit(channel, config.max_output_bytes)
 
         stdout_data = b"".join(stdout_chunks).decode("utf-8", errors="replace")
         stderr_data = b"".join(stderr_chunks).decode("utf-8", errors="replace")

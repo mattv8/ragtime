@@ -1,0 +1,5 @@
+<Project>
+  <Target Name="Zip">
+    <ZipDirectory SourceDirectory="$(SourceDirectory)" DestinationFile="$(DestinationFile)" Overwrite="true" />
+  </Target>
+</Project>

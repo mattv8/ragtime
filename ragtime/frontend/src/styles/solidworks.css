@@ -1,0 +1,360 @@
+.sw-step {
+  display: grid;
+  gap: var(--space-md);
+}
+.sw-panel {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  display: grid;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.sw-panel[data-tone='error'] {
+  border-color: var(--color-error-border);
+  background: var(--color-error-light);
+}
+.sw-panel[data-tone='success'] {
+  border-color: var(--color-success-border);
+  background: var(--color-success-light);
+}
+.sw-panel[data-tone='warning'] {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-light);
+}
+/* Hierarchy inside the panel: labels and secondary copy recede, the state sentence keeps its size. */
+.sw-panel dt {
+  color: var(--color-text-secondary);
+}
+.sw-panel p,
+.sw-panel li,
+.sw-panel summary,
+.sw-manual p {
+  font-size: var(--text-sm);
+}
+.sw-panel ul {
+  margin: 0;
+  padding-inline-start: var(--space-lg);
+}
+#solidworks-login-note {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+/* Shared .field-help uses the muted token, which fails 4.5:1 in both packs' light and dark modes. */
+.sw-options .field-help {
+  color: var(--color-text-secondary);
+}
+.sw-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.sw-panel-header h3 {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.sw-panel-header [data-sw-action='refresh'] {
+  margin-inline-start: auto;
+}
+/* Own status pill: the text stays primary in every pack; only the tint and the icon carry the tone. */
+.sw-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 2px var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-alt);
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 1.4;
+}
+.sw-pill > svg {
+  flex: none;
+  color: var(--color-text-secondary);
+}
+.sw-pill[data-tone='success'] {
+  border-color: var(--color-success-border);
+  background: var(--color-success-light);
+}
+.sw-pill[data-tone='success'] > svg {
+  color: var(--color-success);
+}
+.sw-pill[data-tone='warning'] {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-light);
+}
+.sw-pill[data-tone='warning'] > svg {
+  color: var(--color-warning);
+}
+.sw-pill[data-tone='info'] {
+  border-color: var(--color-info-border);
+  background: var(--color-info-light);
+}
+.sw-pill[data-tone='info'] > svg {
+  color: var(--color-info);
+}
+.sw-pill[data-tone='danger'] {
+  border-color: var(--color-error-border);
+  background: var(--color-error-light);
+}
+.sw-pill[data-tone='danger'] > svg {
+  color: var(--color-error);
+}
+.sw-options {
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.sw-options legend {
+  padding: 0;
+  margin-bottom: var(--space-sm);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.sw-group-label {
+  display: block;
+  margin-bottom: var(--space-xs);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.sw-message {
+  display: flex;
+  gap: var(--space-xs);
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+}
+.sw-message-icon {
+  flex: none;
+  margin-top: 0.125em;
+}
+/* Boxed callout for the administrator warning (ux-spec mockup a). */
+.sw-message[data-boxed='true'] {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-light);
+}
+.sw-message[data-boxed='true'] .sw-message-icon {
+  color: var(--color-warning);
+}
+.sw-message[data-tone='info'] .sw-message-icon {
+  color: var(--color-info);
+}
+.sw-message[data-tone='warning'] .sw-message-icon {
+  color: var(--color-warning);
+}
+.sw-message[data-tone='error'] .sw-message-icon {
+  color: var(--color-error);
+}
+.sw-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+.sw-actions-end {
+  margin-inline-start: auto;
+}
+.sw-manual summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+.sw-manual summary:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+.sw-manual-steps {
+  margin: 0;
+  padding-inline-start: var(--space-lg);
+  display: grid;
+  gap: var(--space-sm);
+  font-size: var(--text-sm);
+}
+.sw-hash {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.sw-choice-grid {
+  display: grid;
+  gap: var(--space-sm);
+}
+.sw-choice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.form-group label.sw-choice-card {
+  margin: 0;
+}
+.sw-choice-card:hover {
+  background: var(--color-surface-hover);
+}
+.sw-choice-card:has(input:checked) {
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-light);
+}
+.sw-choice-card:has(input:focus-visible) {
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+.sw-choice-card:has(input:disabled) {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+/* Themed radio: a hollow ring when unchecked, a primary dot when checked, on every pack. */
+.sw-choice-card input[type='radio'] {
+  appearance: none;
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin: 0.2em 0 0;
+  border: 2px solid var(--color-text-secondary);
+  border-radius: 50%;
+  background: transparent;
+  cursor: inherit;
+}
+.sw-choice-card input[type='radio']:checked {
+  border-color: var(--color-primary);
+  background: radial-gradient(var(--color-primary) 40%, transparent 45%);
+}
+.sw-choice-card input[type='radio']:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+.sw-choice-card strong,
+.sw-choice-card small {
+  display: block;
+}
+.sw-choice-card strong {
+  font-weight: 600;
+}
+.sw-choice-card small {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+/* Radios are dimmed by their card (.sw-choice-card:has(input:disabled)), so they are excluded here. */
+.sw-options:disabled :is(input:not([type='radio']), select) {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.sw-options .form-row {
+  align-items: stretch;
+}
+.sw-options select {
+  width: 100%;
+}
+.sw-options [aria-invalid='true'] {
+  border-color: var(--color-error);
+}
+.sw-timeout-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.sw-timeout-control input[type='range'] {
+  flex: 1;
+}
+.sw-timeout-control input[type='number'] {
+  width: 6.5rem;
+}
+#solidworks-host-panel[data-sw-host-state='checking'] #solidworks-host-facts {
+  opacity: 0.6;
+}
+#solidworks-test-section {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+/* The button stays content-width; the result panel spans the step. */
+#solidworks-test-result {
+  justify-self: stretch;
+}
+@media (max-width: 30rem) {
+  .sw-actions {
+    flex-direction: column;
+  }
+  .sw-actions > * {
+    width: 100%;
+  }
+  .sw-actions-end {
+    margin-inline-start: 0;
+  }
+}
+@media (pointer: coarse) {
+  .sw-actions button,
+  .sw-choice-card,
+  .sw-manual summary,
+  .sw-panel .btn,
+  .sw-manual .btn,
+  #solidworks-test-button {
+    min-height: 44px;
+  }
+}
+.sw-input-with-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.sw-input-with-action input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.sw-folder-list {
+  display: grid;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sw-folder-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.sw-folder-row code {
+  flex: 1 1 10rem;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 30rem) {
+  .sw-folder-row button {
+    width: 100%;
+  }
+}
+@media (pointer: coarse) {
+  .sw-input-with-action button,
+  .sw-folder-row button {
+    min-height: 44px;
+  }
+}
+
+.sw-pdm-controls {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.sw-progress {
+  accent-color: var(--color-primary);
+}
