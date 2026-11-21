@@ -241,6 +241,19 @@ class PdmIndexerService:
 
         return None
 
+    async def get_last_completed_at(self, tool_config_id: str) -> Optional[datetime]:
+        """Completion time of the most recent successful job, even when a later job failed or is running."""
+        try:
+            db: Any = await get_db()
+            prisma_job = await db.pdmindexjob.find_first(
+                where={"toolConfigId": tool_config_id, "status": "completed", "completedAt": {"not": None}},
+                order={"completedAt": "desc"},
+            )
+            return prisma_job.completedAt if prisma_job else None
+        except Exception as e:
+            logger.warning(f"Error getting last completed PDM job: {e}")
+            return None
+
     async def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of an active job."""
         # Check if job is active in memory

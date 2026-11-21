@@ -18352,11 +18352,9 @@ async def get_pdm_index_stats(tool_id: str, _user: User = Depends(require_admin)
     document_count = await pdm_indexer.get_document_count(tool_id, tool_name)
     embedding_count = await pdm_indexer.get_embedding_count(tool_id, tool_name)
 
-    # Get last indexed timestamp from latest completed job
-    last_indexed_at = None
-    latest_job = await pdm_indexer.get_latest_job(tool_id)
-    if latest_job and latest_job.status.value == "completed" and latest_job.completed_at:
-        last_indexed_at = latest_job.completed_at.isoformat()
+    # The index stays usable while a later job runs or after it failed or was cancelled.
+    last_completed_at = await pdm_indexer.get_last_completed_at(tool_id)
+    last_indexed_at = last_completed_at.isoformat() if last_completed_at else None
 
     return PdmStatsResponse(
         document_count=document_count,
