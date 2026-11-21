@@ -4,7 +4,7 @@ import type { HTMLAttributes, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ToolsPanel } from './ToolsPanel';
-import type { ToolConfig, ToolGroup } from '@/types';
+import type { InstructionSkill, InstructionSkillOwner, ToolConfig, ToolGroup } from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   listToolConfigs: vi.fn(),
@@ -25,6 +25,12 @@ const apiMock = vi.hoisted(() => ({
   listUsers: vi.fn(),
   listUsersDirectory: vi.fn(),
   listAuthGroups: vi.fn(),
+  getInstructionSkillSummary: vi.fn(),
+  copyToolInstructionSkills: vi.fn(),
+}));
+
+const skillsDialogMock = vi.hoisted(() => ({
+  nextSkills: [] as InstructionSkill[],
 }));
 
 const toastMock = {
@@ -72,6 +78,36 @@ vi.mock('./ToolWizard', () => ({
   },
 }));
 vi.mock('./MountSourceWizard', () => ({ MountSourceWizard: () => null }));
+vi.mock('./InstructionSkillsDialog', () => ({
+  InstructionSkillsDialog: ({
+    open,
+    owner,
+    ownerName,
+    onClose,
+    onSkillsChanged,
+  }: {
+    open: boolean;
+    owner: InstructionSkillOwner;
+    ownerName: string;
+    onClose: () => void;
+    onSkillsChanged?: (skills: InstructionSkill[]) => void;
+  }) =>
+    open ? (
+      <div
+        role="dialog"
+        aria-label={`Skills · ${ownerName}`}
+        data-owner-kind={owner.kind}
+        data-owner-id={owner.id}
+      >
+        <button type="button" onClick={onClose}>
+          Close Skills Mock
+        </button>
+        <button type="button" onClick={() => onSkillsChanged?.(skillsDialogMock.nextSkills)}>
+          Save Skills Mock
+        </button>
+      </div>
+    ) : null,
+}));
 vi.mock('./ToolAccessModal', () => ({
   ToolAccessModal: ({
     open,
@@ -316,6 +352,23 @@ const toolGroup: ToolGroup = {
   updated_at: '2026-01-01T00:00:00Z',
 };
 
+function skillFixture(id: string, enabled: boolean): InstructionSkill {
+  return {
+    id,
+    owner_kind: 'tool',
+    owner_id: 'tool-ungrouped',
+    name: `skill-${id}`,
+    description: 'Describes the skill',
+    content: 'Skill body',
+    mode: 'on_demand',
+    enabled,
+    sort_order: 0,
+    uri: `skill://tools/tool-ungrouped/skill-${id}/SKILL.md`,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  };
+}
+
 class ResizeObserverMock {
   observe(): void {}
   disconnect(): void {}
@@ -372,6 +425,9 @@ describe('ToolsPanel', () => {
     });
     apiMock.listUsers.mockResolvedValue([]);
     apiMock.listAuthGroups.mockResolvedValue([]);
+    apiMock.getInstructionSkillSummary.mockResolvedValue({ tools: {}, routes: {} });
+    apiMock.copyToolInstructionSkills.mockResolvedValue([]);
+    skillsDialogMock.nextSkills = [];
     contentProtectionMock.getConfig.mockResolvedValue(null);
   });
 
@@ -1228,4 +1284,230 @@ describe('ToolsPanel', () => {
     expect(screen.getByText(/bearer/i)).toBeTruthy();
     expect(screen.queryByText(/token/i)).toBeNull();
   });
+
+  it('hides the skills badge and footer button when the tool has no skills', async () => {
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    expect(document.querySelector('[data-tool-skills-badge]')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Skills' })).toBeNull();
+  });
+
+  it('shows a skill count badge whose title gives the enabled count', async () => {
+    apiMock.getInstructionSkillSummary.mockResolvedValue({
+      tools: { 'tool-ungrouped': { total: 3, enabled: 2 } },
+      routes: {},
+    });
+
+    render(<ToolsPanel />);
+
+    const badge = await screen.findByRole('button', { name: /^3 skills,/ });
+    expect(badge.getAttribute('title')).toBe('2 of 3 skills enabled');
+    expect(badge.hasAttribute('data-tool-skills-badge')).toBe(true);
+  });
+
+  it('uses the singular label for a single skill', async () => {
+    apiMock.getInstructionSkillSummary.mockResolvedValue({
+      tools: { 'tool-ungrouped': { total: 1, enabled: 0 } },
+      routes: {},
+    });
+
+    render(<ToolsPanel />);
+
+    const badge = await screen.findByRole('button', { name: /^1 skill,/ });
+    expect(badge.textContent).toBe('1 skill');
+    expect(badge.getAttribute('title')).toBe('0 of 1 skills enabled');
+  });
+
+  it('opens the skills dialog for the tool from its badge without opening the card menu', async () => {
+    const user = userEvent.setup();
+    apiMock.getInstructionSkillSummary.mockResolvedValue({
+      tools: { 'tool-ungrouped': { total: 1, enabled: 1 } },
+      routes: {},
+    });
+
+    render(<ToolsPanel />);
+
+    await user.click(await screen.findByRole('button', { name: /^1 skill,/ }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Skills · Ungrouped Tool' });
+    expect(dialog.getAttribute('data-owner-kind')).toBe('tool');
+    expect(dialog.getAttribute('data-owner-id')).toBe('tool-ungrouped');
+    expect(screen.queryByRole('button', { name: /^Duplicate$/ })).toBeNull();
+  });
+
+  it('lists a Skills item after Edit Users with the attachment summary', async () => {
+    const user = userEvent.setup();
+    apiMock.getInstructionSkillSummary.mockResolvedValue({
+      tools: { 'tool-ungrouped': { total: 3, enabled: 2 } },
+      routes: {},
+    });
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+
+    const item = await screen.findByRole('button', { name: /^Skills/ });
+    expect(item.textContent).toContain('3 attached, 2 enabled');
+
+    await user.click(item);
+
+    expect(await screen.findByRole('dialog', { name: 'Skills · Ungrouped Tool' })).toBeTruthy();
+  });
+
+  it('shows None yet on the Skills menu item when the tool has no skills', async () => {
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+
+    const item = await screen.findByRole('button', { name: /^Skills/ });
+    expect(item.textContent).toContain('None yet');
+  });
+
+  it('shows a secondary Skills button in footer actions that opens the dialog', async () => {
+    const user = userEvent.setup();
+    apiMock.getSettings.mockResolvedValue({
+      settings: { show_tool_card_footer_actions: true },
+    });
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    const skillsButton = screen.getByRole('button', { name: 'Skills' });
+    expect(skillsButton.classList.contains('btn-secondary')).toBe(true);
+
+    await user.click(skillsButton);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Skills · Ungrouped Tool' });
+    expect(dialog.getAttribute('data-owner-id')).toBe('tool-ungrouped');
+  });
+
+  it('updates the badge from the skills the dialog reports', async () => {
+    const user = userEvent.setup();
+    apiMock.getInstructionSkillSummary.mockResolvedValue({
+      tools: { 'tool-ungrouped': { total: 1, enabled: 1 } },
+      routes: {},
+    });
+    skillsDialogMock.nextSkills = [skillFixture('one', true), skillFixture('two', false)];
+
+    render(<ToolsPanel />);
+
+    await user.click(await screen.findByRole('button', { name: /^1 skill,/ }));
+    await user.click(await screen.findByRole('button', { name: 'Save Skills Mock' }));
+
+    const badge = await screen.findByRole('button', { name: /^2 skills,/ });
+    expect(badge.getAttribute('title')).toBe('1 of 2 skills enabled');
+  });
+
+  it('keeps the tool list usable when the skill summary cannot be loaded', async () => {
+    apiMock.getInstructionSkillSummary.mockRejectedValue(new Error('offline'));
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    expect(document.querySelector('[data-tool-skills-badge]')).toBeNull();
+    expect(toastMock.error).not.toHaveBeenCalled();
+  });
+
+  it('copies the source skills to the duplicate and reports success', async () => {
+    const user = userEvent.setup();
+    apiMock.getInstructionSkillSummary.mockResolvedValue({
+      tools: { 'tool-ungrouped': { total: 2, enabled: 2 } },
+      routes: {},
+    });
+    apiMock.copyToolInstructionSkills.mockResolvedValue([
+      skillFixture('one', true),
+      skillFixture('two', true),
+    ]);
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+    await user.click(await screen.findByRole('button', { name: /Duplicate/ }));
+
+    await waitFor(() => {
+      expect(apiMock.copyToolInstructionSkills).toHaveBeenCalledWith(
+        'tool-ungrouped-copy',
+        'tool-ungrouped',
+      );
+    });
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Tool duplicated'));
+    expect(await screen.findAllByRole('button', { name: /^2 skills,/ })).toHaveLength(2);
+  });
+
+  it('keeps the duplicate and warns when its skills cannot be copied', async () => {
+    const user = userEvent.setup();
+    apiMock.getInstructionSkillSummary.mockResolvedValue({
+      tools: { 'tool-ungrouped': { total: 2, enabled: 2 } },
+      routes: {},
+    });
+    apiMock.copyToolInstructionSkills.mockRejectedValue(new Error('Name clash'));
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+    await user.click(await screen.findByRole('button', { name: /Duplicate/ }));
+
+    await waitFor(() => {
+      expect(toastMock.error).toHaveBeenCalledWith(
+        'Tool duplicated, but its skills could not be copied',
+      );
+    });
+    expect(toastMock.success).not.toHaveBeenCalledWith('Tool duplicated');
+    expect(apiMock.createToolConfig).toHaveBeenCalledOnce();
+    expect(await screen.findByText('Ungrouped Tool Copy')).toBeTruthy();
+  });
+
+  it('requests skill copying even when the summary has no source entry', async () => {
+    const user = userEvent.setup();
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+    await user.click(await screen.findByRole('button', { name: /Duplicate/ }));
+
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Tool duplicated'));
+    expect(apiMock.copyToolInstructionSkills).toHaveBeenCalledWith(
+      'tool-ungrouped-copy',
+      'tool-ungrouped',
+    );
+  });
+
+  it.each(['failed', 'stale'] as const)(
+    'copies source skills when the optional summary is %s',
+    async (summaryState) => {
+      const user = userEvent.setup();
+      if (summaryState === 'failed') {
+        apiMock.getInstructionSkillSummary.mockRejectedValue(new Error('offline'));
+      } else {
+        apiMock.getInstructionSkillSummary.mockResolvedValue({
+          tools: { 'tool-ungrouped': { total: 0, enabled: 0 } },
+          routes: {},
+        });
+      }
+      apiMock.copyToolInstructionSkills.mockResolvedValue([skillFixture('one', true)]);
+
+      render(<ToolsPanel />);
+
+      await screen.findByText('Ungrouped Tool');
+      expect(document.querySelector('[data-tool-skills-badge]')).toBeNull();
+      fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+      await user.click(await screen.findByRole('button', { name: /Duplicate/ }));
+
+      await waitFor(() =>
+        expect(apiMock.copyToolInstructionSkills).toHaveBeenCalledWith(
+          'tool-ungrouped-copy',
+          'tool-ungrouped',
+        ),
+      );
+      expect(await screen.findByRole('button', { name: /^1 skill,/ })).toBeTruthy();
+      expect(toastMock.success).toHaveBeenCalledWith('Tool duplicated');
+      expect(toastMock.error).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -125,6 +125,15 @@ class ToolExportImportHelpersTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.instruction_skills_patch = mock.patch(
+            "ragtime.indexer.routes.instruction_skill_repository.list_instruction_skills",
+            new_callable=mock.AsyncMock,
+            return_value=[],
+        )
+        self.instruction_skills_patch.start()
+        self.addCleanup(self.instruction_skills_patch.stop)
+
     def _capturing_import_repo(
         self,
         *,
@@ -224,6 +233,71 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
         mock_ensure_policy.assert_awaited_once_with("imported-123")
         mock_notify.assert_called_once()
         mock_invalidate.assert_called_once()
+
+    async def test_instruction_skills_round_trip(self) -> None:
+        from datetime import datetime, timezone
+
+        from ragtime.skills.models import InstructionSkill
+
+        original = ToolConfig(id="source", name="Tool", tool_type=ToolType.POSTGRES, connection_config={})
+        instruction_skill = InstructionSkill(
+            id="skill",
+            owner_kind="tool",
+            owner_id="source",
+            name="guide",
+            description="Guide",
+            content="Text",
+            mode="always",
+            enabled=False,
+            sort_order=3,
+            uri="skill://tools/source/guide/SKILL.md",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        mock_repo, _ = self._capturing_import_repo()
+        mock_repo.get_tool_config = mock.AsyncMock(return_value=original)
+        mock_repo.get_settings = mock.AsyncMock(return_value=AppSettings())
+        with (
+            mock.patch("ragtime.indexer.routes.repository", mock_repo),
+            mock.patch("ragtime.indexer.routes.instruction_skill_repository.list_instruction_skills", mock.AsyncMock(return_value=[instruction_skill])),
+            mock.patch("ragtime.indexer.routes.instruction_skill_repository.create_instruction_skills", mock.AsyncMock()) as create_skills,
+            mock.patch("ragtime.indexer.routes.ensure_tool_access_policy", mock.AsyncMock()),
+            mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
+            mock.patch("ragtime.indexer.routes.notify_tools_changed"),
+            mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
+        ):
+            response = await routes.export_tool_config("source", routes.ToolExportRequest(password=EXPORT_PASSWORD))
+            await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=bytes(response.body).decode()))
+        call = create_skills.await_args
+        assert call is not None
+        args = call.args
+        self.assertEqual(args[:2], ("tool", "imported-1"))
+        self.assertEqual(args[2][0].model_dump(), instruction_skill.model_dump(include={"name", "description", "content", "mode", "enabled", "sort_order"}))
+
+    async def test_invalid_imported_instruction_skill_rejected_before_tool_creation(self) -> None:
+        config = ToolConfig(name="Tool", tool_type=ToolType.POSTGRES, connection_config={})
+        envelope = routes._build_tool_export_envelope(
+            config, EXPORT_PASSWORD, [{"name": "Invalid name", "description": "d", "content": "", "mode": "on_demand"}]
+        )
+        mock_repo, _ = self._capturing_import_repo()
+        with mock.patch("ragtime.indexer.routes.repository", mock_repo), self.assertRaises(Exception) as error:
+            await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
+        self.assertEqual(getattr(error.exception, "status_code", None), 400)
+        self.assertIsNone(_["config"])
+
+    async def test_failed_instruction_skill_insert_deletes_imported_tool(self) -> None:
+        config = ToolConfig(name="Tool", tool_type=ToolType.POSTGRES, connection_config={})
+        envelope = routes._build_tool_export_envelope(config, EXPORT_PASSWORD, [{"name": "guide", "description": "d", "content": "", "mode": "on_demand"}])
+        mock_repo, _ = self._capturing_import_repo()
+        mock_repo.delete_tool_config = mock.AsyncMock(return_value=True)
+        with (
+            mock.patch("ragtime.indexer.routes.repository", mock_repo),
+            mock.patch("ragtime.indexer.routes.instruction_skill_repository.create_instruction_skills", mock.AsyncMock(side_effect=RuntimeError("database"))),
+            self.assertRaises(Exception) as error,
+        ):
+            await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
+        self.assertEqual(getattr(error.exception, "status_code", None), 500)
+        mock_repo.delete_tool_config.assert_awaited_once_with("imported-1")
 
     async def test_export_keeps_http_api_secret_values(self) -> None:
         from ragtime.http_api.models import HTTP_API_SECRET_FIELDS
@@ -953,6 +1027,15 @@ SOLIDWORKS_CONNECTION = {
 
 
 class SolidworksExportImportTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.instruction_skills_patch = mock.patch(
+            "ragtime.indexer.routes.instruction_skill_repository.list_instruction_skills",
+            new_callable=mock.AsyncMock,
+            return_value=[],
+        )
+        self.instruction_skills_patch.start()
+        self.addCleanup(self.instruction_skills_patch.stop)
+
     def solidworks_tool(self, connection_config: dict) -> ToolConfig:
         return ToolConfig(
             id="tool-sw",

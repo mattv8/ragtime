@@ -30,6 +30,7 @@ from ragtime.http_api.models import HttpApiConnectionConfig
 from ragtime.indexer.embedding_errors import EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.schema_service import search_schema_index
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds, tool_health_monitor
+from ragtime.mcp.skills import tool_skill_lines
 from ragtime.rag import rag
 from ragtime.rag.components import (
     KNOWLEDGE_SEARCH_TOOL_ID,
@@ -1288,7 +1289,7 @@ class MCPToolAdapter:
             conn_config = HttpApiConnectionConfig(**(config.get("connection_config") or {}))
             base_desc += f" {build_http_api_request_guidance(conn_config)}"
 
-        return base_desc
+        return base_desc + tool_skill_lines(config)
 
     async def _create_executor(self, config: dict, tool_type: str) -> Callable[..., Awaitable[str]]:
         """

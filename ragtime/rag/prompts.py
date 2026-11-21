@@ -25,6 +25,7 @@ from typing import Any, Iterable, List, Mapping, Optional, Sequence
 from ragtime.core.entrypoint_status import EntrypointStatus
 from ragtime.core.type_coercion import coerce_nonnegative_int_metadata
 from ragtime.core.user_identity import normalize_user_identity
+from ragtime.skills.contract import SKILL_MODE_ALWAYS, SKILL_MODE_ON_DEMAND, SKILL_OWNER_TOOL, build_skill_uri
 
 # =============================================================================
 # BASE SYSTEM PROMPTS
@@ -1626,6 +1627,8 @@ def build_tool_system_prompt(
     no_tools_selected: bool = False,
     tool_skill_mode: str = "disabled",
     has_loadable_tool_skills: bool = False,
+    *,
+    instruction_skill_loader_available: bool = False,
 ) -> str:
     """Build system prompt section describing available system tools.
 
@@ -1685,6 +1688,7 @@ No tools configured. Answer from indexed knowledge sources only (code, documenta
     }
 
     tool_lines = []
+    always_instruction_skills = []
     for config in tool_configs:
         tool_type = config.get("tool_type", "unknown")
         name = config.get("name", "Unnamed")
@@ -1695,6 +1699,22 @@ No tools configured. Answer from indexed knowledge sources only (code, documenta
         if description:
             line += f": {description}"
         tool_lines.append(line)
+        for instruction_skill in config.get("skills") or []:
+            skill_mode = instruction_skill["mode"]
+            if skill_mode != SKILL_MODE_ALWAYS and not (skill_mode == SKILL_MODE_ON_DEMAND and instruction_skill_loader_available):
+                continue
+            skill_description = " ".join(instruction_skill["description"].split())
+            if len(skill_description) > 300:
+                skill_description = skill_description[:300] + "…"
+            skill_name = instruction_skill["name"]
+            skill_line = f"  - Skill `{skill_name}`: {skill_description}"
+            if skill_mode == SKILL_MODE_ALWAYS:
+                skill_line += " (always applied; text below)"
+                always_instruction_skills.append(f"### {name} · {skill_name}\n\n{instruction_skill['content']}")
+            else:
+                uri = build_skill_uri(SKILL_OWNER_TOOL, str(config.get("id") or ""), skill_name)
+                skill_line += f" Load with `read_skill` (uri `{uri}`)."
+            tool_lines.append(skill_line)
 
     prompt = f"""
 
@@ -1721,5 +1741,9 @@ Each tool connects to a different system. Read the description to choose the cor
             unavailable_lines.append(f"- ... and {remaining} more")
 
         prompt += "\n\n## CONFIGURED BUT UNAVAILABLE IN THIS REQUEST\n\n" + "\n".join(unavailable_lines) + "\n"
+
+    if always_instruction_skills:
+        prompt += "\n\n## TOOL SKILLS (ALWAYS APPLIED)\n\nAdmin-provided instructions for the tools above; follow them whenever you use that tool.\n\n"
+        prompt += "\n\n".join(always_instruction_skills) + "\n"
 
     return prompt

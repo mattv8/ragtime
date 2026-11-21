@@ -28,6 +28,7 @@ import {
   Download,
   Globe,
   Box,
+  BookOpen,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -60,7 +61,8 @@ export type IconType =
   | 'rotate-ccw'
   | 'activity'
   | 'download'
-  | 'globe';
+  | 'globe'
+  | 'book';
 
 const iconMap: Record<IconType, LucideIcon> = {
   database: Database,
@@ -92,6 +94,7 @@ const iconMap: Record<IconType, LucideIcon> = {
   activity: Activity,
   download: Download,
   globe: Globe,
+  book: BookOpen,
 };
 
 interface IconProps {

@@ -597,6 +597,7 @@ model ToolConfig {
   accessPolicy ToolAccessPolicy?
   pdmAutomationState PdmAutomationState?
   remotePairings RemotePairing[]
+  instructionSkills InstructionSkill[]
 
   @@index([groupId])
   @@map("tool_configs")
@@ -727,8 +728,31 @@ model McpRouteConfig {
 
   // Relation to tool selections
   toolSelections McpRouteToolSelection[]
+  instructionSkills InstructionSkill[]
 
   @@map("mcp_route_configs")
+}
+
+model InstructionSkill {
+  id           String          @id @default(uuid())
+  toolConfigId String?         @map("tool_config_id")
+  mcpRouteId   String?         @map("mcp_route_id")
+  toolConfig   ToolConfig?     @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+  mcpRoute     McpRouteConfig? @relation(fields: [mcpRouteId], references: [id], onDelete: Cascade)
+  name         String
+  description  String
+  content      String
+  mode         String          @default("on_demand")
+  enabled      Boolean         @default(true)
+  sortOrder    Int             @default(0) @map("sort_order")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([toolConfigId, name])
+  @@unique([mcpRouteId, name])
+  @@index([toolConfigId])
+  @@index([mcpRouteId])
+  @@map("instruction_skills")
 }
 
 /// Junction table for MCP route to tool config many-to-many relationship

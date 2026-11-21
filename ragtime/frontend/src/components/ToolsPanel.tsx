@@ -18,9 +18,14 @@ import type {
   UserspaceMountSource,
   MountSourceAffectedWorkspacesResponse,
   UserCloudOAuthAccount,
+  InstructionSkill,
+  InstructionSkillCount,
+  InstructionSkillOwner,
+  InstructionSkillSummary,
 } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
+import { InstructionSkillsDialog } from './InstructionSkillsDialog';
 import { MountSourceWizard } from './MountSourceWizard';
 import { Icon, getToolIconType } from './Icon';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
@@ -38,6 +43,11 @@ import { HardDrive, Trash2, Pencil, X, Upload } from 'lucide-react';
 import { resolveSourceDisplayPath } from '@/utils/mountPaths';
 import { toToolAccessGroupOptions, toToolAccessUserOptions } from '@/utils/toolAccessOptions';
 import { useIsTruncated } from '@/utils/useIsTruncated';
+import {
+  EMPTY_INSTRUCTION_SKILL_SUMMARY,
+  countInstructionSkills,
+  restoreFocusIfLost,
+} from '@/utils/instructionSkills';
 import {
   getExportPasswordPolicy,
   passwordMeetsRequirements,
@@ -293,6 +303,17 @@ interface ToolCardProps {
     updates: { name?: string; description?: string },
   ) => Promise<void>;
   classified?: boolean;
+  skillCount?: InstructionSkillCount;
+  onOpenSkills: (tool: ToolConfig) => void;
+}
+
+function formatInstructionSkillCount(count: InstructionSkillCount): string {
+  return count.total === 1 ? '1 skill' : `${count.total} skills`;
+}
+
+function describeInstructionSkillCount(count: InstructionSkillCount | undefined): string {
+  if (!count || count.total === 0) return 'None yet';
+  return `${count.total} attached, ${count.enabled} enabled`;
 }
 
 function ToolCard({
@@ -314,6 +335,8 @@ function ToolCard({
   schemaStats,
   onInlineUpdate,
   classified = false,
+  skillCount,
+  onOpenSkills,
 }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
   const hasSchemaIndexing = hasSchemaIndexingEnabled(tool);
@@ -488,6 +511,7 @@ function ToolCard({
   return (
     <div
       id={targetId}
+      tabIndex={-1}
       data-tool-type={tool.tool_type}
       className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}
     >
@@ -644,6 +668,22 @@ function ToolCard({
                     <span className="path-text">Scripts on</span>
                   </span>
                 </Popover>
+              )}
+              {skillCount && skillCount.total > 0 && (
+                <button
+                  type="button"
+                  className="tool-badge tool-skills-badge"
+                  data-tool-skills-badge
+                  title={`${skillCount.enabled} of ${skillCount.total} skills enabled`}
+                  aria-label={`${formatInstructionSkillCount(skillCount)}, ${skillCount.enabled} enabled. Open skills.`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenSkills(tool);
+                  }}
+                >
+                  <Icon name="book" size={12} />
+                  <span className="path-text">{formatInstructionSkillCount(skillCount)}</span>
+                </button>
               )}
               {classified && (
                 <span className="tool-badge" data-tool-classified-badge>
@@ -809,6 +849,15 @@ function ToolCard({
                 {schemaIndexing ? 'Indexing...' : 'Re-index Schema'}
               </button>
             )}
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              data-tool-skills-button
+              onClick={() => onOpenSkills(tool)}
+            >
+              <Icon name="book" size={14} />
+              Skills
+            </button>
             <button type="button" className="btn btn-sm" onClick={() => onEdit(tool)}>
               Edit
             </button>
@@ -925,6 +974,14 @@ export function ToolsPanel({
   >([]);
   const [toolAccessLoading, setToolAccessLoading] = useState(false);
   const [toolAccessSaving, setToolAccessSaving] = useState(false);
+  const [instructionSkillSummary, setInstructionSkillSummary] = useState<InstructionSkillSummary>(
+    EMPTY_INSTRUCTION_SKILL_SUMMARY,
+  );
+  const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
+  const [skillsDialogTarget, setSkillsDialogTarget] = useState<{
+    owner: InstructionSkillOwner;
+    ownerName: string;
+  } | null>(null);
 
   const [toolPasswordModal, setToolPasswordModal] = useState<
     { mode: 'export'; toolId: string } | { mode: 'import' } | null
@@ -1087,13 +1144,15 @@ export function ToolsPanel({
   const loadTools = useCallback(async () => {
     try {
       setLoading(true);
-      const [data, groupData, sources, settingsResponse, protectionConfig] = await Promise.all([
-        api.listToolConfigs(),
-        api.listToolGroups(),
-        api.listUserspaceMountSources(),
-        api.getSettings().catch(() => null),
-        contentProtectionApi.getConfig().catch(() => null),
-      ]);
+      const [data, groupData, sources, settingsResponse, protectionConfig, skillSummary] =
+        await Promise.all([
+          api.listToolConfigs(),
+          api.listToolGroups(),
+          api.listUserspaceMountSources(),
+          api.getSettings().catch(() => null),
+          contentProtectionApi.getConfig().catch(() => null),
+          api.getInstructionSkillSummary().catch(() => null),
+        ]);
       // Filter out filesystem_indexer tools - they're shown in the Indexer tab
       const connectionTools = data.filter((t) => t.tool_type !== 'filesystem_indexer');
       setTools(connectionTools);
@@ -1102,6 +1161,7 @@ export function ToolsPanel({
       setShowFooterActions(Boolean(settingsResponse?.settings?.show_tool_card_footer_actions));
       setExportPasswordPolicy(getExportPasswordPolicy(settingsResponse?.settings ?? null));
       setContentProtectionConfig(protectionConfig);
+      if (skillSummary) setInstructionSkillSummary(skillSummary);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to load tools');
     } finally {
@@ -1330,6 +1390,46 @@ export function ToolsPanel({
     await loadTools();
     toast.success('Tool configuration saved successfully');
   };
+
+  const openSkillsDialog = useCallback((tool: ToolConfig) => {
+    setSkillsDialogTarget({ owner: { kind: 'tool', id: tool.id }, ownerName: tool.name });
+    setSkillsDialogOpen(true);
+  }, []);
+
+  const closeSkillsDialog = useCallback(() => {
+    setSkillsDialogOpen(false);
+    if (skillsDialogTarget) {
+      restoreFocusIfLost(`tools-tool-${skillsDialogTarget.owner.id}`);
+    }
+  }, [skillsDialogTarget]);
+
+  const handleSkillsDialogChanged = useCallback(
+    (skills: InstructionSkill[]) => {
+      if (!skillsDialogTarget) return;
+      const toolId = skillsDialogTarget.owner.id;
+      setInstructionSkillSummary((current) => ({
+        ...current,
+        tools: { ...current.tools, [toolId]: countInstructionSkills(skills) },
+      }));
+    },
+    [skillsDialogTarget],
+  );
+
+  const copyToolSkillsForDuplicate = useCallback(
+    async (targetToolId: string, sourceToolId: string): Promise<boolean> => {
+      try {
+        const copied = await api.copyToolInstructionSkills(targetToolId, sourceToolId);
+        setInstructionSkillSummary((current) => ({
+          ...current,
+          tools: { ...current.tools, [targetToolId]: countInstructionSkills(copied) },
+        }));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [],
+  );
 
   const closeToolAccessModal = useCallback(() => {
     if (toolAccessSaving) {
@@ -1600,13 +1700,18 @@ export function ToolsPanel({
           });
         }
 
-        toast.success('Tool duplicated');
+        const skillsCopied = await copyToolSkillsForDuplicate(newTool.id, toolId);
+        if (skillsCopied) {
+          toast.success('Tool duplicated');
+        } else {
+          toast.error('Tool duplicated, but its skills could not be copied');
+        }
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to duplicate tool');
         await loadTools();
       }
     },
-    [tools, toast, loadTools],
+    [tools, toast, loadTools, copyToolSkillsForDuplicate],
   );
 
   const handleTestTool = async (toolId: string) => {
@@ -2551,6 +2656,8 @@ export function ToolsPanel({
           schemaStats={schemaStats[tool.id] || null}
           onInlineUpdate={handleInlineUpdate}
           classified={cpEnabled && requiredToolIds.has(tool.id)}
+          skillCount={instructionSkillSummary.tools[tool.id]}
+          onOpenSkills={openSkillsDialog}
         />
       </Popover>
     );
@@ -2640,6 +2747,15 @@ export function ToolsPanel({
               onContentProtectionModeChange={handleContentProtectionModeChange}
               onClose={closeToolAccessModal}
             />
+            {skillsDialogTarget && (
+              <InstructionSkillsDialog
+                open={skillsDialogOpen}
+                owner={skillsDialogTarget.owner}
+                ownerName={skillsDialogTarget.ownerName}
+                onClose={closeSkillsDialog}
+                onSkillsChanged={handleSkillsDialogChanged}
+              />
+            )}
 
             {toolContextMenu &&
               (() => {
@@ -2698,6 +2814,18 @@ export function ToolsPanel({
                         label: 'Edit Users',
                         icon: 'shield-check',
                         onSelect: () => closeAnd(() => void handleOpenToolAccess(contextTool)),
+                      },
+                      {
+                        label: 'Skills',
+                        icon: 'book',
+                        description: (
+                          <span data-instruction-skills-menu-description>
+                            {describeInstructionSkillCount(
+                              instructionSkillSummary.tools[contextTool.id],
+                            )}
+                          </span>
+                        ),
+                        onSelect: () => closeAnd(() => openSkillsDialog(contextTool)),
                       },
                       ...(contextTool.undecryptable_fields.length > 0
                         ? [
