@@ -743,13 +743,15 @@ def _register_handlers(
                                 annotations=(
                                     ToolAnnotations(
                                         readOnlyHint=not (
-                                            tool_def.tool_config.get("allow_write")
-                                            and (tool_def.tool_config.get("connection_config") or {}).get("pdm_approved_folders")
+                                            destructive := bool(
+                                                (
+                                                    tool_def.tool_config.get("allow_write")
+                                                    and (tool_def.tool_config.get("connection_config") or {}).get("pdm_approved_folders")
+                                                )
+                                                or (tool_def.tool_config.get("connection_config") or {}).get("allow_scripts")
+                                            )
                                         ),
-                                        destructiveHint=bool(
-                                            tool_def.tool_config.get("allow_write")
-                                            and (tool_def.tool_config.get("connection_config") or {}).get("pdm_approved_folders")
-                                        ),
+                                        destructiveHint=destructive,
                                     )
                                     if tool_def.tool_config.get("tool_type") == "solidworks"
                                     else None

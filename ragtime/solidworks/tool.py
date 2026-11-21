@@ -32,7 +32,10 @@ def build_solidworks_tool_description(config: dict) -> str:
     connection = config.get("connection_config") or {}
     version = connection.get("solidworks_version")
     linked = bool(connection.get("pdm_tool_id"))
-    access = "Vault changes allowed in approved folders." if linked and config.get("allow_write") and connection.get("pdm_approved_folders") else "Read-only."
+    vault_changes = linked and config.get("allow_write") and connection.get("pdm_approved_folders")
+    access = "Vault changes allowed in approved folders." if vault_changes else "Read-only."
+    if connection.get("allow_scripts"):
+        access = f"{access} Scripts allowed." if vault_changes else "Scripts allowed."
     pdm_description = f" Linked to PDM vault '{config.get('pdm_link_name') or 'Unknown'}': search the vault, get and open files." if linked else ""
     suffix = (
         f" {access}{pdm_description} Pinned to SolidWorks {version if version is not None else 'any installed version'}. "

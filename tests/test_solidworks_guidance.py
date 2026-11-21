@@ -15,11 +15,12 @@ TOPIC_IDS = (
     "paging",
     "pdm",
     "studying-models",
+    "scripts",
 )
 GUIDANCE_DIR = Path(guidance.__file__).parent / "guidance"
 MAX_LINES = 150
 # The PDM topic carries the full operation table and error table; amendment 3 caps it at 170 lines.
-MAX_LINES_BY_TOPIC = {"pdm": 170}
+MAX_LINES_BY_TOPIC = {"pdm": 170, "scripts": 170}
 
 # Every pdm.* operation of contract-pdm.md sections 2.1, 2.2 and 2.3.
 PDM_OPERATIONS = (
@@ -137,6 +138,11 @@ def _topic_text(topic_id: str) -> str:
 
 
 class GuideTopicListTests(unittest.TestCase):
+    def test_scripts_guidance_starts_with_csharp_limits_and_has_entry_point(self) -> None:
+        text = _topic_text("scripts")
+        self.assertLess(text.index('`$"…"'), text.index("public static class RagtimeScript"))
+        self.assertIn("Run(ScriptContext ctx)", text)
+
     def test_topic_ids_are_in_contract_order(self) -> None:
         self.assertEqual(tuple(topic["id"] for topic in GUIDE_TOPICS), TOPIC_IDS)
 

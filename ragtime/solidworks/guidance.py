@@ -42,6 +42,11 @@ GUIDE_TOPICS: tuple[dict[str, str], ...] = (
         "title": "Learn how existing models are built",
         "when_to_read": "Before building or changing a model: find similar existing models in the vault and read how their features, parameters, configurations and mates are set up.",
     },
+    {
+        "id": "scripts",
+        "title": "Build models with scripts",
+        "when_to_read": "Create or change models using C# 5 scripts.",
+    },
 )
 
 _GUIDANCE_DIR = Path(__file__).parent / "guidance"

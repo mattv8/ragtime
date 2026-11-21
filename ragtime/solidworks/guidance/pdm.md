@@ -130,7 +130,7 @@ Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
 
 ### New file
 
-1. Save the model in the approved vault folder's view, or in `work_folder`.
+1. Save the model in the approved vault folder's view, or in `work_folder` (see `scripts` for the build flow).
 2. `pdm.folder.create` if the target folder is missing. Missing parents inside approved folders are created too.
 3. `pdm.file.add` with `source` and `folder`. The file is left checked out to you.
 4. `pdm.variables.set` if data-card values are needed.

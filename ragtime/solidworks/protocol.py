@@ -7,6 +7,7 @@ import uuid
 
 PROTOCOL_VERSION = 1
 MAX_ENCODED_REQUEST_LENGTH = 8000
+MAX_ENCODED_SCRIPT_REQUEST_LENGTH = 32000
 
 
 class SolidworksProtocolError(ValueError):
@@ -31,7 +32,8 @@ def encode_request(request: dict) -> str:
     except (TypeError, ValueError) as exc:
         raise SolidworksProtocolError("Request is not JSON serializable") from exc
     encoded = base64.b64encode(payload).decode("ascii")
-    if len(encoded) > MAX_ENCODED_REQUEST_LENGTH or not re.fullmatch(r"[A-Za-z0-9+/=]+", encoded):
+    max_length = MAX_ENCODED_SCRIPT_REQUEST_LENGTH if request.get("operation") == "script.run" else MAX_ENCODED_REQUEST_LENGTH
+    if len(encoded) > max_length or not re.fullmatch(r"[A-Za-z0-9+/=]+", encoded):
         raise SolidworksProtocolError("Encoded request is invalid or too large")
     return encoded
 

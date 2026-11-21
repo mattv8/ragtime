@@ -91,5 +91,6 @@ with the message rather than guessing.
 
 Read `pdm` when the tool is linked to a PDM vault and you need to find or change vault files.
 Read `studying-models` before you propose or change a model, to see how similar models are built.
+Read `scripts` for the build-and-save flow.
 
 Call `guide` with `topic` set to one of these ids.

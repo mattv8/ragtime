@@ -2220,6 +2220,7 @@ class SolidworksConnectionConfig(SSHShellConnectionConfig):
     instance_mode: Literal["background", "attach"] = Field(default="background", description="SolidWorks instance mode")
     max_instances: int = Field(default=1, ge=1, le=4, description="Maximum background instances")
     idle_shutdown_seconds: int = Field(default=900, ge=60, le=86400, description="Background instance idle shutdown time in seconds")
+    allow_scripts: bool = False
     pdm_tool_id: str | None = None
     pdm_approved_folders: list[str] = Field(default_factory=list)
 

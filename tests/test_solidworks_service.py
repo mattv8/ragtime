@@ -135,6 +135,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
                 "max_instances": 3,
                 "idle_shutdown_seconds": 900,
                 "allow_write": False,
+                "allow_scripts": False,
                 "deadline_seconds": 20,
                 "max_result_bytes": 32768,
             },

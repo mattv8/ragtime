@@ -75,3 +75,4 @@ user opened.
 - The vault index holds document metadata only: file names, configurations, descriptions and BOM
   counts. It does not hold feature data. Feature data comes only from opening the file.
 - The index is a snapshot and can lag the vault. Confirm the live state with `pdm.file.info`.
+- See `scripts` for the build, save, add and check-in flow.

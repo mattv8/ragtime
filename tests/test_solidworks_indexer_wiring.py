@@ -238,6 +238,10 @@ class SolidworksIndexerWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config["max_instances"], 1)
         self.assertEqual(config["shell"], "powershell")
         self.assertEqual(config["pairing_id"], "pair")
+        self.assertFalse(config["allow_scripts"])
+        self.assertTrue(routes._parse_solidworks_connection_config({"host": "host", "user": "user", "allow_scripts": True})["allow_scripts"])
+        with self.assertRaises(HTTPException):
+            routes._parse_solidworks_connection_config({"host": "host", "user": "user", "allow_scripts": "invalid"})
         with self.assertRaises(HTTPException) as exc:
             routes._parse_solidworks_connection_config({"host": "host", "user": "user", "max_instances": 5})
         self.assertEqual(exc.exception.status_code, 400)
@@ -279,13 +283,14 @@ class SolidworksIndexerWiringTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(routes, "invalidate_settings_cache", lambda: None),
             mock.patch.object(routes, "notify_tools_changed", lambda: None),
         ):
-            await routes.update_tool_config("id", UpdateToolConfigRequest(connection_config={"password": "", "max_instances": 2}))
+            await routes.update_tool_config("id", UpdateToolConfigRequest(connection_config={"password": "", "max_instances": 2, "allow_scripts": True}))
         assert update.await_args is not None
         config = update.await_args.args[1]["connection_config"]
         self.assertEqual(config["password"], "secret")
         self.assertEqual(config["shell"], "powershell")
         self.assertEqual(config["pairing_id"], "pair")
         self.assertEqual(config["max_instances"], 2)
+        self.assertTrue(config["allow_scripts"])
         self.assertIsNone(config["pdm_tool_id"])
         self.assertEqual(config["pdm_approved_folders"], [])
 
