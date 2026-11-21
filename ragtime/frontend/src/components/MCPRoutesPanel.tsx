@@ -12,6 +12,11 @@ import { Eye, EyeOff } from 'lucide-react';
 import { useToast, ToastContainer } from './shared/Toast';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 import { generateCredentialValue } from '@/utils/credentialGenerator';
+import {
+  EMPTY_INSTRUCTION_SKILL_SUMMARY,
+  countInstructionSkills,
+  restoreFocusIfLost,
+} from '@/utils/instructionSkills';
 import type {
   McpRouteConfig,
   CreateMcpRouteRequest,
@@ -22,9 +27,14 @@ import type {
   ToolConfig,
   IndexInfo,
   AppSettings,
+  InstructionSkill,
+  InstructionSkillCount,
+  InstructionSkillOwner,
+  InstructionSkillSummary,
 } from '@/types';
 import { Icon } from './Icon';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
+import { InstructionSkillsDialog } from './InstructionSkillsDialog';
 import {
   getLdapGroupDisplayName,
   LdapGroupChips,
@@ -50,21 +60,39 @@ function generateSecret(): string {
   return generateCredentialValue(32);
 }
 
+function formatRouteSkillCount(count: InstructionSkillCount): string {
+  return count.total === 1 ? '1 route skill' : `${count.total} route skills`;
+}
+
 // Route card component
 interface RouteCardProps {
   route: McpRouteConfig;
   tools: ToolConfig[];
+  skillCount?: InstructionSkillCount;
   onEdit: (route: McpRouteConfig) => void;
   onDelete: (routeId: string) => void;
   onToggle: (routeId: string, enabled: boolean) => void;
+  onOpenSkills: (route: McpRouteConfig) => void;
 }
 
-function RouteCard({ route, tools, onEdit, onDelete, onToggle }: RouteCardProps) {
+function RouteCard({
+  route,
+  tools,
+  skillCount,
+  onEdit,
+  onDelete,
+  onToggle,
+  onOpenSkills,
+}: RouteCardProps) {
   const selectedTools = tools.filter((t) => route.tool_config_ids.includes(t.id));
   const oauthSummaryLabel = route.has_password ? 'OAuth2 + Password' : 'OAuth2';
 
   return (
-    <div className={`tool-card ${!route.enabled ? 'disabled' : ''}`}>
+    <div
+      id={`mcp-route-${route.id}`}
+      tabIndex={-1}
+      className={`tool-card ${!route.enabled ? 'disabled' : ''}`}
+    >
       <div className="tool-card-header">
         <div className="tool-card-icon">
           <Icon name="plug" size={24} />
@@ -112,6 +140,11 @@ function RouteCard({ route, tools, onEdit, onDelete, onToggle }: RouteCardProps)
         {route.include_knowledge_search && <span>Knowledge search</span>}
         {route.include_git_history && <span>Git history</span>}
         <span>{selectedTools.length} tool(s)</span>
+        {skillCount && skillCount.total > 0 && (
+          <span className="instruction-skills-route-count" data-mcp-route-skills-count>
+            {formatRouteSkillCount(skillCount)}
+          </span>
+        )}
       </div>
 
       {selectedTools.length > 0 && (
@@ -122,6 +155,15 @@ function RouteCard({ route, tools, onEdit, onDelete, onToggle }: RouteCardProps)
       )}
 
       <div className="tool-card-actions">
+        <button
+          type="button"
+          className="btn btn-sm btn-secondary"
+          data-mcp-route-skills-button
+          onClick={() => onOpenSkills(route)}
+        >
+          <Icon name="book" size={14} />
+          Skills
+        </button>
         <button type="button" className="btn btn-sm" onClick={() => onEdit(route)}>
           Edit
         </button>
@@ -1571,6 +1613,16 @@ export function MCPRoutesPanel({
   const [editingFilter, setEditingFilter] = useState<McpDefaultRouteFilter | null>(null);
   const [savingFilter, setSavingFilter] = useState(false);
 
+  // Instruction skills dialog state
+  const [instructionSkillSummary, setInstructionSkillSummary] = useState<InstructionSkillSummary>(
+    EMPTY_INSTRUCTION_SKILL_SUMMARY,
+  );
+  const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
+  const [skillsDialogTarget, setSkillsDialogTarget] = useState<{
+    owner: InstructionSkillOwner;
+    ownerName: string;
+  } | null>(null);
+
   // Categorize tools
   const filesystemTools = tools.filter((t) => t.tool_type === 'filesystem_indexer');
   const schemaTools = tools.filter((t) => {
@@ -1585,18 +1637,21 @@ export function MCPRoutesPanel({
     setLoading(true);
 
     try {
-      const [routesRes, filtersRes, toolsRes, indexesRes, settingsRes] = await Promise.all([
-        api.listMcpRoutes(),
-        api.listMcpDefaultFilters(),
-        api.listToolConfigs(),
-        api.listIndexes(),
-        api.getSettings(),
-      ]);
+      const [routesRes, filtersRes, toolsRes, indexesRes, settingsRes, skillSummary] =
+        await Promise.all([
+          api.listMcpRoutes(),
+          api.listMcpDefaultFilters(),
+          api.listToolConfigs(),
+          api.listIndexes(),
+          api.getSettings(),
+          api.getInstructionSkillSummary().catch(() => null),
+        ]);
       setRoutes(routesRes.routes);
       setFilters(filtersRes.filters);
       setTools(toolsRes);
       setDocumentIndexes(indexesRes);
       setSettings(settingsRes.settings);
+      if (skillSummary) setInstructionSkillSummary(skillSummary);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to load MCP configuration');
     } finally {
@@ -1653,6 +1708,30 @@ export function MCPRoutesPanel({
     setEditingRoute(route);
     setShowRouteWizard(true);
   };
+
+  const openSkillsDialog = (route: McpRouteConfig) => {
+    setSkillsDialogTarget({ owner: { kind: 'route', id: route.id }, ownerName: route.name });
+    setSkillsDialogOpen(true);
+  };
+
+  const closeSkillsDialog = useCallback(() => {
+    setSkillsDialogOpen(false);
+    if (skillsDialogTarget) {
+      restoreFocusIfLost(`mcp-route-${skillsDialogTarget.owner.id}`);
+    }
+  }, [skillsDialogTarget]);
+
+  const handleSkillsDialogChanged = useCallback(
+    (skills: InstructionSkill[]) => {
+      if (!skillsDialogTarget) return;
+      const routeId = skillsDialogTarget.owner.id;
+      setInstructionSkillSummary((current) => ({
+        ...current,
+        routes: { ...current.routes, [routeId]: countInstructionSkills(skills) },
+      }));
+    },
+    [skillsDialogTarget],
+  );
 
   const handleCreateRoute = () => {
     setEditingRoute(null);
@@ -1864,9 +1943,11 @@ export function MCPRoutesPanel({
                           key={route.id}
                           route={route}
                           tools={tools}
+                          skillCount={instructionSkillSummary.routes[route.id]}
                           onEdit={handleEditRoute}
                           onDelete={handleDeleteRoute}
                           onToggle={handleToggleRoute}
+                          onOpenSkills={openSkillsDialog}
                         />
                       ))}
                     </div>
@@ -1939,6 +2020,16 @@ export function MCPRoutesPanel({
           )}
         </>
       </div>
+
+      {skillsDialogTarget && (
+        <InstructionSkillsDialog
+          open={skillsDialogOpen}
+          owner={skillsDialogTarget.owner}
+          ownerName={skillsDialogTarget.ownerName}
+          onClose={closeSkillsDialog}
+          onSkillsChanged={handleSkillsDialogChanged}
+        />
+      )}
     </>
   );
 }

@@ -25,8 +25,10 @@ from contextlib import contextmanager
 from typing import Any, cast
 
 from mcp.server import NotificationOptions, Server
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.session import ServerSession
-from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
+from mcp.types import CallToolResult, Resource, TextContent, Tool, ToolAnnotations
+from pydantic import AnyUrl
 
 from ragtime.content_protection.external import (
     authorize_external_content,
@@ -37,8 +39,10 @@ from ragtime.core.app_settings import get_app_settings, invalidate_settings_cach
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.utils import safe_tool_name
+from ragtime.mcp.skills import read_skill_description, route_instructions, visible_skills
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
 from ragtime.rag import rag
+from ragtime.skills.contract import READ_SKILL_TOOL_NAME, SKILL_MARKDOWN_MIME_TYPE, SKILL_OWNER_TOOL, SkillRecord, parse_skill_uri, render_skill_markdown
 from ragtime.tools.ssh_transfer import build_workspace_file_callbacks
 from ragtime.userspace.development_accounts import (
     AccountWorkspaceCreateRequest,
@@ -696,11 +700,24 @@ def _register_handlers(
     route_filter: McpRouteFilter | None = None,
     *,
     development_tools: bool = True,
+    route_id: str | None = None,
+    route_skills: list[SkillRecord] | None = None,
 ) -> None:
     """Register MCP protocol handlers on the server instance."""
 
     # Use provided adapter or default
     tool_adapter = adapter if adapter else mcp_tool_adapter
+    route_instruction_skills = route_skills or []
+
+    async def skill_catalog() -> tuple[list[Any], dict[str, tuple[SkillRecord, str]]]:
+        if not _general_tools_allowed(get_request_development_principal()):
+            return [], {}
+        definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
+        return definitions, visible_skills(definitions, route_id, route_instruction_skills)
+
+    def skill_tool_id(uri: str) -> str | None:
+        owner = parse_skill_uri(uri)
+        return owner[1] if owner and owner[0] == SKILL_OWNER_TOOL else None
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -721,14 +738,21 @@ def _register_handlers(
             # tools, never the legacy global tool catalog.
             if _general_tools_allowed(principal):
                 tool_definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
+                timeout_limit = await tool_adapter.get_http_call_timeout_limit() if tool_adapter.http_call_limit_enabled else None
+                skills = visible_skills(tool_definitions, route_id, route_instruction_skills)
+                collision = any(definition.name == READ_SKILL_TOOL_NAME for definition in tool_definitions)
+                if collision and skills:
+                    logger.warning("Skipping built-in read_skill: a configured tool already uses that name")
 
                 for tool_def in tool_definitions:
+                    input_schema = tool_adapter.limit_input_schema(tool_def.input_schema, timeout_limit)
+                    description = tool_def.description.split("\nSkills:", 1)[0] if collision else tool_def.description
                     if tool_def.is_synthetic:
                         tools.append(
                             Tool(
                                 name=tool_def.name,
-                                description=tool_def.description,
-                                inputSchema=tool_def.input_schema,
+                                description=description,
+                                inputSchema=input_schema,
                                 annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True),
                             )
                         )
@@ -736,10 +760,19 @@ def _register_handlers(
                         tools.append(
                             Tool(
                                 name=tool_def.name,
-                                description=tool_def.description,
-                                inputSchema=tool_def.input_schema,
+                                description=description,
+                                inputSchema=input_schema,
                             )
                         )
+
+                if skills and not collision:
+                    tools.append(
+                        Tool(
+                            name=READ_SKILL_TOOL_NAME,
+                            description=read_skill_description(skills),
+                            inputSchema={"type": "object", "properties": {"uri": {"type": "string"}}, "required": ["uri"]},
+                        )
+                    )
 
             if principal is not None and development_tools:
                 # Definitions are rebuilt per request because the operation
@@ -790,6 +823,26 @@ def _register_handlers(
             principal = get_request_development_principal()
             if not _general_tools_allowed(principal):
                 return _development_error("tool_not_available", "This identity cannot call legacy MCP tools.")
+
+            if name == READ_SKILL_TOOL_NAME:
+                definitions, skills = await skill_catalog()
+                if not any(definition.name == READ_SKILL_TOOL_NAME for definition in definitions):
+                    uri = str(arguments.get("uri", ""))
+                    skill = skills.get(uri)
+                    if skill is None:
+                        return _development_error("skill_not_available", "Skill is not available.")
+                    result = render_skill_markdown(skill[0])
+                    await authorize_external_content(
+                        result,
+                        direction="outbound",
+                        principal=principal,
+                        surface="mcp",
+                        mcp_route=_mcp_route_id.get(),
+                        tool_id=skill_tool_id(uri),
+                        operation="tools/call",
+                        execution_completed=True,
+                    )
+                    return [TextContent(type="text", text=result)]
 
             # If a route filter is active, validate the tool is allowed
             if route_filter is not None:
@@ -847,6 +900,35 @@ def _register_handlers(
                 isError=True,
             )
 
+    @server.list_resources()
+    async def list_resources() -> list[Resource]:
+        _bind_session_request_context(server)
+        _, skills = await skill_catalog()
+        return [
+            Resource(uri=AnyUrl(uri), name=skill["name"], description=skill["description"], mimeType=SKILL_MARKDOWN_MIME_TYPE)
+            for uri, (skill, _) in skills.items()
+        ]
+
+    @server.read_resource()
+    async def read_resource(uri: AnyUrl) -> list[ReadResourceContents]:
+        _bind_session_request_context(server)
+        _, skills = await skill_catalog()
+        skill = skills.get(str(uri))
+        if skill is None:
+            raise ValueError("Skill is not available.")
+        result = render_skill_markdown(skill[0])
+        await authorize_external_content(
+            result,
+            direction="outbound",
+            principal=get_request_development_principal(),
+            surface="mcp",
+            mcp_route=_mcp_route_id.get(),
+            tool_id=skill_tool_id(str(uri)),
+            operation="resources/read",
+            execution_completed=True,
+        )
+        return [ReadResourceContents(content=result, mime_type=SKILL_MARKDOWN_MIME_TYPE)]
+
 
 async def get_custom_route_server(
     route_path: str,
@@ -884,7 +966,7 @@ async def get_custom_route_server(
     # Find the route configuration
     route = await db.mcprouteconfig.find_unique(
         where={"routePath": route_path},
-        include={"toolSelections": True},
+        include={"toolSelections": True, "instructionSkills": True},
     )
 
     if not route or not route.enabled:
@@ -911,9 +993,16 @@ async def get_custom_route_server(
     server_name = app_settings.get("server_name", "Ragtime")
     route_server_name = f"{server_name}-{route_path}"
 
-    server = Server(route_server_name)
+    route_rows = getattr(route, "instructionSkills", None)
+    route_skills: list[SkillRecord] = [
+        {"id": str(skill.id), "name": skill.name, "description": skill.description, "content": skill.content, "mode": skill.mode, "sort_order": skill.sortOrder}
+        for skill in (route_rows if isinstance(route_rows, list) else [])
+        if skill.enabled
+    ]
+    route_skills.sort(key=lambda skill: (skill["sort_order"], skill["name"]))
+    server = Server(route_server_name, instructions=route_instructions(str(route.id), route_skills))
     _enable_dynamic_tool_refresh(server)
-    _register_handlers(server, adapter, route_filter, development_tools=False)
+    _register_handlers(server, adapter, route_filter, development_tools=False, route_id=str(route.id), route_skills=route_skills)
     _custom_route_servers[route_path] = server
 
     logger.info(f"Created custom MCP server for route: /mcp/{route_path}")
@@ -1014,10 +1103,12 @@ async def run_mcp_server(transport: str = "stdio") -> None:
     except Exception as e:
         logger.warning(f"RAG initialization failed (knowledge search unavailable): {e}")
 
+    previous_http_call_limit_enabled = mcp_tool_adapter.http_call_limit_enabled
     try:
         if transport == "stdio":
             from mcp.server.stdio import stdio_server
 
+            mcp_tool_adapter.http_call_limit_enabled = False
             default_server = await get_mcp_server()
 
             async with stdio_server() as (read_stream, write_stream):
@@ -1031,6 +1122,7 @@ async def run_mcp_server(transport: str = "stdio") -> None:
         else:
             raise ValueError(f"Unsupported transport: {transport}")
     finally:
+        mcp_tool_adapter.http_call_limit_enabled = previous_http_call_limit_enabled
         await disconnect_db()
         logger.info("MCP server stopped")
 

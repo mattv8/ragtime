@@ -410,6 +410,8 @@ from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
 from ragtime.remote_client.removal import execute_windows_cleanup, is_windows_pairing_tool, validate_cleanup_request
 from ragtime.remote_client.repository import remote_pairing_repository
+from ragtime.skills import repository as instruction_skill_repository
+from ragtime.skills.models import CreateInstructionSkill
 from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
 from ragtime.tools.mysql import test_mysql_connection
@@ -3375,10 +3377,12 @@ def _validate_tool_export_envelope(envelope: dict[str, Any]) -> None:
         raise ValueError("Missing or invalid encrypted payload")
 
 
-def _build_tool_export_envelope(config: ToolConfig, password: str) -> dict[str, Any]:
+def _build_tool_export_envelope(config: ToolConfig, password: str, skills: list[dict] | None = None) -> dict[str, Any]:
     """Build the password-encrypted export envelope for a tool configuration."""
     payload_data = {field: getattr(config, field) for field in _TOOL_EXPORTABLE_FIELDS}
     payload_data["tool_type"] = config.tool_type.value
+    if skills:
+        payload_data["skills"] = skills
     payload_json = json.dumps(payload_data, ensure_ascii=False, sort_keys=True)
     salt, token = encrypt_with_password(payload_json, password)
     return {
@@ -3481,6 +3485,15 @@ async def import_tool_config(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Decrypted payload is not a JSON object")
 
+    try:
+        raw_instruction_skills = payload.get("skills", [])
+        if not isinstance(raw_instruction_skills, list):
+            raise ValueError("skills must be a list")
+        imported_instruction_skills = [CreateInstructionSkill.model_validate(item) for item in raw_instruction_skills]
+        instruction_skill_repository.validate_instruction_skills(imported_instruction_skills, "tool")
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid imported instruction skills: {exc}") from exc
+
     missing = _TOOL_EXPORTABLE_FIELDS - set(payload.keys())
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing required tool fields: {', '.join(sorted(missing))}")
@@ -3525,6 +3538,23 @@ async def import_tool_config(
         raise HTTPException(status_code=400, detail=f"Invalid imported tool config: {exc}") from exc
 
     result = await repository.create_tool_config(config)
+    if imported_instruction_skills:
+        try:
+            if not result.id:
+                raise ValueError("Imported tool has no ID")
+            await instruction_skill_repository.create_instruction_skills("tool", result.id, imported_instruction_skills)
+        except Exception as exc:
+            try:
+                deleted = bool(result.id and await repository.delete_tool_config(result.id))
+            except Exception:
+                logger.exception("Failed to delete tool after instruction skill import failure")
+                deleted = False
+            detail = (
+                "Failed to import instruction skills; imported tool was deleted"
+                if deleted
+                else "Failed to import instruction skills; unable to delete imported tool"
+            )
+            raise HTTPException(status_code=500, detail=detail) from exc
     if result.id:
         await ensure_tool_access_policy(result.id)
 
@@ -3583,7 +3613,9 @@ async def export_tool_config(
     settings = await repository.get_settings()
     validate_export_password_strength(request.password, settings)
 
-    envelope = _build_tool_export_envelope(config, request.password)
+    instruction_skills = await instruction_skill_repository.list_instruction_skills("tool", tool_id)
+    exported_instruction_skills = [item.model_dump(include={"name", "description", "content", "mode", "enabled", "sort_order"}) for item in instruction_skills]
+    envelope = _build_tool_export_envelope(config, request.password, exported_instruction_skills)
     filename_base = safe_tool_name(config.name) or "tool-config"
     content_disposition = f'attachment; filename="{filename_base}.json"'
 

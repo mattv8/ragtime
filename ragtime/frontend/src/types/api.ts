@@ -2244,6 +2244,60 @@ export interface ToolConfig {
   updated_at: string;
 }
 
+export type InstructionSkillMode = 'always' | 'on_demand';
+export type InstructionSkillOwnerKind = 'tool' | 'route';
+
+export interface InstructionSkillOwner {
+  kind: InstructionSkillOwnerKind;
+  id: string;
+}
+
+export interface InstructionSkill {
+  id: string;
+  owner_kind: InstructionSkillOwnerKind;
+  owner_id: string;
+  name: string;
+  description: string;
+  content: string;
+  mode: InstructionSkillMode;
+  enabled: boolean;
+  sort_order: number;
+  /** Stable skill:// URI of this skill's SKILL.md, as the model sees it. */
+  uri: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateInstructionSkillRequest {
+  name: string;
+  description: string;
+  content: string;
+  mode: InstructionSkillMode;
+  enabled?: boolean;
+}
+
+export type UpdateInstructionSkillRequest = Partial<CreateInstructionSkillRequest>;
+
+export interface InstructionSkillCount {
+  total: number;
+  enabled: number;
+}
+
+export interface InstructionSkillSummary {
+  tools: Record<string, InstructionSkillCount>;
+  routes: Record<string, InstructionSkillCount>;
+}
+
+export const INSTRUCTION_SKILL_LIMITS = {
+  nameMaxLength: 64,
+  descriptionMaxLength: 1024,
+  contentMaxLength: 48000,
+  alwaysIncludeBudgetChars: 32000,
+  maxSkillsPerOwner: 50,
+} as const;
+
+export const INSTRUCTION_SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 export interface ToolGroup {
   id: string;
   name: string;
