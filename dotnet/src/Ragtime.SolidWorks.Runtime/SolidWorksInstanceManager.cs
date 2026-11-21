@@ -29,6 +29,7 @@ namespace Ragtime.SolidWorks.Runtime
         private const int CloseGraceMilliseconds = 20000;
         private const int ShutdownWaitMilliseconds = 60000;
         private const int ShutdownPollMilliseconds = 200;
+        private const int ScriptProbeMilliseconds = 10000;
 
         private readonly ISolidWorksSessionFactory _sessionFactory;
         private readonly Action<string> _log;
@@ -130,6 +131,76 @@ namespace Ragtime.SolidWorks.Runtime
         }
 
         /// <inheritdoc />
+        /// <remarks>
+        /// The probe is a call on the instance's own worker, limited to <see cref="ScriptProbeMilliseconds"/>. An owned
+        /// instance that does not answer is killed through the same path as a call timeout, but only after its pid and start
+        /// time match the record. An attached instance is marked stuck and left alone.
+        /// </remarks>
+        public async Task<string> RecoverAfterScriptAsync(string instanceId, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            InstanceRecord? record;
+            lock (_lock)
+            {
+                record = _records.TryGetValue(instanceId ?? string.Empty, out var found) && IsLive(found) ? found : null;
+            }
+
+            if (record == null)
+            {
+                Log($"{instanceId}: after a script timeout the instance is already gone");
+                return ScriptRecovery.Restarted;
+            }
+
+            var call = new CallMarker();
+            var probe = new WorkItem<bool>(() => ProbeOnWorker(record), () => ClearStuck(record, call));
+            var enqueued = record.Worker.TryEnqueue(probe);
+            var outcome = enqueued
+                ? await DeadlineWait.WaitAsync(probe.Task, TimeSpan.FromMilliseconds(ScriptProbeMilliseconds), cancellationToken).ConfigureAwait(false)
+                : WaitOutcome.TimedOut;
+            if (outcome == WaitOutcome.Cancelled)
+            {
+                probe.TryAbandon();
+                throw new OperationCanceledException(cancellationToken);
+            }
+
+            if (outcome == WaitOutcome.Completed && probe.Task.Status == TaskStatus.RanToCompletion)
+            {
+                Log($"{record.Id}: answered the probe after a script");
+                return ScriptRecovery.ProbeOk;
+            }
+
+            // A queued probe is skipped; a running one keeps the instance busy until it returns.
+            probe.TryAbandon();
+            if (record.Owned)
+            {
+                Log($"{record.Id}: did not answer the probe after a script; stopping pid {record.ProcessId}");
+                if (SameProcessAsRecord(record))
+                {
+                    await KillAndFinishAsync(record, "no answer after a script").ConfigureAwait(false);
+                }
+                else
+                {
+                    Log($"{record.Id}: pid {record.ProcessId} is not the process the host started; it was not killed");
+                    Finish(record, "no answer after a script; process not the host's");
+                }
+
+                return ScriptRecovery.Restarted;
+            }
+
+            lock (_lock)
+            {
+                // Same rule as a call timeout: busy while the call that passed its deadline is still running.
+                if (!call.Finished)
+                {
+                    record.Stuck = true;
+                }
+            }
+
+            Log($"{record.Id}: did not answer the probe after a script on an attached instance; marked busy, not stopped");
+            return ScriptRecovery.Stuck;
+        }
+
+        /// <inheritdoc />
         public async Task ShutdownAsync(CancellationToken cancellationToken)
         {
             var toClose = new List<InstanceRecord>();
@@ -218,6 +289,37 @@ namespace Ragtime.SolidWorks.Runtime
             {
                 record.LastUsedMs = _clock.ElapsedMilliseconds;
                 return SnapshotLocked(record);
+            }
+        }
+
+        /// <summary>The recovery probe: the session answers a short read on the instance's own thread.</summary>
+        private bool ProbeOnWorker(InstanceRecord record)
+        {
+            var session = record.Session;
+            if (session == null)
+            {
+                throw HostError.Coded(ErrorCodes.SolidworksNotRunning, $"SolidWorks instance {record.Id} is not ready.");
+            }
+
+            session.GetInstanceFacts();
+            return true;
+        }
+
+        /// <summary>
+        /// True when the pid still belongs to the process the record was made for: same pid and same start time. A process
+        /// that has gone, or whose start time cannot be read, is not treated as the same one (it is not killed).
+        /// </summary>
+        private static bool SameProcessAsRecord(InstanceRecord record)
+        {
+            try
+            {
+                var recorded = record.ProcessObject.StartTime.ToUniversalTime();
+                var current = Process.GetProcessById(record.ProcessId).StartTime.ToUniversalTime();
+                return recorded == current;
+            }
+            catch (Exception error) when (error is ArgumentException || error is InvalidOperationException || error is Win32Exception)
+            {
+                return false;
             }
         }
 

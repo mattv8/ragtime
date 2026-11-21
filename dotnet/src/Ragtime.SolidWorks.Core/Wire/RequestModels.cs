@@ -32,7 +32,8 @@ namespace Ragtime.SolidWorks.Core
             bool allowWrite,
             int deadlineSeconds,
             int maxResultBytes,
-            PdmContext? pdm = null)
+            PdmContext? pdm = null,
+            bool allowScripts = false)
         {
             SolidworksVersion = solidworksVersion;
             InstanceMode = instanceMode;
@@ -42,6 +43,7 @@ namespace Ragtime.SolidWorks.Core
             DeadlineSeconds = deadlineSeconds;
             MaxResultBytes = maxResultBytes;
             Pdm = pdm;
+            AllowScripts = allowScripts;
         }
 
         /// <summary>Pinned release year, or null for the newest installed version.</summary>
@@ -58,6 +60,9 @@ namespace Ragtime.SolidWorks.Core
 
         /// <summary>Whether operations with access "write" may run.</summary>
         public bool AllowWrite { get; }
+
+        /// <summary>Whether scripts may run, independently of allow_write.</summary>
+        public bool AllowScripts { get; }
 
         /// <summary>Time the host may spend on this request.</summary>
         public int DeadlineSeconds { get; }

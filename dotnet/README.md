@@ -1,7 +1,7 @@
 # SolidWorks host
 
 `RagtimeSolidWorks.sln` contains Core, Host, Runtime, Readers and Pdm projects in
-`src/`, and their tests in `tests/`. The host targets .NET Framework 4.8. Host version: 0.2.0
+`src/`, and their tests in `tests/`. The host targets .NET Framework 4.8. Host version: 0.3.0
 (`Directory.Build.props`, copied into `manifest.json`).
 
 `Ragtime.SolidWorks.Pdm` links the host to the SOLIDWORKS PDM client API. It uses the PDM interop types embedded
@@ -29,6 +29,14 @@ the host logs it and `pdm.status` reports `work_folder: null`.
 
 Security note: approved folders and the work folder protect against mistakes by the AI. They do not protect against
 other programs running as the same Windows user, which can talk to the host pipe directly.
+
+## Scripts
+
+`script.run` executes C# in a separate worker process. Each run uses a user-only folder under
+`%LOCALAPPDATA%\RagtimeSolidWorks\scripts\`; completed runs are removed immediately and other runs are retained for
+up to 24 hours for diagnosis. On timeout the worker and its children are killed; a script may already have changed
+open documents, so re-read them before retrying. Scripts are **not sandboxed**: they run with the Windows user's
+file, network and PDM rights.
 
 Build and test in a private copy so concurrent builds do not share `obj/`:
 

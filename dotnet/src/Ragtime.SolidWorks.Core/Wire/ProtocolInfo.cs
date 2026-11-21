@@ -64,6 +64,9 @@ namespace Ragtime.SolidWorks.Core
         /// <summary>Operation access values (contract section 5).</summary>
         public static class Access
         {
+            /// <summary>Script operation; enabled independently from vault writes.</summary>
+            public const string Script = "script";
+
             /// <summary>Read-only operation.</summary>
             public const string Read = "read";
 

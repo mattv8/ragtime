@@ -242,6 +242,32 @@ namespace Ragtime.SolidWorks.Core
                 "vault_path, configuration, updated [name]."),
 
             new OperationDefinition(
+                "script.run", "Runs a C# 5 script against a SolidWorks instance.", ProtocolInfo.Access.Script, false,
+                new ObjectSchema()
+                    .Property("source", new JObject
+                    {
+                        ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 16384,
+                        ["maxUtf8Bytes"] = 16384,
+                        ["description"] = "C# 5 source, 1–16384 UTF-8 bytes.",
+                    }, true)
+                    .Property("purpose", new JObject
+                    {
+                        ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 500,
+                        ["pattern"] = @"^[^\x00-\x1F\x7F]+$(?![\s\S])",
+                    }, true)
+                    .Property("arguments", new JObject
+                    {
+                        ["type"] = "object", ["additionalProperties"] = true, ["maxJsonBytes"] = 4096,
+                        ["description"] = "Script arguments; default {}; at most 4096 compact JSON UTF-8 bytes.",
+                    })
+                    .Property("instance", new JObject
+                    {
+                        ["type"] = "string", ["pattern"] = @"^(i[1-9][0-9]*|a[1-9][0-9]*)$(?![\s\S])",
+                        ["description"] = "Optional instance id; defaults to the instance selected for document.open.",
+                    }).Build(),
+                "result, log, log_truncated, documents, instance_id, compile_ms, run_ms. Request timeout: at most 600 seconds."),
+
+            new OperationDefinition(
                 "host.shutdown",
                 "Internal: asks the host to close its owned instances and exit.",
                 ProtocolInfo.Access.Read,

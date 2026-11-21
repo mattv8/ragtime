@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Ragtime.SolidWorks.Core;
 using SW = global::SolidWorks.Interop.sldworks;
@@ -16,10 +17,39 @@ namespace Ragtime.SolidWorks.Readers
     internal sealed partial class SolidWorksSession : ISolidWorksSession
     {
         private readonly SW.ISldWorks _application;
+        private readonly SessionOptions _options;
 
-        internal SolidWorksSession(SW.ISldWorks application)
+        internal SolidWorksSession(SW.ISldWorks application, SessionOptions options)
         {
             _application = application;
+            _options = options;
+            ProcessId = application.GetProcessID();
+            ProcessStartUtc = ReadProcessStartUtc(ProcessId);
+        }
+
+        /// <inheritdoc />
+        public int ProcessId { get; }
+
+        /// <inheritdoc />
+        public DateTime ProcessStartUtc { get; }
+
+        /// <inheritdoc />
+        public bool IsAttached => _options.Attached;
+
+        /// <inheritdoc />
+        public void ReapplyWindowHiding() => _options.ReapplyWindowHiding();
+
+        /// <summary>Start time (UTC) of a process, or DateTime.MinValue when it cannot be read.</summary>
+        private static DateTime ReadProcessStartUtc(int processId)
+        {
+            try
+            {
+                return Process.GetProcessById(processId).StartTime.ToUniversalTime();
+            }
+            catch (Exception error) when (error is ArgumentException || error is InvalidOperationException || error is System.ComponentModel.Win32Exception)
+            {
+                return DateTime.MinValue;
+            }
         }
 
         /// <summary>Revision, process id and visibility of the application.</summary>

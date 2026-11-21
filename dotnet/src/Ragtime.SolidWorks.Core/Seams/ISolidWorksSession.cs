@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace Ragtime.SolidWorks.Core
@@ -24,6 +25,21 @@ namespace Ragtime.SolidWorks.Core
     /// </summary>
     public interface ISolidWorksSession
     {
+        /// <summary>SLDWORKS process id of this session's instance.</summary>
+        int ProcessId { get; }
+        /// <summary>Start time (UTC) of that process, for pid-reuse checks.</summary>
+        DateTime ProcessStartUtc { get; }
+        /// <summary>True in attach mode (a user's interactive SolidWorks).</summary>
+        bool IsAttached { get; }
+        /// <summary>Re-applies the host's window hiding to an owned instance after a script; no-op when attached.</summary>
+        void ReapplyWindowHiding();
+
+        /// <summary>Captures application state before a script, on this instance's STA thread.</summary>
+        ScriptSessionState CaptureScriptState();
+
+        /// <summary>Restores captured application state on this instance's STA thread; COM errors are handled best effort and never thrown.</summary>
+        void RestoreScriptState(ScriptSessionState state);
+
         /// <summary>Revision, process id and visibility of the SolidWorks application behind this session.</summary>
         InstanceFacts GetInstanceFacts();
 
@@ -99,7 +115,8 @@ namespace Ragtime.SolidWorks.Core
         /// <summary>
         /// Wraps the application object (the SolidWorks COM application, typed as the interop <c>ISldWorks</c>
         /// behind <c>object</c>). Called on the instance's STA thread. Must not throw for a healthy application.
+        /// <paramref name="options"/> tells the session whether the instance is attached and how to re-hide it.
         /// </summary>
-        ISolidWorksSession Create(object solidworksApplication);
+        ISolidWorksSession Create(object solidworksApplication, SessionOptions options);
     }
 }

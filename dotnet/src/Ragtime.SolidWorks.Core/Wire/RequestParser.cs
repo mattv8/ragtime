@@ -143,7 +143,8 @@ namespace Ragtime.SolidWorks.Core
                 RequireBoolean(context, "allow_write"),
                 RequireInteger(context, "deadline_seconds", 1, ProtocolInfo.MaxDeadlineSeconds),
                 RequireInteger(context, "max_result_bytes", 1, ProtocolInfo.MaxResultBytes),
-                ReadPdm(context["pdm"]));
+                ReadPdm(context["pdm"]),
+                context.Property("allow_scripts") == null ? false : RequireBoolean(context, "allow_scripts"));
         }
 
         private static PdmContext? ReadPdm(JToken? token)

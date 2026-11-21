@@ -43,7 +43,9 @@ namespace Ragtime.SolidWorks.Runtime
             var revision = ReadRevision(application, ErrorCodes.SolidworksStartFailed);
             CheckRevision(record, revision, log);
 
-            var session = CreateSession(sessionFactory, application, ErrorCodes.SolidworksStartFailed);
+            // Re-hiding runs on this instance's STA thread: the session calls it from inside a work item.
+            var options = new SessionOptions(false, () => { EnsureHidden(record, application, log); }, log);
+            var session = CreateSession(sessionFactory, application, ErrorCodes.SolidworksStartFailed, options);
             var visible = EnsureHidden(record, application, log);
 
             Publish(record, session, revision, record.Year, visible, log, clock.ElapsedMilliseconds - started);
@@ -66,7 +68,9 @@ namespace Ragtime.SolidWorks.Runtime
             record.App = application;
 
             var year = SolidWorksVersions.RevisionToYear(revision);
-            var session = CreateSession(sessionFactory, application, ErrorCodes.SolidworksError);
+            // Attached instances are never hidden by the host: re-hiding is a no-op.
+            var options = new SessionOptions(true, () => { }, log);
+            var session = CreateSession(sessionFactory, application, ErrorCodes.SolidworksError, options);
             var visible = ReadVisible(application) ?? false;
 
             Publish(record, session, revision, year, visible, log, clock.ElapsedMilliseconds - started);
@@ -451,11 +455,11 @@ namespace Ragtime.SolidWorks.Runtime
             }
         }
 
-        private static ISolidWorksSession CreateSession(ISolidWorksSessionFactory factory, SW.ISldWorks application, string failureCode)
+        private static ISolidWorksSession CreateSession(ISolidWorksSessionFactory factory, SW.ISldWorks application, string failureCode, SessionOptions options)
         {
             try
             {
-                return factory.Create(application);
+                return factory.Create(application, options);
             }
             catch (HostErrorException)
             {

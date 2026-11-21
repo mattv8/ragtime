@@ -12,6 +12,33 @@ namespace Ragtime.SolidWorks.Core.Tests
     /// <summary>In-memory session. Lists are small fixed sets; <see cref="FeatureCount"/> sizes the feature list for paging tests.</summary>
     internal sealed class FakeSession : ISolidWorksSession
     {
+        public int ProcessId { get; set; } = 4242;
+        public DateTime ProcessStartUtc { get; set; } = new DateTime(2026, 11, 20, 0, 0, 0, DateTimeKind.Utc);
+        public bool IsAttached { get; set; }
+        public ScriptSessionState ScriptState { get; set; } = new ScriptSessionState();
+        public ScriptSessionState? RestoredScriptState { get; private set; }
+        public bool FailScriptStateCapture { get; set; }
+        public bool FailScriptStateRestore { get; set; }
+
+        public ScriptSessionState CaptureScriptState()
+        {
+            Calls.Add(nameof(CaptureScriptState));
+            if (FailScriptStateCapture) throw new InvalidOperationException("Capture failed.");
+            return ScriptState;
+        }
+
+        public void RestoreScriptState(ScriptSessionState state)
+        {
+            Calls.Add(nameof(RestoreScriptState));
+            if (FailScriptStateRestore) throw HostError.Coded(ErrorCodes.InstanceTimeout, "Restore timed out.");
+            RestoredScriptState = state;
+        }
+
+        public void ReapplyWindowHiding()
+        {
+            if (!IsAttached) Calls.Add(nameof(ReapplyWindowHiding));
+        }
+
         public List<SessionDocumentInfo> Open { get; } = new List<SessionDocumentInfo>();
 
         public List<string> Closed { get; } = new List<string>();
@@ -219,6 +246,15 @@ namespace Ragtime.SolidWorks.Core.Tests
     /// <summary>In-memory instance manager. Creates sessions for new instances and reports them as snapshots.</summary>
     internal sealed class FakeInstanceManager : ISolidWorksInstanceManager
     {
+        public List<string> RecoveredInstances { get; } = new List<string>();
+        public string Recovery { get; set; } = ScriptRecovery.ProbeOk;
+
+        public Task<string> RecoverAfterScriptAsync(string instanceId, CancellationToken cancellationToken)
+        {
+            RecoveredInstances.Add(instanceId);
+            return Task.FromResult(Recovery);
+        }
+
         private int _counter;
 
         public List<int> Installed { get; } = new List<int> { 2024 };
@@ -228,9 +264,11 @@ namespace Ragtime.SolidWorks.Core.Tests
         public Dictionary<string, FakeSession> Sessions { get; } = new Dictionary<string, FakeSession>();
 
         public List<string> Targets { get; } = new List<string>();
+        public bool RunningWork { get; private set; }
 
         /// <summary>The deadline each RunAsync call received, in call order.</summary>
         public List<Deadline> Deadlines { get; } = new List<Deadline>();
+        public List<CancellationToken> RunTokens { get; } = new List<CancellationToken>();
 
         /// <summary>When set together with <see cref="CostMs"/>, every call advances this clock: it simulates time spent in SolidWorks.</summary>
         public FakeClock? Clock { get; set; }
@@ -258,7 +296,7 @@ namespace Ragtime.SolidWorks.Core.Tests
             var id = "a" + pid.ToString();
             var snapshot = new InstanceSnapshot(id, ProtocolInfo.InstanceModes.Attach, false, year, year == 2024 ? "32.5.0" : "33.0.0", pid, true, false, 0);
             Instances.Add(snapshot);
-            Sessions[id] = new FakeSession();
+            Sessions[id] = new FakeSession { IsAttached = true };
             return snapshot;
         }
 
@@ -270,7 +308,7 @@ namespace Ragtime.SolidWorks.Core.Tests
         /// </summary>
         public void AddPendingAttached(int pid, params SessionDocumentInfo[] openDocuments)
         {
-            var session = new FakeSession();
+            var session = new FakeSession { IsAttached = true };
             session.Open.AddRange(openDocuments);
             var snapshot = new InstanceSnapshot("a" + pid.ToString(), ProtocolInfo.InstanceModes.Attach, false, 2024, "32.5.0", pid, true, false, 0);
             _pendingAttach = (snapshot, session);
@@ -298,6 +336,7 @@ namespace Ragtime.SolidWorks.Core.Tests
         {
             Targets.Add(target.Kind + (target.InstanceId == null ? string.Empty : ":" + target.InstanceId));
             Deadlines.Add(deadline);
+            RunTokens.Add(cancellationToken);
             if (Clock != null)
             {
                 Clock.Now += CostMs;
@@ -334,8 +373,16 @@ namespace Ragtime.SolidWorks.Core.Tests
                     break;
             }
 
-            var value = work(Sessions[snapshot.InstanceId]);
-            return Task.FromResult(new InstanceRun<T>(snapshot, value));
+            RunningWork = true;
+            try
+            {
+                var value = work(Sessions[snapshot.InstanceId]);
+                return Task.FromResult(new InstanceRun<T>(snapshot, value));
+            }
+            finally
+            {
+                RunningWork = false;
+            }
         }
 
         public Task ShutdownAsync(CancellationToken cancellationToken)
@@ -729,7 +776,8 @@ namespace Ragtime.SolidWorks.Core.Tests
     /// <summary>Processor wired to the fakes. Sends request lines and parses the single response line.</summary>
     internal sealed class Harness
     {
-        public Harness(OperationRegistry? registry = null, FakePdmGateway? pdm = null, string? workFolder = TestData.WorkFolder)
+        public Harness(OperationRegistry? registry = null, FakePdmGateway? pdm = null, string? workFolder = TestData.WorkFolder,
+            IScriptRunner? scriptRunner = null)
         {
             Clock = new FakeClock();
             Manager.Clock = Clock;
@@ -749,7 +797,8 @@ namespace Ragtime.SolidWorks.Core.Tests
                 Pdm,
                 Claims,
                 workFolder,
-                () => UtcNow);
+                () => UtcNow,
+                scriptRunner);
         }
 
         public FakeInstanceManager Manager { get; } = new FakeInstanceManager();

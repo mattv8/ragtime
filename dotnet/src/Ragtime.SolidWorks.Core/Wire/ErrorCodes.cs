@@ -78,6 +78,14 @@ namespace Ragtime.SolidWorks.Core
         public const string PdmConflict = "pdm_conflict";
         public const string PdmError = "pdm_error";
 
+        /// <summary>Scripts are disabled for this tool.</summary>
+        public const string ScriptsNotAllowed = "scripts_not_allowed";
+        public const string ScriptCompileFailed = "script_compile_failed";
+        public const string ScriptCompileUnavailable = "script_compile_unavailable";
+        public const string ScriptInvalid = "script_invalid";
+        public const string ScriptFailed = "script_failed";
+        public const string SolidworksUnavailable = "solidworks_unavailable";
+
         /// <summary>Every code Core may produce, in contract order.</summary>
         public static IReadOnlyList<string> All { get; } = new[]
         {
@@ -87,6 +95,7 @@ namespace Ragtime.SolidWorks.Core
             OperationTimeout, DocumentNotFound, DocumentNotOpen, NotSupportedForDocumentType,
             EntityNotFound, StaleSnapshot, ResultTooLarge, SolidworksError, InternalError,
             PdmNotLinked, PdmUnavailable, PdmFolderNotApproved, PdmNotFound, PdmConflict, PdmError,
+            ScriptsNotAllowed, ScriptCompileFailed, ScriptCompileUnavailable, ScriptInvalid, ScriptFailed, SolidworksUnavailable,
         };
     }
 }

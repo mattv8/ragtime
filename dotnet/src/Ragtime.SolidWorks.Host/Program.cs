@@ -35,6 +35,8 @@ namespace Ragtime.SolidWorks.Host
         {
             switch (command.Name)
             {
+                case CommandNames.ScriptWorker:
+                    return ScriptWorkerCommand.Run(command.RequestBase64!);
                 case CommandNames.Version:
                     return VersionCommand.Run();
                 case CommandNames.Serve:

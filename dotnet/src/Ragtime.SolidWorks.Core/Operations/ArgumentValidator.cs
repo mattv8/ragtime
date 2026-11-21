@@ -7,9 +7,10 @@ namespace Ragtime.SolidWorks.Core
 {
     /// <summary>
     /// Validates an arguments object against an operation schema built with <see cref="ObjectSchema"/>.
-    /// Supported keywords: type (object is implied; string, integer, boolean, array, scalar-valued object), properties,
-    /// required, additionalProperties (only false), minLength, maxLength, minimum, maximum, pattern, enum,
-    /// items, maxItems, minProperties, maxProperties. Any other schema shape is a programming error and surfaces as internal_error.
+    /// Supported keywords: type (object is implied; string, integer, boolean, array, object), properties,
+    /// required, additionalProperties, minLength, maxLength, minimum, maximum, pattern, enum,
+    /// items, maxItems, minProperties, maxProperties, maxUtf8Bytes and maxJsonBytes. Object values allow arbitrary
+    /// properties when additionalProperties is true, or the catalog's scalar union. Other shapes are programming errors.
     /// A property sent as JSON null is treated as omitted, so it fails only when it is required.
     /// Failures are invalid_arguments with details.field naming the offending argument (for arrays, field[i]).
     /// </summary>
@@ -91,6 +92,12 @@ namespace Ragtime.SolidWorks.Core
                 throw HostError.InvalidArguments(field, $"'{field}' must be an object.");
             }
 
+            if (WireJson.TryGetInteger(schema["maxJsonBytes"], out var maxBytes)
+                && WireJson.ByteCount(WireJson.Compact(obj)) > maxBytes)
+            {
+                throw HostError.InvalidArguments(field, $"'{field}' must serialize to at most {maxBytes} UTF-8 bytes.");
+            }
+
             if (WireJson.TryGetInteger(schema["minProperties"], out var min) && obj.Count < min)
             {
                 throw HostError.InvalidArguments(field, $"'{field}' must have at least {min} properties.");
@@ -99,6 +106,12 @@ namespace Ragtime.SolidWorks.Core
             if (WireJson.TryGetInteger(schema["maxProperties"], out var max) && obj.Count > max)
             {
                 throw HostError.InvalidArguments(field, $"'{field}' must have at most {max} properties.");
+            }
+
+            if (schema["additionalProperties"]?.Type == JTokenType.Boolean
+                && (bool)schema["additionalProperties"]!)
+            {
+                return;
             }
 
             var types = schema["additionalProperties"]?["type"] as JArray;
@@ -130,6 +143,10 @@ namespace Ragtime.SolidWorks.Core
             }
 
             var text = (string?)value ?? string.Empty;
+            if (WireJson.TryGetInteger(schema["maxUtf8Bytes"], out var maxBytes) && WireJson.ByteCount(text) > maxBytes)
+            {
+                throw HostError.InvalidArguments(field, $"'{field}' must be at most {maxBytes} UTF-8 bytes.");
+            }
             if (WireJson.TryGetInteger(schema["minLength"], out var minLength) && text.Length < minLength)
             {
                 throw HostError.InvalidArguments(field, $"'{field}' must be at least {minLength} characters.");

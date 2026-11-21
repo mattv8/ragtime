@@ -158,6 +158,15 @@ namespace Ragtime.SolidWorks.Core
     /// </summary>
     public interface ISolidWorksInstanceManager
     {
+        /// <summary>
+        /// After a timed-out script: probes the instance with a short call on its own work item, limited to 10 s.
+        /// Returns ScriptRecovery.ProbeOk when it answered. When it did not answer:
+        /// - an owned instance: kill its SLDWORKS process (pid and start time verified), retire the record, raise InstanceStopped,
+        ///   and return ScriptRecovery.Restarted;
+        /// - an attached instance: mark it stuck, never kill it, and return ScriptRecovery.Stuck.
+        /// </summary>
+        Task<string> RecoverAfterScriptAsync(string instanceId, CancellationToken cancellationToken);
+
         /// <summary>Installed SolidWorks release years, ascending. Empty when none are installed. Never starts anything.</summary>
         IReadOnlyList<int> GetInstalledVersions();
 

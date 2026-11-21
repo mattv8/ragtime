@@ -9,6 +9,7 @@ namespace Ragtime.SolidWorks.Host
         public const string Stop = "stop";
         public const string Uninstall = "uninstall";
         public const string Version = "version";
+        public const string ScriptWorker = "script-worker";
     }
 
     /// <summary>Exit codes: 0 success, 2 failure (usage errors and client-side errors included).</summary>
@@ -57,6 +58,11 @@ namespace Ragtime.SolidWorks.Host
             }
 
             var name = args[0];
+            if (name == CommandNames.ScriptWorker)
+            {
+                return args.Length == 3 && args[1] == "--run-folder" && args[2].Length > 0
+                    ? new CommandLine(name, args[2]) : null;
+            }
             if (name == CommandNames.Call)
             {
                 return ParseCall(args);

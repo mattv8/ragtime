@@ -17,7 +17,9 @@ namespace Ragtime.SolidWorks.Host
     {
         private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(5);
         private static readonly TimeSpan ManagerShutdownTimeout = TimeSpan.FromSeconds(15);
+        private static readonly TimeSpan ScriptSweepInterval = TimeSpan.FromHours(1);
         private const string WorkFolderRelative = @"RagtimeSolidWorks\work";
+        private const string ScriptsRootRelative = @"RagtimeSolidWorks\scripts";
 
         public static int Run(HostEnvironment env)
         {
@@ -67,6 +69,8 @@ namespace Ragtime.SolidWorks.Host
                 log.Write("serve: could not register the console stop handler; logoff will not stop the host cleanly.");
             }
 
+            var scriptsRoot = EnsureScriptsRoot(log);
+            using (var scriptSweeps = StartScriptSweeps(scriptsRoot, log))
             using (var manager = new SolidWorksInstanceManager(new SolidWorksSessionFactory(), log.Write))
             using (var pdm = CreatePdmGateway(log))
             {
@@ -80,7 +84,9 @@ namespace Ragtime.SolidWorks.Host
                     unexpectedErrorSink: log.WriteException,
                     pdm: pdm,
                     pdmClaims: FilePdmClaimStore.ForCurrentUser(log.Write),
-                    pdmWorkFolder: EnsureWorkFolder(log));
+                    pdmWorkFolder: EnsureWorkFolder(log),
+                    scriptRunner: CreateScriptRunner(env, scriptsRoot),
+                    hostLog: log.Write);
 
                 using (var server = new PipeServer(env.PipeName, PipeAccess.ForUser(env.Sid), processor, env.HostVersion, log))
                 {
@@ -132,6 +138,67 @@ namespace Ragtime.SolidWorks.Host
                 log.Write("PDM work folder could not be created; pdm.file.add accepts approved vault folders only. " + exception.Message);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Creates %LOCALAPPDATA%\RagtimeSolidWorks\scripts\ and returns its full path, or null when it cannot be created
+        /// (failure logged; scripts are then unavailable). Never throws.
+        /// </summary>
+        private static string? EnsureScriptsRoot(HostLog log)
+        {
+            try
+            {
+                var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                if (string.IsNullOrEmpty(root))
+                {
+                    log.Write("script run folders: the local application data folder is unavailable; scripts are not available.");
+                    return null;
+                }
+
+                var path = Path.GetFullPath(Path.Combine(root, ScriptsRootRelative));
+                var linked = ScriptRootGuard.FirstLinkedFolder(path);
+                if (linked != null)
+                {
+                    log.Write("script run folders: " + linked + " is a junction or link; scripts are not available.");
+                    return null;
+                }
+
+                Directory.CreateDirectory(path);
+                return path;
+            }
+            catch (Exception exception)
+            {
+                log.Write("script run folders could not be created; scripts are not available. " + exception.Message);
+                return null;
+            }
+        }
+
+        /// <summary>The script runner, or null when there is no scripts root: script.run then answers internal_error.</summary>
+        private static IScriptRunner? CreateScriptRunner(HostEnvironment env, string? scriptsRoot)
+        {
+            if (scriptsRoot == null)
+            {
+                return null;
+            }
+
+            return new ProcessScriptRunner(env.ExePath, scriptsRoot, env.Log.Write, () => DateTime.UtcNow);
+        }
+
+        /// <summary>Sweeps old run folders now and then every hour. Dispose the timer at shutdown. Null when there is no root.</summary>
+        private static System.Threading.Timer? StartScriptSweeps(string? scriptsRoot, HostLog log)
+        {
+            if (scriptsRoot == null)
+            {
+                return null;
+            }
+
+            var root = scriptsRoot;
+            ScriptRunSweeper.Sweep(root, DateTime.UtcNow, log.Write);
+            return new System.Threading.Timer(
+                _ => ScriptRunSweeper.Sweep(root, DateTime.UtcNow, log.Write),
+                null,
+                ScriptSweepInterval,
+                ScriptSweepInterval);
         }
 
         /// <summary>The PDM gateway, or null when it cannot be created: pdm.* then answers pdm_unavailable. Never throws.</summary>

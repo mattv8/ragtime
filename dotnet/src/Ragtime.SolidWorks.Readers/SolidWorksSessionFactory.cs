@@ -1,3 +1,4 @@
+using System;
 using Ragtime.SolidWorks.Core;
 using SW = global::SolidWorks.Interop.sldworks;
 
@@ -12,7 +13,7 @@ namespace Ragtime.SolidWorks.Readers
         }
 
         /// <summary>Wraps the SolidWorks application object in a read-only session. Called on the instance's STA thread.</summary>
-        public ISolidWorksSession Create(object solidworksApplication)
+        public ISolidWorksSession Create(object solidworksApplication, SessionOptions options)
         {
             var application = solidworksApplication as SW.ISldWorks;
             if (application == null)
@@ -20,7 +21,7 @@ namespace Ragtime.SolidWorks.Readers
                 throw HostError.Coded(ErrorCodes.SolidworksError, "The object is not a SolidWorks application and cannot be read.");
             }
 
-            return new SolidWorksSession(application);
+            return new SolidWorksSession(application, options ?? throw new ArgumentNullException(nameof(options)));
         }
     }
 }

@@ -45,6 +45,8 @@ namespace Ragtime.SolidWorks.Core
         private readonly IPdmClaimStore _pdmClaims;
         private readonly string? _pdmWorkFolder;
         private readonly Func<DateTime> _utcNow;
+        private readonly IScriptRunner? _scriptRunner;
+        private readonly Action<string>? _hostLog;
         private readonly DocumentRegistry _documents = new DocumentRegistry();
 
         /// <summary>Creates the processor.</summary>
@@ -60,6 +62,8 @@ namespace Ragtime.SolidWorks.Core
         /// <param name="pdmClaims">Files this tool checked out or added, which only it may finish. Default: in memory.</param>
         /// <param name="pdmWorkFolder">Host work folder accepted as an add source, in addition to approved view folders.</param>
         /// <param name="utcNow">UTC clock for check-out claim expiry.</param>
+        /// <param name="scriptRunner">Script worker runner; null means scripts are unavailable in this host.</param>
+        /// <param name="hostLog">Optional informational host log sink.</param>
         public RequestProcessor(
             ISolidWorksInstanceManager instances,
             IHostFactsProvider hostFacts,
@@ -71,7 +75,9 @@ namespace Ragtime.SolidWorks.Core
             IPdmGateway? pdm = null,
             IPdmClaimStore? pdmClaims = null,
             string? pdmWorkFolder = null,
-            Func<DateTime>? utcNow = null)
+            Func<DateTime>? utcNow = null,
+            IScriptRunner? scriptRunner = null,
+            Action<string>? hostLog = null)
         {
             _instances = instances ?? throw new ArgumentNullException(nameof(instances));
             _hostFacts = hostFacts ?? throw new ArgumentNullException(nameof(hostFacts));
@@ -84,6 +90,8 @@ namespace Ragtime.SolidWorks.Core
             _pdmClaims = pdmClaims ?? new InMemoryPdmClaimStore();
             _pdmWorkFolder = pdmWorkFolder;
             _utcNow = utcNow ?? (() => DateTime.UtcNow);
+            _scriptRunner = scriptRunner;
+            _hostLog = hostLog;
             _instances.InstanceStopped += OnInstanceStopped;
         }
 
@@ -143,15 +151,27 @@ namespace Ragtime.SolidWorks.Core
                     ErrorCodes.UnknownOperation,
                     $"There is no operation named '{request.Operation}'. Call describe for the list.");
 
-            if (definition.Access == ProtocolInfo.Access.Write && !request.Context.AllowWrite)
+            switch (definition.Access)
             {
-                throw HostError.Coded(
-                    ErrorCodes.WriteNotAllowed,
-                    $"'{definition.Name}' changes SolidWorks state, which this tool's configuration does not allow.");
+                case ProtocolInfo.Access.Write when !request.Context.AllowWrite:
+                    throw HostError.Coded(
+                        ErrorCodes.WriteNotAllowed,
+                        $"'{definition.Name}' changes SolidWorks state, which this tool's configuration does not allow.");
+                case ProtocolInfo.Access.Script when !request.Context.AllowScripts:
+                    throw HostError.Coded(ErrorCodes.ScriptsNotAllowed, "Scripts are not enabled for this tool.");
             }
 
             ArgumentValidator.Validate(definition.ArgumentsSchema, request.Arguments);
             var context = request.Context;
+            if (definition.Name == "script.run")
+            {
+                if (context.DeadlineSeconds > 600)
+                {
+                    throw HostError.InvalidArguments("timeout", "Script timeout must be at most 600 seconds.");
+                }
+                var scriptDeadline = new Deadline(context.DeadlineSeconds, _clock);
+                return await RunScriptAsync(request, scriptDeadline, cancellationToken).ConfigureAwait(false);
+            }
             if (PdmOperations.IsPdmOperation(definition.Name))
             {
                 // PDM operations never start or use a SolidWorks instance, so they skip the version pin check.
@@ -199,6 +219,21 @@ namespace Ragtime.SolidWorks.Core
             }
         }
 
+        private async Task<Outcome> RunScriptAsync(ParsedRequest request, Deadline deadline, CancellationToken cancellationToken)
+        {
+            if (_scriptRunner == null)
+            {
+                throw HostError.Coded(ErrorCodes.InternalError, "Scripts are not available in this host.");
+            }
+            RequireInstalledPin(request.Operation, request.Context);
+            var instance = ArgumentReader.OptionalString(request.Arguments, "instance");
+            var target = instance != null ? InstanceTarget.Specific(instance)
+                : request.Context.IsAttachMode ? InstanceTarget.Attach() : ChooseOpenTarget(request.Context);
+            var operation = new ScriptOperations(_instances, _documents, _scriptRunner, _pdmWorkFolder ?? string.Empty, _hostLog);
+            var run = await operation.ExecuteAsync(target, request, deadline, cancellationToken).ConfigureAwait(false);
+            return new Outcome(Fits(run.Value, request.Context), HostInfoOf(run.Instance));
+        }
+
         private async Task<Outcome> OpenDocumentAsync(ParsedRequest request, Deadline deadline, CancellationToken cancellationToken)
         {
             var context = request.Context;
@@ -213,6 +248,20 @@ namespace Ragtime.SolidWorks.Core
             DocumentPaths.RequireOpenable(path);
             var configuration = ArgumentReader.OptionalString(request.Arguments, "configuration");
 
+            var target = ChooseOpenTarget(context);
+            var run = await RunOnInstanceAsync(
+                target,
+                context,
+                deadline,
+                session => session.OpenReadOnlySilent(path, configuration),
+                cancellationToken).ConfigureAwait(false);
+
+            var entry = _documents.Register(run.Instance.InstanceId, run.Value, openedByHost: !run.Value.WasAlreadyOpen);
+            return new Outcome(Fits(entry.ToItem(), context), HostInfoOf(run.Instance));
+        }
+
+        private InstanceTarget ChooseOpenTarget(RequestContext context)
+        {
             var instances = CurrentInstances();
             var choice = InstancePool.ChooseForOpen(instances, context.MaxInstances, context.SolidworksVersion);
             if (choice.Action == PoolAction.LimitReached)
@@ -239,15 +288,7 @@ namespace Ragtime.SolidWorks.Core
                 target = InstanceTarget.Specific(choice.InstanceId ?? throw new InvalidOperationException("Pool chose an instance without an id."));
             }
 
-            var run = await RunOnInstanceAsync(
-                target,
-                context,
-                deadline,
-                session => session.OpenReadOnlySilent(path, configuration),
-                cancellationToken).ConfigureAwait(false);
-
-            var entry = _documents.Register(run.Instance.InstanceId, run.Value, openedByHost: !run.Value.WasAlreadyOpen);
-            return new Outcome(Fits(entry.ToItem(), context), HostInfoOf(run.Instance));
+            return target;
         }
 
         private async Task<Outcome> CloseDocumentAsync(ParsedRequest request, Deadline deadline, CancellationToken cancellationToken)

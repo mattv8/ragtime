@@ -19,7 +19,7 @@ if compgen -G "$work/publish/EPDM*.dll" >/dev/null; then
   exit 1
 fi
 mkdir "$work/contents"
-for file in ragtime-solidworks-host.exe Ragtime.SolidWorks.Core.dll Ragtime.SolidWorks.Runtime.dll Ragtime.SolidWorks.Readers.dll Ragtime.SolidWorks.Pdm.dll; do
+for file in ragtime-solidworks-host.exe Ragtime.SolidWorks.Core.dll Ragtime.SolidWorks.Runtime.dll Ragtime.SolidWorks.Readers.dll Ragtime.SolidWorks.Pdm.dll Ragtime.SolidWorks.Scripting.dll; do
   test -f "$work/publish/$file" || { echo "Missing required host file: $file" >&2; exit 1; }
   cp "$work/publish/$file" "$work/contents/"
 done

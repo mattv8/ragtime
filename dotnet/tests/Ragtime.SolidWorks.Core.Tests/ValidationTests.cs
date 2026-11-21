@@ -12,6 +12,7 @@ namespace Ragtime.SolidWorks.Core.Tests
     {
         public static IEnumerable<object[]> ValidArguments()
         {
+            yield return new object[] { "script.run", "{\"source\":\"return null;\",\"purpose\":\"Inspect a model\",\"arguments\":{\"nested\":{\"items\":[null,1]}}}" };
             yield return new object[] { "describe", "{}" };
             yield return new object[] { "status", "{}" };
             yield return new object[] { "documents.list", "{}" };
@@ -45,6 +46,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         public static IEnumerable<object[]> InvalidArguments()
         {
+            yield return new object[] { "script.run", "{}", "source" };
             yield return new object[] { "describe", "{\"x\":1}", "x" };
             yield return new object[] { "status", "{\"x\":1}", "x" };
             yield return new object[] { "documents.list", "{\"limit\":0}", "limit" };
@@ -205,9 +207,9 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             Assert.Equal(1, result.Protocol);
             Assert.Equal(TestData.HostVersion, result.HostVersion);
-            Assert.Equal(27, result.Operations.Count);
+            Assert.Equal(28, result.Operations.Count);
             var writes = new[] { "pdm.folder.create", "pdm.file.add", "pdm.file.checkout", "pdm.file.undo_checkout", "pdm.file.checkin", "pdm.variables.set" };
-            Assert.All(result.Operations, op => Assert.Equal(writes.Contains(op.Name) ? "write" : "read", op.Access));
+            Assert.All(result.Operations, op => Assert.Equal(op.Name == "script.run" ? "script" : writes.Contains(op.Name) ? "write" : "read", op.Access));
             Assert.DoesNotContain(result.Operations, op => op.Name == "host.shutdown");
             Assert.All(new[] { "describe", "status", "document.open", "document.close", "model.summary", "feature.get", "mass_properties.get" },
                 name => Assert.Contains(result.Operations, op => op.Name == name));
@@ -299,7 +301,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             var response = await h.CallAsync("describe");
 
-            Assert.Equal(27, ((JArray)response["result"]!["operations"]!).Count);
+            Assert.Equal(28, ((JArray)response["result"]!["operations"]!).Count);
         }
     }
 }
