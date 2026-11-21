@@ -633,6 +633,18 @@ function ToolCard({
                   </span>
                 </Popover>
               )}
+              {solidworksOptions?.allow_scripts === true && (
+                <Popover
+                  content="Can run C# scripts on the SolidWorks computer as its Windows user. Not sandboxed."
+                  position="top"
+                  style={{ display: 'inline-flex' }}
+                >
+                  <span className="tool-badge badge-warning" data-badge="scripts-allowed">
+                    <Icon name="alert-triangle" size={12} />
+                    <span className="path-text">Scripts on</span>
+                  </span>
+                </Popover>
+              )}
               {classified && (
                 <span className="tool-badge" data-tool-classified-badge>
                   Classified

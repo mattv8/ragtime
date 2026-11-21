@@ -9,6 +9,7 @@ import { api as clientApi } from '@/api/client';
 import type { SolidWorksHostPanelProps } from './SolidWorksHostPanel';
 import type { SolidWorksOptionsPanelProps } from './SolidWorksOptionsPanel';
 import type { SolidWorksTestResultProps } from './SolidWorksTestResult';
+import { contentProtectionApi } from '../api/contentProtection';
 
 vi.mock('./SolidWorksHostPanel', () => ({
   SolidWorksHostPanel: ({
@@ -287,7 +288,6 @@ const existingHttpApiOAuthTool: ToolConfig = {
 beforeEach(() => {
   vi.spyOn(clientApi, 'listToolConfigs').mockResolvedValue([]);
   vi.spyOn(clientApi, 'getPdmIndexStatus').mockResolvedValue({
-    enabled: true,
     document_count: 12,
     embedding_count: 12,
     last_indexed: '2026-11-20T08:00:00Z',
@@ -2388,6 +2388,72 @@ describe('ToolWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await screen.findByRole('button', { name: 'Save Changes' });
   };
+
+  it('renders scripts after PDM and before the test even without a linked vault', async () => {
+    await openSolidworksStep();
+    const pdm = screen.getByTestId('solidworks-pdm-link-panel');
+    const scripts = screen.getByTestId('solidworks-scripts-panel');
+    const test = document.getElementById('solidworks-test-section')!;
+    expect(pdm.compareDocumentPosition(scripts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(scripts.compareDocumentPosition(test) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.getElementById('solidworks-pdm-changes')).toBeNull();
+    expect((screen.getByLabelText('Allow scripts') as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('clears a test result, shows the scripts review and saves the enabled flag independently of PDM', async () => {
+    vi.spyOn(contentProtectionApi, 'getConfig').mockResolvedValue({ enabled: false } as Awaited<
+      ReturnType<typeof contentProtectionApi.getConfig>
+    >);
+    apiMock.testSavedToolConnection.mockResolvedValue({ success: true, message: 'Passed' });
+    const onSave = vi.fn();
+    await openSolidworksStep(savedSolidworksTool(), onSave);
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    await screen.findByTestId('mock-sw-result');
+    fireEvent.click(screen.getByLabelText('Allow scripts'));
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+    await openSolidworksReview();
+    const row = document.getElementById('tool-review-solidworks-scripts')!;
+    expect(row.textContent).toContain(
+      "Scripts: Allowed. They run as the computer's Windows user and are not sandboxed.",
+    );
+    await waitFor(() =>
+      expect(row.textContent).toContain(
+        'Content protection is off, so scripts run without review.',
+      ),
+    );
+    expect(
+      screen.getByText(
+        'Access to SolidWorks: Read model data, and run scripts that can change models',
+      ),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'existing-sw',
+      expect.objectContaining({
+        allow_write: false,
+        connection_config: expect.objectContaining({ allow_scripts: true, pdm_tool_id: null }),
+      }),
+    );
+  });
+
+  it('shows scripts off in review and saves the default off value', async () => {
+    const onSave = vi.fn();
+    await openSolidworksStep(savedSolidworksTool(), onSave);
+    await openSolidworksReview();
+    expect(document.getElementById('tool-review-solidworks-scripts')?.textContent).toBe(
+      'Scripts: Off',
+    );
+    expect(screen.getByText('Access to SolidWorks: Read model data only')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'existing-sw',
+      expect.objectContaining({
+        connection_config: expect.objectContaining({ allow_scripts: false }),
+      }),
+    );
+  });
 
   it('mounts the PDM section and loads an existing link and approved folders', async () => {
     vi.mocked(clientApi.listToolConfigs).mockResolvedValue([vaultTool()]);

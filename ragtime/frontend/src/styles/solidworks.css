@@ -231,6 +231,7 @@
   .sw-manual summary,
   .sw-panel .btn,
   .sw-manual .btn,
+  .sw-switch-row label,
   #solidworks-test-button {
     min-height: 44px;
   }

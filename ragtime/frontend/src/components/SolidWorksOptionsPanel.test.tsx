@@ -357,6 +357,7 @@ describe('SolidWorksOptionsPanel', () => {
     fireEvent.click(screen.getByLabelText(/Attach to open SolidWorks/));
     expect(onChange).toHaveBeenCalledWith({
       solidworks_version: null,
+      allow_scripts: false,
       instance_mode: 'attach',
       max_instances: 1,
       idle_shutdown_seconds: 900,

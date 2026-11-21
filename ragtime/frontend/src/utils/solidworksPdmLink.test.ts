@@ -70,7 +70,6 @@ function job(status: PdmIndexStatus, errorMessage: string | null = null): PdmInd
 
 function indexStatus(overrides: Partial<PdmIndexStatusResponse> = {}): PdmIndexStatusResponse {
   return {
-    enabled: true,
     last_indexed: '2026-11-19T10:00:00Z',
     document_count: 12480,
     embedding_count: 11902,

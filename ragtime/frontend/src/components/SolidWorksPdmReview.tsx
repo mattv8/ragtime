@@ -11,11 +11,11 @@ import {
 } from '../utils/solidworksPdmLink';
 import {
   formatLastIndexed,
-  PdmMessage,
   type PdmLinkValue,
   type PdmResolution,
   type PdmTarget,
 } from './SolidWorksPdmLinkPanel';
+import { PdmMessage } from './shared/PdmMessage';
 
 export interface SolidWorksPdmReviewProps {
   link: PdmLinkValue;

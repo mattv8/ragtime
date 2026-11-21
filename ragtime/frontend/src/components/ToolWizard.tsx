@@ -53,6 +53,7 @@ import {
   type PdmTarget,
 } from './SolidWorksPdmLinkPanel';
 import { SolidWorksPdmReview } from './SolidWorksPdmReview';
+import { SolidWorksScriptsPanel, SolidWorksScriptsReview } from './SolidWorksScriptsPanel';
 import { DEFAULT_PDM_CONNECTION_CONFIG } from './pdm/pdmDefaults';
 import { SolidWorksTestResult } from './SolidWorksTestResult';
 import {
@@ -2441,6 +2442,7 @@ export function ToolWizard({
       max_instances: config.max_instances ?? SOLIDWORKS_DEFAULT_OPTIONS.max_instances,
       idle_shutdown_seconds:
         config.idle_shutdown_seconds ?? SOLIDWORKS_DEFAULT_OPTIONS.idle_shutdown_seconds,
+      allow_scripts: config.allow_scripts ?? false,
     };
   });
   const [solidworksHostStatus, setSolidworksHostStatus] = useState<SolidworksHostStatus | null>(
@@ -3788,6 +3790,9 @@ export function ToolWizard({
   const handleSolidworksOptionsChange = (next: SolidworksOptions) => {
     setSolidworksOptions(next);
     setTestResult(null);
+  };
+  const handleSolidworksScriptsChange = (allow_scripts: boolean) => {
+    handleSolidworksOptionsChange({ ...solidworksOptions, allow_scripts });
   };
   const handlePdmLinkChange = (next: PdmLinkValue) => {
     if (next.pdm_tool_id !== pdmLink.pdm_tool_id) {
@@ -7686,7 +7691,15 @@ export function ToolWizard({
             {toolType !== 'solidworks' && <li>Max results: {maxResults}</li>}
             <li>Max timeout: {timeoutMaxSeconds === 0 ? 'No timeout' : `${timeoutMaxSeconds}s`}</li>
             {toolType === 'solidworks' ? (
-              <li>Access to SolidWorks: Read model data only</li>
+              <>
+                <li>
+                  Access to SolidWorks:{' '}
+                  {solidworksOptions.allow_scripts
+                    ? 'Read model data, and run scripts that can change models'
+                    : 'Read model data only'}
+                </li>
+                <SolidWorksScriptsReview allowed={solidworksOptions.allow_scripts === true} />
+              </>
             ) : (
               <li>Write operations: {allowWrite ? 'Enabled' : 'Disabled'}</li>
             )}
@@ -7747,6 +7760,12 @@ export function ToolWizard({
               onBusyChange={setPdmBusy}
               onTargetChange={setPdmTarget}
               onResolutionChange={setPdmResolution}
+            />
+            <SolidWorksScriptsPanel
+              value={solidworksOptions.allow_scripts === true}
+              onChange={handleSolidworksScriptsChange}
+              instanceMode={solidworksOptions.instance_mode ?? 'background'}
+              disabled={saving || testing || solidworksActionBusy}
             />
             <div id="solidworks-test-section" className="wizard-test-section">
               <button

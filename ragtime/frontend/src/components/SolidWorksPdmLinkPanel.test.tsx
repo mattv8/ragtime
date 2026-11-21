@@ -21,7 +21,6 @@ type PdmHost = NonNullable<SolidworksHostStatus['pdm']>;
 
 const VIEW = { vault: 'Ragtime', root: 'C:\\PDM\\Ragtime', logged_in: true, user: 'pdm.svc' };
 const READY: PdmIndexStatusResponse = {
-  enabled: true,
   last_indexed: '2026-11-19T10:00:00Z',
   document_count: 12480,
   embedding_count: 11902,

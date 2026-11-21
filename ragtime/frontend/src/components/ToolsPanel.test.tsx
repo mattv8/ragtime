@@ -625,6 +625,47 @@ describe('ToolsPanel', () => {
     expect(screen.queryByRole('button', { name: 'Write Access' })).toBeNull();
   });
 
+  it('shows scripts only on SolidWorks tools that allow them, even when disabled', async () => {
+    apiMock.listToolConfigs.mockResolvedValue([
+      {
+        ...pairedWindowsTool,
+        id: 'scripts-on',
+        name: 'Scripts on',
+        tool_type: 'solidworks',
+        enabled: false,
+        connection_config: { allow_scripts: true },
+      },
+      {
+        ...pairedWindowsTool,
+        id: 'scripts-off',
+        name: 'Scripts off',
+        tool_type: 'solidworks',
+        connection_config: { allow_scripts: false },
+      },
+      {
+        ...pairedWindowsTool,
+        id: 'scripts-missing',
+        name: 'Scripts missing',
+        tool_type: 'solidworks',
+        connection_config: {},
+      },
+      {
+        ...pairedWindowsTool,
+        id: 'other',
+        name: 'Other tool',
+        connection_config: { allow_scripts: true },
+      },
+    ]);
+    render(<ToolsPanel />);
+    await screen.findByRole('heading', { name: 'Scripts on' });
+    const badges = document.querySelectorAll('[data-badge="scripts-allowed"]');
+    expect(badges).toHaveLength(1);
+    expect(badges[0].textContent).toBe('Scripts on');
+    expect(badges[0].parentElement?.getAttribute('data-popover-content')).toBe(
+      'Can run C# scripts on the SolidWorks computer as its Windows user. Not sandboxed.',
+    );
+  });
+
   it('keeps the selected group open when the write confirmation modal is dismissed', async () => {
     const user = userEvent.setup();
 

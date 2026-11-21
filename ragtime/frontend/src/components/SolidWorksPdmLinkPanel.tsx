@@ -29,6 +29,7 @@ import {
 import { SolidWorksApprovedFolders } from './SolidWorksApprovedFolders';
 import { SolidWorksPdmSetupForm } from './SolidWorksPdmSetupForm';
 import { InfoPopover } from './shared/InfoPopover';
+import { MESSAGE_ICON, PdmMessage, type PdmMessageTone } from './shared/PdmMessage';
 
 export interface PdmLinkValue {
   pdm_tool_id: string | null;
@@ -56,7 +57,6 @@ export interface SolidWorksPdmLinkPanelProps {
 }
 
 type Tone = 'success' | 'warning' | 'info' | 'danger' | 'muted';
-export type PdmMessageTone = 'info' | 'warning' | 'error';
 type PendingAction = 'index' | 'enable';
 type FocusTarget = 'select' | 'trigger';
 type PdmHostStatus = NonNullable<SolidworksHostStatus['pdm']>;
@@ -78,11 +78,6 @@ const TONE_ICON: Record<Tone, LucideIcon> = {
   info: Info,
   danger: XCircle,
   muted: Circle,
-};
-const MESSAGE_ICON: Record<PdmMessageTone, LucideIcon> = {
-  info: Info,
-  warning: AlertTriangle,
-  error: XCircle,
 };
 const TONE_SEVERITY: Record<Tone, number> = {
   success: 0,
@@ -230,35 +225,6 @@ function machineMessage(
     case 'ready':
       return null;
   }
-}
-
-export function PdmMessage({
-  id,
-  tone,
-  boxed,
-  alert,
-  children,
-}: {
-  id?: string;
-  tone: PdmMessageTone;
-  boxed?: boolean;
-  /** Only for failures the user just caused (ux-spec §6). */
-  alert?: boolean;
-  children: ReactNode;
-}) {
-  const Icon = MESSAGE_ICON[tone];
-  return (
-    <p
-      id={id}
-      className="sw-message"
-      data-tone={tone}
-      data-boxed={boxed ? 'true' : undefined}
-      role={alert ? 'alert' : undefined}
-    >
-      <Icon className="sw-message-icon" size={14} aria-hidden="true" />
-      <span>{children}</span>
-    </p>
-  );
 }
 
 function MachineCheck({

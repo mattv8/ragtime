@@ -2807,7 +2807,6 @@ export interface PdmIndexJob {
 }
 
 export interface PdmIndexStatusResponse {
-  enabled: boolean;
   last_indexed: string | null;
   document_count: number;
   embedding_count: number;

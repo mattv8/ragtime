@@ -6,6 +6,7 @@ export interface SolidworksOptions {
   instance_mode?: SolidworksInstanceMode;
   max_instances?: number;
   idle_shutdown_seconds?: number;
+  allow_scripts?: boolean;
 }
 export type SolidworksConnectionConfig = SSHShellConnectionConfig &
   SolidworksOptions & {
@@ -43,6 +44,7 @@ export const SOLIDWORKS_DEFAULT_OPTIONS: Required<SolidworksOptions> = {
   instance_mode: 'background',
   max_instances: 1,
   idle_shutdown_seconds: 900,
+  allow_scripts: false,
 };
 export const SOLIDWORKS_DEFAULT_TIMEOUT_SECONDS = 100;
 

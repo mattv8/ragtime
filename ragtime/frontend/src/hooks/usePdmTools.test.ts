@@ -6,7 +6,6 @@ const client = vi.hoisted(() => ({ listToolConfigs: vi.fn(), getPdmIndexStatus: 
 vi.mock('../api/client', () => ({ api: client }));
 
 const status = (job: string | null) => ({
-  enabled: true,
   last_indexed: null,
   document_count: 0,
   embedding_count: 0,
