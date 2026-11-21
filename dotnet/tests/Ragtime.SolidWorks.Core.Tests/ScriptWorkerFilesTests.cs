@@ -65,5 +65,51 @@ namespace Ragtime.SolidWorks.Core.Tests
                 Directory.Delete(directory, true);
             }
         }
+
+        [Fact]
+        public void ReadLogTextReturnsNullForMissingLog()
+        {
+            var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                Assert.Null(ScriptWorkerFiles.ReadLogText(directory));
+            }
+            finally { Directory.Delete(directory, true); }
+        }
+
+        // .NET on Linux enforces only FileShare.None, so this pins the sharing mode on Windows test runs only.
+        [Fact]
+        public void ReadLogTextReadsWhileWorkerHoldsLogForWrite()
+        {
+            var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                var path = Path.Combine(directory, ScriptWorkerFiles.LogName);
+                using (var worker = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+                using (var writer = new StreamWriter(worker, new UTF8Encoding(false)))
+                {
+                    writer.Write("\"first\"\n");
+                    writer.Flush();
+                    Assert.Equal("\"first\"\n", ScriptWorkerFiles.ReadLogText(directory));
+                }
+            }
+            finally { Directory.Delete(directory, true); }
+        }
+
+        [Fact]
+        public void ReadLogTextDecodesUtf8()
+        {
+            var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                const string text = "\"héllo — 日本\"\n";
+                File.WriteAllBytes(Path.Combine(directory, ScriptWorkerFiles.LogName), Encoding.UTF8.GetBytes(text));
+                Assert.Equal(text, ScriptWorkerFiles.ReadLogText(directory));
+            }
+            finally { Directory.Delete(directory, true); }
+        }
     }
 }

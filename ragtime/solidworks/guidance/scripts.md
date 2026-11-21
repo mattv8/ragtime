@@ -19,6 +19,9 @@ If a script times out, it may have partly changed open documents: re-read with
 `documents.list` before retrying. Compile errors include line, column and code; common
 modern-syntax errors include a C# 5 hint. Check the indicated source line.
 Run time is limited by the tool's timeout setting (default 100 s) and by 600 s, whichever is lower.
+The script gets at least 15 s less than the requested timeout, kept for the connection and the cleanup afterwards.
+Compiling and attaching come out of what is left, and a cold SolidWorks start costs about 10 s more. Request at
+least 30 s (`timeout` 30 leaves roughly 10 s for `Run`); shorter requests are refused with "Not enough time remains".
 
 Build flow: run the script, save into `work_folder`, then use `pdm.file.add` and
 `pdm.file.checkin`. Do not call PDM APIs directly from scripts.

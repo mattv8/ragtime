@@ -158,6 +158,21 @@ namespace Ragtime.SolidWorks.Core.Tests
         }
 
         [Fact]
+        public async Task RunnerFaultWritesOneNoOutcomeSummaryAndStillFails()
+        {
+            var manager = new FakeInstanceManager();
+            manager.AddBackground("i1");
+            var runner = new Runner { OnRun = () => throw new System.IO.IOException("log.jsonl is locked") };
+            var log = new List<string>();
+            var response = await Call(manager, runner, log);
+            Assert.Equal("internal_error", (string?)response["error"]!["code"]);
+            var line = Assert.Single(log);
+            Assert.Contains("script.run run=", line);
+            Assert.Contains("outcome=NoOutcome", line);
+            Assert.DoesNotContain("secret source", line);
+        }
+
+        [Fact]
         public async Task CaptureFailureRefusesRun()
         {
             var manager = new FakeInstanceManager();

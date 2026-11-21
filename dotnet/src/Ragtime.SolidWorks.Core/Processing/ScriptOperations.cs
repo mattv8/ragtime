@@ -164,12 +164,13 @@ namespace Ragtime.SolidWorks.Core
             }
             finally
             {
-                if (outcome != null && _log != null)
+                if (_log != null)
                 {
                     using (var sha = SHA256.Create())
                     {
                         var hash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(source))).Replace("-", "").ToLowerInvariant();
-                        try { _log($"script.run run={runId} sha256={hash} purpose={JsonConvert.ToString(purpose)} outcome={outcome.Status} elapsed_ms={watch.ElapsedMilliseconds} documents={count}"); }
+                        var summaryOutcome = outcome?.Status.ToString() ?? "NoOutcome";
+                        try { _log($"script.run run={runId} sha256={hash} purpose={JsonConvert.ToString(purpose)} outcome={summaryOutcome} elapsed_ms={watch.ElapsedMilliseconds} documents={count}"); }
                         catch (Exception) { /* Logging must not affect the response. */ }
                     }
                 }

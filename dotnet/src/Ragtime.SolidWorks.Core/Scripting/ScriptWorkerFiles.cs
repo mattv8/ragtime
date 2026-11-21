@@ -16,6 +16,22 @@ namespace Ragtime.SolidWorks.Core
 
         public static JObject ReadRequest(string folder) => Read(folder, RequestName);
         public static JObject ReadResult(string folder) => Read(folder, ResultName);
+
+        /// <summary>
+        /// Reads <c>log.jsonl</c> as UTF-8 while a worker may still hold it open for writing. Returns null when the file is
+        /// missing. Throws the usual IO exceptions when the file cannot be opened.
+        /// </summary>
+        public static string? ReadLogText(string folder)
+        {
+            var path = Path.Combine(folder, LogName);
+            if (!File.Exists(path)) return null;
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var reader = new StreamReader(stream, Encoding.UTF8))
+            {
+                return reader.ReadToEnd();
+            }
+        }
+
         public static void WriteRequest(string folder, JObject request) => Write(folder, RequestName, request);
         public static void WriteResult(string folder, JObject result)
         {

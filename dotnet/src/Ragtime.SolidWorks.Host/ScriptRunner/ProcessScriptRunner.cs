@@ -20,6 +20,7 @@ namespace Ragtime.SolidWorks.Host
     internal sealed class ProcessScriptRunner : IScriptRunner
     {
         private const string WorkerOutputName = "worker.out";
+        private static readonly TimeSpan WorkerStopWait = TimeSpan.FromSeconds(5);
 
         private readonly string _hostExePath;
         private readonly string _scriptsRoot;
@@ -120,7 +121,9 @@ namespace Ragtime.SolidWorks.Host
                 if (!WorkerLauncher.WaitForExit(process, request.Timeout, cancellationToken))
                 {
                     job.Dispose();
-                    _log("script run " + request.RunId + ": timed out after " + request.Timeout.TotalSeconds.ToString("0.#", CultureInfo.InvariantCulture) + " s; the worker and its children were stopped.");
+                    var stopped = WorkerLauncher.WaitForExit(process, WorkerStopWait, CancellationToken.None);
+                    _log("script run " + request.RunId + ": timed out after " + request.Timeout.TotalSeconds.ToString("0.#", CultureInfo.InvariantCulture) + " s; "
+                        + (stopped ? "the worker and its children were stopped." : "the worker did not exit within 5 s after the stop."));
                     return ScriptOutcomeMapper.TimedOut(ReadLog(folder));
                 }
 
@@ -169,10 +172,18 @@ namespace Ragtime.SolidWorks.Host
             || exception is JsonException
             || exception is ScriptResultFormatException;
 
-        private static List<string> ReadLog(string folder)
+        /// <summary>Reads the worker's log. A log that cannot be read is logged and treated as empty; it never fails the run.</summary>
+        private List<string> ReadLog(string folder)
         {
-            var path = Path.Combine(folder, ScriptWorkerFiles.LogName);
-            return ScriptOutcomeMapper.ReadLog(File.Exists(path) ? File.ReadAllText(path, Encoding.UTF8) : null);
+            try
+            {
+                return ScriptOutcomeMapper.ReadLog(ScriptWorkerFiles.ReadLogText(folder));
+            }
+            catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
+            {
+                _log("script run " + Path.GetFileName(folder) + ": log.jsonl could not be read: " + exception.Message);
+                return ScriptOutcomeMapper.ReadLog(null);
+            }
         }
 
         private void TryDeleteRunFolder(string folder)
