@@ -91,6 +91,17 @@ afterEach(() => {
 });
 
 describe('RemoteClientPairingPanel', () => {
+  it('creates a SolidWorks pairing with a Windows-only target', async () => {
+    apiMock.createRemotePairing.mockResolvedValue(createdPairing);
+    apiMock.getRemotePairing.mockResolvedValue({ ...createdPairing, status: 'paired' });
+    renderPanel({ toolType: 'solidworks', pairingId: null });
+    const selector = await screen.findByRole('group', { name: 'Target operating system' });
+    expect(within(selector).getByText('Windows')).toBeTruthy();
+    expect(within(selector).queryByText('Linux')).toBeNull();
+    expect(within(selector).queryByText('macOS')).toBeNull();
+    expect(apiMock.createRemotePairing).toHaveBeenCalledWith('solidworks', undefined);
+  });
+
   it('creates one draft, polls it, and exposes paired facts without private credentials', async () => {
     apiMock.createRemotePairing.mockResolvedValue(createdPairing);
     apiMock.getRemotePairing.mockResolvedValue({

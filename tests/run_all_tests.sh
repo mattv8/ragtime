@@ -52,4 +52,5 @@ docker build --progress=plain --target frontend-format-check -f "$ROOT_DIR/docke
 docker build --progress=plain --target frontend-lint -f "$ROOT_DIR/docker/Dockerfile" --build-arg "ESLINT_SCOPE=$eslint_scope" "$ROOT_DIR"
 docker build --progress=plain --target frontend-test -f "$ROOT_DIR/docker/Dockerfile" "$ROOT_DIR"
 docker build --progress=plain --target frontend-builder -f "$ROOT_DIR/docker/Dockerfile" --build-arg ENVIRONMENT=local --build-arg APP_VERSION=local "$ROOT_DIR"
+docker build --progress=plain --target solidworks-host-test -f "$ROOT_DIR/docker/Dockerfile" "$ROOT_DIR"
 docker build --progress=plain --target storage-test -f "$ROOT_DIR/docker/Dockerfile.storage" --build-arg MAVEN_SKIP_TESTS=1 "$ROOT_DIR"

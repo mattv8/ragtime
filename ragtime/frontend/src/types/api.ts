@@ -3,6 +3,8 @@
  * These types mirror the Python Pydantic models in app/indexer/models.py
  */
 
+import type { SolidworksConnectionConfig } from '../api/solidworks';
+
 // =============================================================================
 // Authentication Types
 // =============================================================================
@@ -1752,6 +1754,7 @@ export type ToolType =
   | 'ssh_shell'
   | 'windows_shell'
   | 'filesystem_indexer'
+  | 'solidworks'
   | 'solidworks_pdm';
 
 // Mount type for filesystem indexer
@@ -2206,6 +2209,7 @@ export type ConnectionConfig =
   | HttpApiConnectionConfig
   | OdooShellConnectionConfig
   | SSHShellConnectionConfig
+  | SolidworksConnectionConfig
   | FilesystemConnectionConfig
   | SolidworksPdmConnectionConfig
   | CloudMountConnectionConfig;
@@ -2233,6 +2237,13 @@ export interface ToolConfig {
   sort_order: number;
   group_id?: string | null;
   group_name?: string | null;
+  /** Computed by the server for SolidWorks tools that link a PDM tool; never stored. */
+  pdm_link?: {
+    tool_id: string;
+    tool_name: string | null;
+    enabled: boolean;
+    exists: boolean;
+  } | null;
   disabled_reason?: string;
   /** Credential field names that are encrypted but cannot be decrypted with the current server key. */
   undecryptable_fields: string[];
@@ -2341,6 +2352,7 @@ export interface UpdateToolGroupRequest {
 export interface CreateToolConfigRequest {
   name: string;
   tool_type: ToolType;
+  enabled?: boolean;
   description?: string;
   connection_config: ConnectionConfig;
   max_results?: number;
@@ -2590,6 +2602,12 @@ export const TOOL_TYPE_INFO: Record<
     description:
       'Index files from a filesystem path (Docker volume, SMB, NFS, or local) for semantic search',
     icon: 'folder',
+  },
+  solidworks: {
+    name: 'SolidWorks',
+    description:
+      'Read features, sketches, dimensions, mates and mass properties from SolidWorks on a Windows machine',
+    icon: 'box',
   },
   solidworks_pdm: {
     name: 'SolidWorks PDM',
@@ -2843,7 +2861,6 @@ export interface PdmIndexJob {
 }
 
 export interface PdmIndexStatusResponse {
-  enabled: boolean;
   last_indexed: string | null;
   document_count: number;
   embedding_count: number;

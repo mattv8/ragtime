@@ -148,6 +148,7 @@ class CiBuildPlanTests(unittest.TestCase):
             "needs.quality.outputs.backend_result": "success",
             "needs.quality.outputs.frontend_result": "success",
             "needs.quality.outputs.storage_result": "success",
+            "needs.quality.outputs.solidworks_result": "success",
             "needs.release-plan.result": "success",
             "needs.candidate-main.result": "success",
             "needs.sbom.result": "success",
@@ -170,6 +171,10 @@ class CiBuildPlanTests(unittest.TestCase):
             ("needs.quality.outputs.backend_result", "failure"),
             ("needs.quality.outputs.frontend_result", "skipped"),
             ("needs.quality.outputs.storage_result", "cancelled"),
+            ("needs.quality.outputs.solidworks_result", "failure"),
+            ("needs.quality.outputs.solidworks_result", "cancelled"),
+            ("needs.quality.outputs.solidworks_result", "skipped"),
+            ("needs.quality.outputs.solidworks_result", ""),
             ("needs.release-plan.result", "cancelled"),
             ("cancelled()", True),
         ):

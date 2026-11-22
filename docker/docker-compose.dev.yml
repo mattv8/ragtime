@@ -94,6 +94,8 @@ services:
       - ragtime-node-modules:/ragtime/ragtime/frontend/node_modules
       # Mount Prisma schema for client generation
       - ../prisma:/ragtime/prisma:ro
+      # SolidWorks host zip and manifest from dotnet/build-host-zip.sh (default artifact dir; read-only)
+      - ../dotnet/artifacts:/opt/ragtime/solidworks-host:ro
       # Mount data directory (indexes, SSL certs, etc.)
       - ../.data:/data
       - keystore:/run/ragtime-keystore

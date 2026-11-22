@@ -179,6 +179,7 @@ def write_override(path: Path, primary: Path, target: Path, *, storage: dict[str
         f"      - {yaml_quote(str(target / 'scripts') + ':/ragtime/scripts:ro')}\n"
         "      - ragtime-node-modules:/ragtime/ragtime/frontend/node_modules\n"
         f"      - {yaml_quote(str(target / 'prisma') + ':/ragtime/prisma:ro')}\n"
+        f"      - {yaml_quote(str(target / 'dotnet' / 'artifacts') + ':/opt/ragtime/solidworks-host:ro')}\n"
         f"      - {yaml_quote(str(target / 'runtime') + ':/ragtime/runtime')}\n"
         f"      - {yaml_quote(str(data) + ':/data')}\n"
         f"{storage_key_mount}"

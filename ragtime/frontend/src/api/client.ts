@@ -2269,7 +2269,7 @@ export const api = {
   },
 
   async createRemotePairing(
-    toolType: 'ssh_shell' | 'windows_shell',
+    toolType: 'ssh_shell' | 'windows_shell' | 'solidworks',
     toolId?: string,
   ): Promise<RemotePairingCreatedResponse> {
     const response = await apiFetch(`${API_BASE}/remote/pairings`, {
@@ -3179,11 +3179,22 @@ export const api = {
   },
 
   /**
-   * Get PDM index status for a tool
+   * Get PDM index status for a tool: the latest job (`/pdm/status`, null before the first index)
+   * combined with the index counts (`/pdm/stats`).
    */
   async getPdmIndexStatus(toolId: string): Promise<import('@/types').PdmIndexStatusResponse> {
-    const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/status`);
-    return handleResponse<import('@/types').PdmIndexStatusResponse>(response);
+    const [job, stats] = await Promise.all([
+      apiFetch(`${API_BASE}/tools/${toolId}/pdm/status`).then((response) =>
+        handleResponse<import('@/types').PdmIndexJob | null>(response),
+      ),
+      this.getPdmIndexStats(toolId),
+    ]);
+    return {
+      last_indexed: stats.last_indexed_at,
+      document_count: stats.document_count,
+      embedding_count: stats.embedding_count,
+      current_job: job,
+    };
   },
 
   /**

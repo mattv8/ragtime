@@ -124,6 +124,7 @@ from ragtime.remote_client import router as remote_client_router
 from ragtime.remote_client.relay import relay_manager
 from ragtime.remote_client.repository import remote_pairing_repository
 from ragtime.skills.routes import router as instruction_skills_router
+from ragtime.solidworks.routes import router as solidworks_router
 from ragtime.userspace.agent_routes import (
     agent_management_router,
     agent_router,
@@ -584,6 +585,7 @@ app.include_router(pdm_automation_router)
 # Include indexer routes
 app.include_router(instruction_skills_router)
 app.include_router(indexer_router)
+app.include_router(solidworks_router)
 app.include_router(remote_client_router)
 app.include_router(content_protection_router)
 app.include_router(server_backup_router)

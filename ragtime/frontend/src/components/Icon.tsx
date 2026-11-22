@@ -27,12 +27,14 @@ import {
   Activity,
   Download,
   Globe,
+  Box,
   BookOpen,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 export type IconType =
   | 'database'
+  | 'box'
   | 'terminal'
   | 'server'
   | 'folder'
@@ -64,6 +66,7 @@ export type IconType =
 
 const iconMap: Record<IconType, LucideIcon> = {
   database: Database,
+  box: Box,
   terminal: Terminal,
   server: Monitor,
   folder: Folder,
@@ -111,6 +114,8 @@ export function Icon({ name, size = 20, className = '' }: IconProps) {
  */
 export function getToolIconType(iconField: string | undefined): IconType {
   switch (iconField) {
+    case 'box':
+      return 'box';
     case 'database':
       return 'database';
     case 'terminal':

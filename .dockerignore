@@ -14,3 +14,6 @@ __pycache__/
 ragtime/frontend/node_modules/
 ragtime/frontend/.vite/
 ragtime/frontend/dist/
+dotnet/artifacts/
+dotnet/**/bin/
+dotnet/**/obj/

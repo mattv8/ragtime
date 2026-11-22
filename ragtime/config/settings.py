@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     Note: LLM/embedding provider settings are in the database (Settings UI).
     """
 
+    solidworks_host_artifact_dir: str = Field(
+        default="/opt/ragtime/solidworks-host",
+        alias="SOLIDWORKS_HOST_ARTIFACT_DIR",
+    )
+
     # Database (Prisma)
     database_url: str = Field(
         default="postgresql://ragtime:ragtime_dev@localhost:5434/ragtime",
