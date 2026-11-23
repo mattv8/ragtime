@@ -2248,11 +2248,29 @@ legend {
 }
 
 .browser-entry-badge {
+  flex: none;
+  white-space: nowrap;
   font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--color-primary);
+}
+
+.browser-entry-badge[data-tone='success'] {
+  color: color-mix(in srgb, var(--color-success) 60%, var(--color-text-strong));
+}
+
+.browser-entry-badge[data-tone='info'] {
+  color: color-mix(in srgb, var(--color-info) 60%, var(--color-text-strong));
+}
+
+.browser-entry-badge[data-tone='warning'] {
+  color: color-mix(in srgb, var(--color-warning) 60%, var(--color-text-strong));
+}
+
+.browser-entry-badge[data-tone='muted'] {
+  color: color-mix(in srgb, var(--color-text-secondary) 75%, var(--color-text-strong));
 }
 
 .browser-loading,

@@ -14,7 +14,7 @@ import type { SolidworksHostStatus } from '../api/solidworks';
 import { usePdmTools } from '../hooks/usePdmTools';
 import { usePdmRights } from '../hooks/usePdmRights';
 import type { RightsState } from '../utils/solidworksPdmRights';
-import { SolidWorksPdmFolderPicker } from './SolidWorksPdmFolderPicker';
+import { SolidWorksPdmFolderBrowser } from './SolidWorksPdmFolderBrowser';
 import type {
   PdmIndexJob,
   PdmIndexStatusResponse,
@@ -293,7 +293,6 @@ export function SolidWorksPdmLinkPanel({
   const { tools, loading, loadError, indexStatus, statusError, refresh, refreshStatus } =
     usePdmTools(value.pdm_tool_id);
   const [formOpen, setFormOpen] = useState(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -435,9 +434,6 @@ export function SolidWorksPdmLinkPanel({
     lastRights.current = serializedRights;
     rightsCallback.current?.(JSON.parse(serializedRights) as RightsState | null);
   }, [serializedRights]);
-  useEffect(() => {
-    setPickerOpen(false);
-  }, [linkedId, allowChanges]);
 
   // The target is reported after every change in the linked tool or its index status.
   useEffect(() => {
@@ -1138,31 +1134,30 @@ export function SolidWorksPdmLinkPanel({
                 vaultRoot={vaultRoot}
                 disabled={disabled || setupBusy}
                 rights={rights.state.folders}
-                onBrowse={() => setPickerOpen(true)}
-                browseDisabledReason={
-                  !toolId
-                    ? 'Save the connection first to browse the vault.'
-                    : !linkedTool || loading
-                      ? 'Wait for the search index tool to load.'
-                      : machineState !== 'ready'
-                        ? 'Install and start the SolidWorks host and log in to the vault view to browse the vault.'
-                        : null
-                }
               />
+              {toolId && linkedTool && linkedId && database && machineState === 'ready' ? (
+                <SolidWorksPdmFolderBrowser
+                  key={`${toolId}:${linkedId}:${database}`}
+                  toolId={toolId}
+                  pdmToolId={linkedId}
+                  vaultName={database}
+                  folders={value.approved_folders}
+                  vaultRoot={vaultRoot}
+                  onChange={changeFolders}
+                  disabled={disabled || setupBusy || pending !== null || rights.loading}
+                />
+              ) : (
+                <p id="solidworks-pdm-folder-browse-help" className="field-help">
+                  {!toolId
+                    ? 'Save the connection first to browse the vault.'
+                    : !linkedTool || loading || !linkedId || !database
+                      ? 'Wait for the search index tool to load.'
+                      : 'Install and start the SolidWorks host and log in to the vault view to browse the vault.'}
+                </p>
+              )}
             </div>
           )}
         </fieldset>
-      )}
-      {pickerOpen && allowChanges && toolId && linkedTool && linkedId && database && (
-        <SolidWorksPdmFolderPicker
-          toolId={toolId}
-          pdmToolId={linkedId}
-          vaultName={database}
-          folders={value.approved_folders}
-          vaultRoot={vaultRoot}
-          onChange={changeFolders}
-          onClose={() => setPickerOpen(false)}
-        />
       )}
     </section>
   );

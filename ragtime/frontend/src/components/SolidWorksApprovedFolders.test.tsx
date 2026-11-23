@@ -66,23 +66,6 @@ describe('SolidWorksApprovedFolders', () => {
     expect(rowFor('\\unknown')?.getAttribute('data-sw-rights')).toBe('not_checked');
   });
 
-  it('explains when browsing is disabled and invokes the enabled action', () => {
-    const onBrowse = vi.fn();
-    const props = { folders: [], vaultRoot: null, onChange: vi.fn(), onBrowse };
-    const { rerender } = render(
-      <SolidWorksApprovedFolders {...props} browseDisabledReason="Log in first." />,
-    );
-    const browse = screen.getByRole('button', { name: 'Browse vault…' });
-    expect(browse.hasAttribute('disabled')).toBe(true);
-    expect(browse.getAttribute('aria-describedby')).toBe('solidworks-pdm-folder-browse-help');
-    expect(document.getElementById('solidworks-pdm-folder-browse-help')?.textContent).toBe(
-      'Log in first.',
-    );
-    rerender(<SolidWorksApprovedFolders {...props} />);
-    fireEvent.click(browse);
-    expect(onBrowse).toHaveBeenCalledOnce();
-  });
-
   it('names the group and exposes folder help', () => {
     render(<Harness />);
     expect(screen.getByRole('group', { name: 'Approved folders' })).toBeTruthy();

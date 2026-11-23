@@ -7,19 +7,14 @@ import { SolidWorksPdmLinkPanel, type SolidWorksPdmLinkPanelProps } from './Soli
 
 const checkRights = vi.hoisted(() => vi.fn());
 vi.mock('../api/solidworks', () => ({ solidworksApi: { checkPdmRights: checkRights } }));
-vi.mock('./SolidWorksPdmFolderPicker', () => ({
-  SolidWorksPdmFolderPicker: (props: {
+vi.mock('./SolidWorksPdmFolderBrowser', () => ({
+  SolidWorksPdmFolderBrowser: (props: {
     toolId: string;
     pdmToolId: string;
     vaultName: string;
     folders: string[];
     vaultRoot: string | null;
-    onClose: () => void;
-  }) => (
-    <div data-testid="picker" data-props={JSON.stringify(props)}>
-      <button onClick={props.onClose}>Close picker</button>
-    </div>
-  ),
+  }) => <div data-testid="folder-browser" data-props={JSON.stringify(props)} />,
 }));
 const client = vi.hoisted(() => ({
   listToolConfigs: vi.fn(),
@@ -291,7 +286,7 @@ describe('SolidWorksPdmLinkPanel link states', () => {
   });
 });
 
-describe('SolidWorksPdmLinkPanel picker and link rules', () => {
+describe('SolidWorksPdmLinkPanel selection and link rules', () => {
   afterEach(cleanup);
   beforeEach(() => {
     vi.clearAllMocks();
@@ -341,7 +336,7 @@ describe('SolidWorksPdmLinkPanel picker and link rules', () => {
     expect(props.onChange).toHaveBeenCalledWith({ pdm_tool_id: 'pdm-a', approved_folders: [] });
   });
 
-  it('shows the picker help with the who-can-search sentence', async () => {
+  it('shows the selection help with the who-can-search sentence', async () => {
     renderPanel();
     await settled('none_linked');
     fireEvent.click(byId('solidworks-pdm-tool-help') as HTMLButtonElement);
@@ -803,7 +798,7 @@ describe('vault rights integration', () => {
     expect(textOf('solidworks-pdm-folder-browse-help')).toBe(reason);
   });
 
-  it('checks rights, publishes stable state, warns and opens the picker', async () => {
+  it('checks rights, publishes stable state, warns and shows the browser', async () => {
     const onRightsChange = vi.fn();
     const props: SolidWorksPdmLinkPanelProps = {
       toolId: 'sw-a',
@@ -840,9 +835,8 @@ describe('vault rights integration', () => {
     fireEvent.click(byId('solidworks-pdm-identity-help') as HTMLButtonElement);
     expect(textOf('solidworks-pdm-identity-help-content')).toContain('These are folder rights.');
     expect(textOf('solidworks-pdm-identity')).toContain('rights.user');
-    fireEvent.click(byId('solidworks-pdm-folder-browse') as HTMLButtonElement);
     expect(
-      JSON.parse(screen.getByTestId('picker').getAttribute('data-props') ?? '{}'),
+      JSON.parse(screen.getByTestId('folder-browser').getAttribute('data-props') ?? '{}'),
     ).toMatchObject({
       toolId: 'sw-a',
       pdmToolId: 'pdm-a',
@@ -856,7 +850,7 @@ describe('vault rights integration', () => {
     fireEvent.click(byId('solidworks-pdm-rights-recheck') as HTMLButtonElement);
     await waitFor(() => expect(checkRights).toHaveBeenCalledTimes(2));
     rerender(<SolidWorksPdmLinkPanel {...props} allowChanges={false} />);
-    expect(screen.queryByTestId('picker')).toBeNull();
+    expect(screen.queryByTestId('folder-browser')).toBeNull();
     rerender(
       <SolidWorksPdmLinkPanel {...props} value={{ pdm_tool_id: null, approved_folders: [] }} />,
     );
@@ -873,7 +867,7 @@ describe('vault rights integration', () => {
       allowChanges: true,
     });
     await settled('linked_ready');
-    expect((byId('solidworks-pdm-folder-browse') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByTestId('folder-browser')).toBeNull();
     expect(textOf('solidworks-pdm-folder-browse-help')).toContain(
       'Install and start the SolidWorks host',
     );
@@ -1034,7 +1028,7 @@ describe('vault rights integration', () => {
     );
   });
 
-  it.each(['link', 'changes'] as const)('closes an open picker when %s changes', async (change) => {
+  it.each(['link', 'changes'] as const)('updates the browser when %s changes', async (change) => {
     client.listToolConfigs.mockResolvedValue([pdmTool(), pdmTool({ id: 'pdm-b' })]);
     const props: SolidWorksPdmLinkPanelProps = {
       toolId: 'sw-a',
@@ -1046,8 +1040,7 @@ describe('vault rights integration', () => {
     };
     const { rerender } = render(<SolidWorksPdmLinkPanel {...props} />);
     await settled('linked_ready');
-    fireEvent.click(byId('solidworks-pdm-folder-browse') as HTMLButtonElement);
-    expect(screen.queryByTestId('picker')).not.toBeNull();
+    const browser = screen.getByTestId('folder-browser');
     rerender(
       <SolidWorksPdmLinkPanel
         {...props}
@@ -1055,6 +1048,15 @@ describe('vault rights integration', () => {
         value={change === 'link' ? { ...props.value, pdm_tool_id: 'pdm-b' } : props.value}
       />,
     );
-    expect(screen.queryByTestId('picker')).toBeNull();
+    if (change === 'changes') expect(screen.queryByTestId('folder-browser')).toBeNull();
+    else {
+      await waitFor(() =>
+        expect(
+          JSON.parse(screen.getByTestId('folder-browser').getAttribute('data-props') ?? '{}')
+            .pdmToolId,
+        ).toBe('pdm-b'),
+      );
+      expect(screen.getByTestId('folder-browser')).not.toBe(browser);
+    }
   });
 });

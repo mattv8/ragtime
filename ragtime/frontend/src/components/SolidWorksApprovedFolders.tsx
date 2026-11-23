@@ -14,8 +14,6 @@ export interface SolidWorksApprovedFoldersProps {
   vaultRoot: string | null;
   disabled?: boolean;
   rights?: Record<string, FolderRightsState>;
-  onBrowse?: () => void;
-  browseDisabledReason?: string | null;
 }
 
 type Tone = 'info' | 'error';
@@ -51,8 +49,6 @@ export function SolidWorksApprovedFolders({
   vaultRoot,
   disabled,
   rights,
-  onBrowse,
-  browseDisabledReason,
 }: SolidWorksApprovedFoldersProps) {
   const [draft, setDraft] = useState('');
   const [feedback, setFeedback] = useState<FolderFeedback | null>(null);
@@ -197,29 +193,6 @@ export function SolidWorksApprovedFolders({
           Add
         </button>
       </div>
-      {onBrowse && (
-        <>
-          <div className="sw-actions" data-sw-actions="browse-folders">
-            <button
-              id="solidworks-pdm-folder-browse"
-              type="button"
-              className="btn btn-secondary btn-sm"
-              disabled={Boolean(browseDisabledReason)}
-              aria-describedby={
-                browseDisabledReason ? 'solidworks-pdm-folder-browse-help' : undefined
-              }
-              onClick={onBrowse}
-            >
-              Browse vault…
-            </button>
-          </div>
-          {browseDisabledReason && (
-            <p id="solidworks-pdm-folder-browse-help" className="field-help">
-              {browseDisabledReason}
-            </p>
-          )}
-        </>
-      )}
       {feedback && (
         <Message id={ERROR_ID} tone={feedback.info ? 'info' : 'error'}>
           {feedback.message}
