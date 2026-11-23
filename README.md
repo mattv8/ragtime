@@ -53,6 +53,7 @@ What Ragtime provides and how the main pieces fit together.
 - **[MCP server](#model-context-protocol-mcp-integration)** (HTTP Streamable + stdio transports) exposing tools to Claude Desktop, VS Code Copilot, Cursor, and JetBrains IDEs with auth
 - **OpenAI-compatible API** `/v1/chat/completions` endpoint with streaming: works with [OpenWebUI](#connecting-to-openwebui), Continue, and any OpenAI client
 - **Dual vector store**: Choose FAISS or pgvector for Upload/Git indexes; pgvector for schema/PDM and optional filesystem indexing ([details](#vector-store-abstraction))
+- **[SolidWorks](#solidworks)**: agents read feature trees, sketches, dimensions, mates and mass properties from SolidWorks on a Windows machine, search a linked PDM vault, and, when an administrator allows it, change approved vault folders and run C# build scripts
 - **[Tool security](#security)**: SQL injection prevention via allowlist patterns, LIMIT enforcement, Odoo code validation, optional write-ops flag
 
 ### Model Providers
@@ -99,7 +100,7 @@ The generic connection has its own API key and provider-scoped model IDs (`opena
 
 ```mermaid
 flowchart LR
-  Tools["Tools<br/>(SQL, SSH, Odoo)"] -->|tool runs + results| Ragtime
+  Tools["Tools<br/>(SQL, SSH, Odoo, SolidWorks)"] -->|tool runs + results| Ragtime
   Context["Knowledge Sources<br/>(FAISS, pgvector)"] -->|retrieved context| Ragtime
   LLM["LLM Provider<br/>(OpenAI, Anthropic, Ollama, llama.cpp, LM Studio)"] -->|LLM API| Ragtime
 
@@ -521,6 +522,8 @@ Configure tools in the Ragtime web UI before connecting MCP clients. Enabled too
 
 For Linux, macOS, or Windows shell access, see [Connect a remote machine](REMOTE_CLIENT.md) for quick pairing, manual SSH, HTTPS tunnels, and offline setup.
 
+For SolidWorks on a Windows machine, see [SolidWorks](#solidworks).
+
 Once the required tools are healthy, continue with [MCP Integration](#model-context-protocol-mcp-integration).
 
 ### Creating Indexes
@@ -536,6 +539,91 @@ The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index 
 | **PDM** | pgvector | `pdm_embeddings` table | Configuration-aware checked-in SolidWorks PDM metadata via SQL Server, including per-value origin versions. |
 
 Jobs run async with progress streaming to the UI.
+
+### SolidWorks
+
+A **SolidWorks** tool lets agents read SolidWorks models on a Windows machine: open documents, configurations, the feature tree, sketches, dimensions, equations, custom and mass properties, and assembly components and mates. Results are JSON in SI units (meters, kilograms, radians). Ragtime reaches the machine over SSH and calls a host program that runs in the Windows account's desktop session. A tool can also link a SolidWorks PDM vault, and an administrator can let agents change approved vault folders and run C# scripts that build models.
+
+#### Requirements
+
+- A 64-bit Windows machine with SolidWorks 2022 or later. The host program targets .NET Framework 4.8.
+- The Windows account that uses SolidWorks, signed in to a desktop session. A disconnected Remote Desktop session is enough; a signed-out account is not.
+- SSH access to that account, through **Quick Connect** ([Connect a remote machine](REMOTE_CLIENT.md)) or a manual SSH connection.
+- For PDM vault access: a **SolidWorks PDM** tool that indexes the vault database (see [Creating Indexes](#creating-indexes)), and on the machine the SOLIDWORKS PDM client with a local view of that vault. The host uses the view's automatic login for that Windows account; Ragtime stores no PDM user credentials.
+
+#### Set up the SolidWorks tool
+
+1. In **Tools**, click **Add Tool** and select **SolidWorks**.
+2. In **Configure Connection**, choose **Quick Connect** and run the installation command on the Windows machine as the account that uses SolidWorks, or enter an existing SSH connection manually.
+3. In the **SolidWorks** step, click **Install host**. Ragtime uploads the host package, verifies its SHA-256 hash, installs it in `%LOCALAPPDATA%\RagtimeSolidWorks\host` for that account only, and registers a logon task that starts it. Wait until the host panel shows **Running**. If the automatic install fails, follow **Install manually instead**.
+4. Set the [options](#solidworks-options). Optionally link a PDM vault ([PDM vault access](#pdm-vault-access)) and turn on **Allow scripts** ([Scripts](#scripts)).
+5. Click **Test Connection**, then complete the remaining wizard steps and save.
+
+When the Ragtime image includes a different host version than the installed one, the host panel offers **Update host**; updating also closes the SolidWorks instances the host started. While the host is running, **Uninstall host** stops it, removes its logon task and deletes the host folder; logs, the work folder and PDM check-out records under `%LOCALAPPDATA%\RagtimeSolidWorks` remain. Deleting the tool does not uninstall the host, so uninstall it first if you want it removed from the machine.
+
+#### SolidWorks options
+
+| Option | Values | Default |
+|--------|--------|---------|
+| **Instance mode** | **Background instance**: the host starts its own hidden SolidWorks and closes it when idle; suited to a shared or unattended machine. **Attach to open SolidWorks**: uses the session the user already has open. Agents can read only documents that are already open, and the host never closes or kills that SolidWorks. | Background instance |
+| **Version** | Any installed version (the newest found), or a pinned release year | Any installed version |
+| **Max instances** | 1–4 background SolidWorks processes at once. Each uses memory and may use a license seat. | 1 |
+| **Timeout** | 15–3,600 seconds per call. Calls over about 120 seconds may be cut off by the web proxy. | 100 seconds |
+| **Close idle after** | 1–1,440 minutes without a call, for background instances. The next call starts a new instance in about 10 seconds. | 15 minutes |
+| **Allow scripts** | On or off ([Scripts](#scripts)) | Off |
+| **Allow vault changes** | On or off; needs a linked PDM tool and approved folders ([PDM vault access](#pdm-vault-access)) | Off |
+
+#### Agent operations
+
+Each SolidWorks tool is one agent tool, `solidworks_{tool}`, called with an `operation`, its `arguments` and an optional `timeout`. Agents call `guide` for the guidance topics and `describe` for the operations the installed host supports.
+
+| Operations | Purpose | Requires |
+|------------|---------|----------|
+| `guide`, `describe`, `status` | Guidance topics, the operation list with argument schemas, host and instance state | - |
+| `documents.list`, `document.open`, `document.close` | List open documents; open a local `.sldprt`, `.sldasm` or `.slddrw` file read-only; close a document the host opened | `document.open` and `document.close`: background mode |
+| `model.summary`, `configurations.list`, `features.list`, `feature.get`, `sketch.get`, `dimensions.list`, `equations.list`, `properties.get`, `mass_properties.get` | Read model data | - |
+| `components.list`, `mates.list` | Read assembly structure | An assembly |
+| `pdm.search`, `pdm.lookup` | Search the linked PDM tool's index; look up indexed documents by ID, file name or part number | A linked PDM tool |
+| `pdm.status`, `pdm.folder.list`, `pdm.file.info`, `pdm.variables.get`, `pdm.file.get_latest` | Read live vault state and data cards; copy the latest version of a file, and its references, to the local view | A linked PDM tool and the PDM client, except for `pdm.status` |
+| `pdm.folder.create`, `pdm.file.add`, `pdm.file.checkout`, `pdm.file.undo_checkout`, `pdm.file.checkin`, `pdm.variables.set` | Change files in approved vault folders | **Allow vault changes** and approved folders |
+| `script.run` | Compile and run a C# 5 script against SolidWorks | **Allow scripts** |
+
+#### PDM vault access
+
+A SolidWorks tool can link one **SolidWorks PDM** tool. The link gives agents two kinds of vault access, each with its own identity:
+
+- **Search index (SQL).** `pdm.search` and `pdm.lookup` read the PDM tool's index in Ragtime: file names, part numbers, data-card values, configurations, folders and assembly BOMs of checked-in files. Agents use it to find similar models before they build or change one. The PDM tool reads the vault database for the index with its own SQL Server login; a read-only login is enough, and vault access never uses it. The index is a snapshot and can lag the vault.
+- **Vault access (PDM client).** Every other `pdm.*` operation runs on the Windows machine through the SOLIDWORKS PDM client, as the PDM user logged in to the vault view there. This is the only PDM user the tool works as: it needs read rights, and with **Allow vault changes** on, rights to add files and check out in the approved folders. Ragtime uses the PDM tool's database name as the vault name, so the machine needs a vault view with that name.
+
+The PDM section of the **SolidWorks** step shows both: the linked PDM tool with its index state, and the machine's PDM client, vault view and logged-in user. When the host is running, the wizard also checks that user's rights: read access to the vault, and add and check-out rights in each approved folder. Folder rights do not include workflow-state permissions, so a file's state can still refuse a check-out or check-in.
+
+Everyone who can use the SolidWorks tool can search the linked vault, whatever the PDM tool's own access settings. A PDM tool set up from the SolidWorks step starts with chat and workspace access denied. Deleting or disabling the linked PDM tool turns off the SolidWorks tool's vault access.
+
+**Allow vault changes** is off by default. When it is on, agents can create folders, add files, check out, set data-card values, check in and undo their own check-outs, only inside the approved folders. Type vault-relative paths such as `\Projects\Fixtures`, or pick folders in the wizard's vault browser. Each approved folder includes its subfolders; up to 25 are allowed. Paths must use plain ASCII characters, and the vault root itself cannot be approved.
+
+The `pdm.*` operations follow these rules whatever the settings:
+
+- They never delete, rename or move files, and never change workflow state.
+- They check in, change or undo only files the tool checked out or added itself, within 24 hours.
+- Get latest never overwrites a local file that is checked out on the machine, not tracked by PDM, or changed since PDM wrote it.
+- Ragtime starts each check-in comment with the tool name and the Ragtime user.
+
+Scripts are not bound by these rules; see [Scripts](#scripts).
+
+#### Scripts
+
+With **Allow scripts** on, agents can call `script.run` to compile and run a C# 5 script against SolidWorks in a separate worker process on the machine. Agents use scripts to create or change models, save them in the host's work folder, then add and check them in with the PDM operations.
+
+Scripts are not sandboxed: they run as the Windows account, with its file, network and PDM rights. In attach mode they act on the user's open SolidWorks session. Content protection reviews each script before it runs when its coverage rules include the tool; with content protection off, scripts run without review. A run is limited to the tool's timeout or 600 seconds, whichever is lower, and a script that times out may already have changed open documents.
+
+#### SolidWorks host troubleshooting
+
+| Host panel | Meaning and action |
+|------------|--------------------|
+| **Installer missing** | This Ragtime image has no SolidWorks host package. Update or rebuild Ragtime with the package (see [dotnet/README.md](dotnet/README.md)). |
+| **Waiting for desktop session** | The host is installed, but the account has no desktop session. Sign in to the machine as that account. Ragtime checks again every 10 seconds for about five minutes; after that, choose **Check again**. |
+| **Not running** | The account is signed in, but the host did not answer. Choose **Reinstall host** to register and start its logon task again. The host log is `%LOCALAPPDATA%\RagtimeSolidWorks\logs\host.log` on the machine. |
+| **Unreachable** | Ragtime cannot reach the machine over SSH. See [Connect a remote machine](REMOTE_CLIENT.md#troubleshooting). |
 
 ### Preview DNS Setup (Reverse Proxy Deployments)
 
@@ -681,9 +769,10 @@ The schemas below list the primary fields; several tools also accept optional fi
 | `influxdb` | `{query, reason}` |
 | `odoo_shell` | `{code, reason}` |
 | `ssh_shell` | `{command, reason}` |
-| [`ssh_transfer`](SSH_FILE_TRANSFER.md) | `{source, destination, content?, encoding?, overwrite?, recursive?, reason?, timeout?, workspace_id?}`; copies between authorized SSH connections, inline content, and workspace text files. |
+| `ssh_transfer` | `{source, destination, content?, encoding?, overwrite?, recursive?, reason?, timeout?, workspace_id?}`; copies between authorized SSH connections, inline content, and workspace text files. |
 | `filesystem_indexer` | `{query, max_results}` |
 | `solidworks_pdm` | `search_{tool}`: `{query, document_type}`; Chat also provides `lookup_{tool}` for exact indexed-snapshot lookup. |
+| `solidworks` | `solidworks_{tool}`: `{operation, arguments?, timeout?}`; call `guide`, then `describe` for the operation list ([details](#agent-operations)). |
 | `knowledge_search` | `{query, index_name}` |
 | `schema_search` | `{prompt, limit}` |
 | `git_history` | `{action, ...}` |
@@ -781,6 +870,9 @@ Quick-paired SSH connections pin the target's enrolled host keys before authenti
 
 #### Tool Read-Only Mode
 Tool read-only mode is a guardrail, not complete isolation. Validators reduce common write paths, but they cannot make broad database, SSH, shell, or Odoo credentials safe against every bypass or misconfiguration. Use least-privileged credentials, read-only database roles and transactions, OS/container sandboxing, restricted SSH users, timeouts, audit logs, and network/firewall boundaries for any tool reachable by agents.
+
+#### SolidWorks Host
+The SolidWorks host runs as the Windows account Ragtime connects to, in that account's desktop session, and starts at logon with least privilege. Its local pipe accepts only that account. Approved vault folders protect against mistakes by the AI, not against other programs running as the same Windows user, which can call the host directly. Scripts are not sandboxed (see [Scripts](#scripts)). Use a dedicated PDM user with only the rights the tool needs.
 
 #### Docker & Mounts
 - The default compose files include mounts for `docker.sock` and optional privileged flags to support advanced tool features (container exec, SSH tunnels, NFS/SMB mounts).

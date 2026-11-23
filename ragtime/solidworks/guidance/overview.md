@@ -2,7 +2,8 @@
 
 This tool reads structured data from SolidWorks desktop on a Windows machine: feature tree,
 sketch geometry and constraints, dimensions, mates, components, custom properties and mass
-properties. Results are JSON. There are no screenshots, and SolidWorks documents are never written.
+properties. Results are JSON, with no screenshots. Read operations never write SolidWorks documents;
+`script.run` can build or edit models when the tool allows scripts (see `scripts`).
 
 ## Call shape
 
@@ -42,8 +43,9 @@ before you answer: millimetres = metres x 1000, inches = metres / 0.0254, degree
 
 ## Behaviour to keep in mind
 
-- Read-only: documents are opened read-only and silently. Nothing is saved, rebuilt or modified.
-  Vault changes through a linked PDM vault are separate; see `pdm`.
+- Read operations are read-only: documents are opened read-only and silently, and nothing is saved,
+  rebuilt or modified. `script.run` can change and save models when `describe` reports
+  `scripts_enabled` true; see `scripts`. Vault changes through a linked PDM vault are separate; see `pdm`.
 - A background instance holds a floating SolidWorks licence until it is idle-shutdown. Close
   documents you opened (`document.close`) when you are done, and do not open files speculatively.
 - The tool works only while the Windows account has a desktop session. A disconnected remote
@@ -52,7 +54,8 @@ before you answer: millimetres = metres x 1000, inches = metres / 0.0254, degree
   `.sldasm` or `.slddrw`. UNC and network paths (`\\server\share\...`) and relative paths are
   rejected.
 - In attach mode, `document.open` is refused. Only documents the user already has open are
-  available, and the tool never saves, closes or kills SolidWorks.
+  available. The tool never closes or kills SolidWorks; a script works in that session and can
+  change its open documents.
 
 ## Error codes and what to do
 
@@ -88,6 +91,7 @@ with the message rather than guessing.
 - `paging`: limits, `next_offset`, snapshots, large results.
 - `pdm`: PDM vault search, live file state, get latest, check-out and check-in.
 - `studying-models`: learn the house conventions from existing models.
+- `scripts`: build or change models with C# scripts, when the tool allows scripts.
 
 Read `pdm` when the tool is linked to a PDM vault and you need to find or change vault files.
 Read `studying-models` before you propose or change a model, to see how similar models are built.

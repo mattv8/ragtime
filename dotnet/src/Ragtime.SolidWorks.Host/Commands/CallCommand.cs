@@ -13,7 +13,6 @@ namespace Ragtime.SolidWorks.Host
     /// </summary>
     internal static class CallCommand
     {
-        private const int MaxBase64Characters = 8000;
         private const string IncompleteResponseMessage = "The host closed the connection before answering completely.";
         private static readonly TimeSpan PipeWait = TimeSpan.FromSeconds(20);
 
@@ -181,7 +180,7 @@ namespace Ragtime.SolidWorks.Host
         {
             try
             {
-                return base64 == null ? null : DecodeBase64(base64);
+                return base64 == null ? null : DecodeUtf8(CallRequestArgument.Decode(base64));
             }
             catch (HostErrorException)
             {
@@ -196,27 +195,7 @@ namespace Ragtime.SolidWorks.Host
                 return ReadStdinLine();
             }
 
-            return DecodeBase64(base64);
-        }
-
-        private static string DecodeBase64(string base64)
-        {
-            if (base64.Length > MaxBase64Characters)
-            {
-                throw HostError.InvalidRequest("The --request-b64 value is longer than 8000 characters.");
-            }
-
-            byte[] bytes;
-            try
-            {
-                bytes = Convert.FromBase64String(base64);
-            }
-            catch (FormatException)
-            {
-                throw HostError.InvalidRequest("The --request-b64 value is not valid base64.");
-            }
-
-            return DecodeUtf8(bytes);
+            return DecodeUtf8(CallRequestArgument.Decode(base64));
         }
 
         private static string ReadStdinLine()

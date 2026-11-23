@@ -7,6 +7,7 @@ import uuid
 
 PROTOCOL_VERSION = 1
 MAX_ENCODED_REQUEST_LENGTH = 8000
+# The host accepts up to CallRequestArgument.MaxLength (dotnet Core); keep that at least this length.
 MAX_ENCODED_SCRIPT_REQUEST_LENGTH = 32000
 
 

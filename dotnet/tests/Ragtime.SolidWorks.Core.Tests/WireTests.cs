@@ -586,6 +586,36 @@ namespace Ragtime.SolidWorks.Core.Tests
         }
     }
 
+    public class CallRequestArgumentTests
+    {
+        [Fact]
+        public void AcceptsTheLargestRequestRagtimeSends()
+        {
+            // MAX_ENCODED_SCRIPT_REQUEST_LENGTH in ragtime/solidworks/protocol.py: the largest script.run request.
+            var value = new string('A', 32000);
+
+            Assert.Equal(24000, CallRequestArgument.Decode(value).Length);
+        }
+
+        [Fact]
+        public void LongerValueIsInvalidRequest()
+        {
+            var value = new string('A', CallRequestArgument.MaxLength + 4);
+
+            var error = Assert.Throws<HostErrorException>(() => CallRequestArgument.Decode(value));
+
+            Assert.Equal(ErrorCodes.InvalidRequest, error.Code);
+        }
+
+        [Fact]
+        public void InvalidBase64IsInvalidRequest()
+        {
+            var error = Assert.Throws<HostErrorException>(() => CallRequestArgument.Decode("not base64!"));
+
+            Assert.Equal(ErrorCodes.InvalidRequest, error.Code);
+        }
+    }
+
     public class HostNameTests
     {
         [Fact]

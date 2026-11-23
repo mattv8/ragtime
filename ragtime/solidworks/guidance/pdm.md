@@ -106,9 +106,9 @@ Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
   way: leave it alone and tell the user who has it (`checked_out_by`).
 - One remaining limit: a person on this machine who undoes and re-checks-out the same file at the same
   path within 24 hours, with no tool call between, cannot be told apart from the tool's own check-out.
-- The tool cannot delete, rename, move, roll back or change workflow state. Review and approval
-  happen in PDM, by engineers. Do not promise any of these.
-- The tool does not create models; a new file must already exist on disk, made in SolidWorks by the user.
+- The `pdm.*` operations cannot delete, rename, move, roll back or change workflow state, and scripts
+  must not call PDM. Review and approval happen in PDM, by engineers. Do not promise any of these.
+- A new file must already exist on disk: made in SolidWorks, or by `script.run` when scripts are enabled.
 - A file checked out by someone else is theirs. Report who and when (`checked_out_by`,
   `checked_out_on`). Do not undo or take over their check-out.
 - `pdm.file.undo_checkout` discards local changes. Use it only to abandon your own work on a file the

@@ -350,6 +350,21 @@ class PdmOperationNameTests(unittest.TestCase):
                     self.assertIn(token, PDM_OPERATIONS)
 
 
+class ScriptAwarenessTests(unittest.TestCase):
+    def test_no_topic_denies_that_scripts_can_create_models(self) -> None:
+        for topic_id in TOPIC_IDS:
+            text = _topic_text(topic_id)
+            for phrase in ("does not create models", "documents are never written"):
+                with self.subTest(topic=topic_id, phrase=phrase):
+                    self.assertNotIn(phrase, text)
+
+    def test_overview_points_to_script_run_and_scripts_enabled(self) -> None:
+        overview = _topic_text("overview")
+        for token in ("`script.run`", "`scripts_enabled`"):
+            with self.subTest(token=token):
+                self.assertIn(token, overview)
+
+
 class OverviewPointerTests(unittest.TestCase):
     def test_overview_points_to_pdm_and_studying_models(self) -> None:
         overview = _topic_text("overview")
