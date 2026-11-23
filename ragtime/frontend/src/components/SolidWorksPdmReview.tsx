@@ -5,10 +5,12 @@ import {
   findMatchingView,
   resolveLinkState,
   resolveMachineState,
+  vaultFolderKey,
   type PdmLinkState,
   type PdmMachineState,
   type PdmViewFacts,
 } from '../utils/solidworksPdmLink';
+import type { RightsState, FolderRightsState } from '../utils/solidworksPdmRights';
 import {
   formatLastIndexed,
   type PdmLinkValue,
@@ -23,6 +25,7 @@ export interface SolidWorksPdmReviewProps {
   target: PdmTarget | null;
   hostStatus: SolidworksHostStatus | null;
   resolution?: PdmResolution;
+  rights?: RightsState | null;
 }
 
 const warning = (text: string) => <PdmMessage tone="warning">{text}</PdmMessage>;
@@ -69,7 +72,22 @@ function machineLine(
   }
 }
 
-function ChangesRows({ folders, user }: { folders: string[]; user: string | null }) {
+const folderLabels: Record<FolderRightsState, string> = {
+  write_ready: 'can add and check out',
+  missing_write: 'missing add or check-out rights',
+  not_found: 'not found, or hidden from this PDM user',
+  not_checked: 'rights not checked',
+};
+
+function ChangesRows({
+  folders,
+  user,
+  rights,
+}: {
+  folders: string[];
+  user: string | null;
+  rights?: RightsState | null;
+}) {
   const count = `${folders.length} ${folders.length === 1 ? 'folder' : 'folders'}`;
   return (
     <>
@@ -77,11 +95,19 @@ function ChangesRows({ folders, user }: { folders: string[]; user: string | null
         Vault changes: On, in {count}
         {folders.length > 0 && (
           <ul id="solidworks-review-pdm-folders">
-            {folders.map((folder) => (
-              <li key={folder} data-sw-folder={folder.toLowerCase()}>
-                <code>{folder}</code>
-              </li>
-            ))}
+            {folders.map((folder) => {
+              const state = rights?.folders[vaultFolderKey(folder)] ?? 'not_checked';
+              return (
+                <li key={folder} data-sw-folder={folder.toLowerCase()} data-sw-rights={state}>
+                  <code>{folder}</code>
+                  {state === 'missing_write' || state === 'not_found' ? (
+                    <PdmMessage tone="warning"> — {folderLabels[state]}</PdmMessage>
+                  ) : (
+                    <> — {folderLabels[state]}</>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </li>
@@ -104,6 +130,7 @@ function LinkedRows({
   allowChanges,
   target,
   hostStatus,
+  rights,
 }: SolidWorksPdmReviewProps & { target: PdmTarget }) {
   const { tool, status } = target;
   const database = databaseOf(tool);
@@ -118,14 +145,37 @@ function LinkedRows({
   const machineState = resolveMachineState(hostStatus, database);
   return (
     <ul id="solidworks-review-pdm-rows">
-      <li>PDM tool: {tool.name}</li>
+      <li>Search index: {tool.name}</li>
       <li>Vault database: {database}</li>
       <li>{indexLine(state, status)}</li>
       <li>{machineLine(machineState, database, view)}</li>
+      {!allowChanges && (
+        <li data-sw-review-row="pdm-user">
+          PDM user on this machine: {rights?.user ?? 'not checked'}
+        </li>
+      )}
+      <li data-sw-review-row="vault-access">
+        {rights?.root === 'ok'
+          ? 'Vault access: can read the vault'
+          : rights?.root === 'no_read'
+            ? warning('Vault access: the PDM user cannot read the vault.')
+            : 'Vault access: not checked'}
+      </li>
       {allowChanges ? (
-        <ChangesRows folders={link.approved_folders} user={view?.user ?? null} />
+        <ChangesRows
+          folders={link.approved_folders}
+          user={rights?.user ?? view?.user ?? null}
+          rights={rights}
+        />
       ) : (
         <li>Vault changes: Off</li>
+      )}
+      {!allowChanges && rights?.extraWriteInfo && (
+        <li data-sw-review-row="extra-write">
+          <PdmMessage tone="info">
+            The PDM user can also change files. Ragtime refuses changes while vault changes are off.
+          </PdmMessage>
+        </li>
       )}
     </ul>
   );
@@ -138,6 +188,7 @@ export function SolidWorksPdmReview({
   target,
   hostStatus,
   resolution,
+  rights,
 }: SolidWorksPdmReviewProps) {
   const matchingTarget = target?.tool.id === link.pdm_tool_id ? target : null;
   return (
@@ -166,6 +217,7 @@ export function SolidWorksPdmReview({
           allowChanges={allowChanges}
           target={matchingTarget}
           hostStatus={hostStatus}
+          rights={rights}
         />
       )}
     </div>

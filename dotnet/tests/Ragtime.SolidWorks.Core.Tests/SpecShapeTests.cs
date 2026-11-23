@@ -19,14 +19,14 @@ namespace Ragtime.SolidWorks.Core.Tests
         {
             var operations = OperationCatalog.Create().Where(operation => operation.Name.StartsWith("pdm.")).ToList();
             Assert.Equal(new[] { "pdm.status", "pdm.folder.list", "pdm.file.info", "pdm.variables.get",
-                "pdm.file.get_latest", "pdm.folder.create", "pdm.file.add", "pdm.file.checkout",
+                "pdm.folder.rights", "pdm.folder.children", "pdm.file.get_latest", "pdm.folder.create", "pdm.file.add", "pdm.file.checkout",
                 "pdm.file.undo_checkout", "pdm.file.checkin", "pdm.variables.set" }, operations.Select(operation => operation.Name));
             for (var i = 0; i < operations.Count; i++)
             {
-                Assert.Equal(i < 5 ? ProtocolInfo.Access.Read : ProtocolInfo.Access.Write, operations[i].Access);
-                Assert.Equal(i == 1, operations[i].Paged);
+                Assert.Equal(i < 7 ? ProtocolInfo.Access.Read : ProtocolInfo.Access.Write, operations[i].Access);
+                Assert.Equal(i == 1 || i == 5, operations[i].Paged);
             }
-            var required = new[] { "", "path", "path", "path", "path", "path", "source,folder",
+            var required = new[] { "", "path", "path", "path", "paths", "path", "path", "path", "source,folder",
                 "path", "path", "path,comment", "path,variables" };
             for (var i = 0; i < operations.Count; i++)
             {

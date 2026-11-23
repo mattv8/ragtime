@@ -48,6 +48,45 @@ export const SOLIDWORKS_DEFAULT_OPTIONS: Required<SolidworksOptions> = {
 };
 export const SOLIDWORKS_DEFAULT_TIMEOUT_SECONDS = 100;
 
+export interface PdmRights {
+  read: boolean;
+  add_files: boolean;
+  check_out: boolean;
+  add_folders: boolean;
+}
+
+export interface PdmRightsItem {
+  path: string;
+  checked: boolean;
+  exists: boolean | null;
+  rights: PdmRights | null;
+  write_ready: boolean;
+}
+
+export interface PdmRightsResponse {
+  checked: boolean;
+  user: string | null;
+  root: PdmRightsItem | null;
+  folders: PdmRightsItem[];
+  error: { code: string; message: string } | null;
+}
+
+export interface PdmFolderChild {
+  name: string;
+  vault_path: string;
+  rights: PdmRights | null;
+  write_ready: boolean;
+}
+
+export interface PdmFoldersResponse {
+  items: PdmFolderChild[];
+  offset: number;
+  next_offset: number | null;
+  total: number;
+  snapshot: string | null;
+  error: { code: string; message: string } | null;
+}
+
 /** An HTTP error from the SolidWorks API. `status` lets callers tell e.g. the artifact 503 apart. */
 export class SolidworksApiError extends Error {
   readonly status: number;
@@ -92,6 +131,26 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 const hostPath = (toolId: string) => `/tools/${encodeURIComponent(toolId)}/host`;
 export const solidworksApi = {
+  checkPdmRights: (
+    toolId: string,
+    body: { pdm_tool_id: string; folders: string[] },
+    signal?: AbortSignal,
+  ) =>
+    request<PdmRightsResponse>(`/tools/${encodeURIComponent(toolId)}/pdm/rights`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
+  listPdmFolders: (
+    toolId: string,
+    body: { pdm_tool_id: string; path: string; offset: number; snapshot?: string | null },
+    signal?: AbortSignal,
+  ) =>
+    request<PdmFoldersResponse>(`/tools/${encodeURIComponent(toolId)}/pdm/folders`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
   getHostArtifact: (signal?: AbortSignal) =>
     request<SolidworksHostArtifact>('/host/artifact', { signal }),
   getHostStatus: (toolId: string, signal?: AbortSignal) =>

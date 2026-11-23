@@ -23,7 +23,7 @@ def client():
 
 def test_all_routes_require_admin():
     api_routes = [route for route in routes.router.routes if isinstance(route, APIRoute)]
-    assert len(routes.router.routes) == len(api_routes) == 5
+    assert len(routes.router.routes) == len(api_routes) == 7
     assert all(any(dep.call is require_admin for dep in route.dependant.dependencies) for route in api_routes)
 
 
@@ -72,6 +72,8 @@ def test_missing_or_wrong_tool(client, monkeypatch, tool):
     assert client.get("/indexes/solidworks/tools/id/host").status_code == 404
     assert client.post("/indexes/solidworks/tools/id/host/install").status_code == 404
     assert client.post("/indexes/solidworks/tools/id/host/uninstall").status_code == 404
+    assert client.post("/indexes/solidworks/tools/id/pdm/rights", json={"pdm_tool_id": "pdm", "folders": []}).status_code == 404
+    assert client.post("/indexes/solidworks/tools/id/pdm/folders", json={"pdm_tool_id": "pdm"}).status_code == 404
 
 
 @pytest.mark.parametrize(

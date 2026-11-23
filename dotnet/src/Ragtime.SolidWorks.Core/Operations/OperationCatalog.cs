@@ -203,6 +203,22 @@ namespace Ragtime.SolidWorks.Core
                     .Property("configuration", SchemaTypes.Text("Configuration name; default @.")).Build(),
                 "vault_path, configurations, configuration, variables [{name, value}]."),
             new OperationDefinition(
+                "pdm.folder.rights", "Checks folder rights for the logged-in user.", ProtocolInfo.Access.Read, false,
+                new ObjectSchema().Property("paths", new JObject
+                {
+                    ["type"] = "array",
+                    ["maxItems"] = 25,
+                    ["items"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 260 },
+                }, true).Build(),
+                "user, items [{vault_path, checked, exists, rights {read, add_files, check_out, add_folders}}]."),
+            new OperationDefinition(
+                "pdm.folder.children", "Lists direct subfolders with folder rights.", ProtocolInfo.Access.Read, true,
+                new ObjectSchema().Property("path", SchemaTypes.Text("Vault folder path."), true)
+                    .Property("offset", SchemaTypes.Integer(0, int.MaxValue, "Index of the first item; default 0."))
+                    .Property("limit", SchemaTypes.Integer(1, 100, "Maximum items; default 50."))
+                    .Property("snapshot", SchemaTypes.Snapshot()).Build(),
+                "Paged items: name, vault_path, rights {read, add_files, check_out, add_folders} or null."),
+            new OperationDefinition(
                 "pdm.file.get_latest", "Fetches the latest vault file and optionally its references.", ProtocolInfo.Access.Read, false,
                 new ObjectSchema().Property("path", SchemaTypes.Text("Vault file path."), true)
                     .Property("include_references", SchemaTypes.Boolean("Include references; default true.")).Build(),

@@ -53,6 +53,7 @@ import {
   type PdmTarget,
 } from './SolidWorksPdmLinkPanel';
 import { SolidWorksPdmReview } from './SolidWorksPdmReview';
+import type { RightsState } from '../utils/solidworksPdmRights';
 import { SolidWorksScriptsPanel, SolidWorksScriptsReview } from './SolidWorksScriptsPanel';
 import { DEFAULT_PDM_CONNECTION_CONFIG } from './pdm/pdmDefaults';
 import { SolidWorksTestResult } from './SolidWorksTestResult';
@@ -2424,6 +2425,7 @@ export function ToolWizard({
     };
   });
   const [pdmTarget, setPdmTarget] = useState<PdmTarget | null>(null);
+  const [pdmRights, setPdmRights] = useState<RightsState | null>(null);
   const [pdmResolution, setPdmResolution] = useState<'loading' | 'failed' | 'missing' | 'ready'>(
     'loading',
   );
@@ -3798,6 +3800,7 @@ export function ToolWizard({
     if (next.pdm_tool_id !== pdmLink.pdm_tool_id) {
       setPdmResolution('loading');
       setPdmTarget(null);
+      setPdmRights(null);
     }
     setPdmLink(next);
     setTestResult(null);
@@ -3823,6 +3826,7 @@ export function ToolWizard({
     setSolidworksHostStatus(null);
     setPdmLink({ pdm_tool_id: null, approved_folders: [] });
     setPdmTarget(null);
+    setPdmRights(null);
     setPdmResolution('loading');
     setPdmBusy(false);
     setAllowWrite(false);
@@ -7683,6 +7687,7 @@ export function ToolWizard({
             target={pdmTarget}
             hostStatus={solidworksHostStatus}
             resolution={pdmResolution}
+            rights={pdmRights}
           />
         )}
         <div className="review-section">
@@ -7751,6 +7756,7 @@ export function ToolWizard({
               disabled={saving || testing || solidworksActionBusy}
             />
             <SolidWorksPdmLinkPanel
+              toolId={existingTool?.id ?? createdToolId}
               value={pdmLink}
               onChange={handlePdmLinkChange}
               allowChanges={allowWrite}
@@ -7760,6 +7766,7 @@ export function ToolWizard({
               onBusyChange={setPdmBusy}
               onTargetChange={setPdmTarget}
               onResolutionChange={setPdmResolution}
+              onRightsChange={setPdmRights}
             />
             <SolidWorksScriptsPanel
               value={solidworksOptions.allow_scripts === true}

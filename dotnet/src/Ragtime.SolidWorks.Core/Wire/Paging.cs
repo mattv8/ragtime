@@ -135,6 +135,25 @@ namespace Ragtime.SolidWorks.Core
             return (JObject)JToken.Parse(text);
         }
 
+        /// <summary>Fits an already selected page against the byte budget without changing its snapshot.</summary>
+        public static JObject FitPage<T>(IReadOnlyList<T> items, int offset, int total, string snapshot, string units, int maxResultBytes)
+        {
+            var texts = items.Select(item => WireJson.Compact(WireJson.ToToken(item))).ToList();
+            while (true)
+            {
+                var next = (long)offset + texts.Count < total ? offset + texts.Count : (int?)null;
+                var text = BuildPageText(texts, offset, next, total, snapshot, units);
+                if (WireJson.ByteCount(text) <= maxResultBytes) return (JObject)JToken.Parse(text);
+                if (texts.Count <= 1)
+                {
+                    throw HostError.Coded(ErrorCodes.ResultTooLarge,
+                        texts.Count == 1 ? "A single item is larger than the result budget." : "The page is larger than the result budget. Ask for a narrower query.",
+                        new JObject { ["budget_bytes"] = WireJson.Value(maxResultBytes) });
+                }
+                texts.RemoveAt(texts.Count - 1);
+            }
+        }
+
         /// <summary>Returns the result unchanged, or throws result_too_large when its compact form exceeds the budget.</summary>
         public static JToken RequireFits(JToken result, int maxResultBytes)
         {

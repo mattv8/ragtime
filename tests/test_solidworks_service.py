@@ -224,6 +224,20 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("host.shutdown", self.forwarded())
         self.assertNotIn("host.restart", self.forwarded())
 
+    async def test_admin_pdm_operations_are_hidden_and_rejected(self):
+        self.transport.operations = [{"name": name, "access": "read"} for name in pdm_link.PDM_ADMIN_OPERATIONS]
+        with patch.object(pdm_link, "resolve_pdm_link", AsyncMock()) as resolve:
+            for operation in pdm_link.PDM_ADMIN_OPERATIONS:
+                response = await self.execute(operation)
+                self.assertEqual(response["error"]["code"], "unknown_operation")
+                self.assertEqual(response["error"]["message"], f"There is no operation named '{operation}'. Call describe for the list.")
+            self.load_settings.assert_not_awaited()
+            resolve.assert_not_awaited()
+            self.assertEqual(self.transport.calls, [])
+        description = await self.execute("describe")
+        names = {item["name"] for item in description["result"]["operations"]}
+        self.assertTrue(names.isdisjoint(pdm_link.PDM_ADMIN_OPERATIONS))
+
     async def test_contract_fetch_failure_without_cache_forwards_nothing(self):
         self.transport.error = SolidworksTransportError("ssh_unreachable", "secret")
         response = await self.execute("features.list")

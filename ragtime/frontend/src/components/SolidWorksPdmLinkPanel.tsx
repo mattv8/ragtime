@@ -12,6 +12,9 @@ import {
 import { api } from '../api/client';
 import type { SolidworksHostStatus } from '../api/solidworks';
 import { usePdmTools } from '../hooks/usePdmTools';
+import { usePdmRights } from '../hooks/usePdmRights';
+import type { RightsState } from '../utils/solidworksPdmRights';
+import { SolidWorksPdmFolderPicker } from './SolidWorksPdmFolderPicker';
 import type {
   PdmIndexJob,
   PdmIndexStatusResponse,
@@ -43,6 +46,8 @@ export interface PdmTarget {
 export type PdmResolution = 'loading' | 'failed' | 'missing' | 'ready';
 
 export interface SolidWorksPdmLinkPanelProps {
+  toolId: string | null;
+  onRightsChange?: (state: RightsState | null) => void;
   value: PdmLinkValue;
   onChange: (next: PdmLinkValue) => void;
   allowChanges: boolean;
@@ -93,7 +98,9 @@ const INDEX_ACTION_STATES: readonly PdmLinkState[] = [
 ];
 
 const PDM_TOOL_HELP =
-  'Optional. Lets the AI search the vault, find a file’s path in this machine’s vault view, get the latest copy and open it. Everyone who can use this tool can search that vault. The SQL connection, index and schedule live on the PDM tool card in Tools.';
+  'The SolidWorks PDM tool whose search index the AI uses. Everyone who can use this tool can search that vault. The PDM tool also names the vault that vault access on this machine uses.';
+const RIGHTS_CAVEAT =
+  "These are folder rights. A file's workflow state can still refuse a check-out or check-in even when the folder allows it.";
 const ALLOW_CHANGES_HELP =
   'Off by default. When off, the AI can search the vault, find paths, get the latest copy and open files, but cannot add files, check out or check in. When on, it can add files, check out, undo check-out and check in, only in the approved folders below. It never deletes files or changes workflow state.';
 
@@ -237,8 +244,7 @@ function MachineCheck({
   children: ReactNode;
 }) {
   const Icon = TONE_ICON[tone];
-  const prefix =
-    tone === 'success' ? 'Passed: ' : tone === 'warning' ? 'Needs attention: ' : 'Not checked: ';
+  const prefix = tone === 'success' ? 'Passed: ' : tone === 'warning' ? 'Needs attention: ' : '';
   return (
     <li className="sw-check" data-sw-check={name} data-tone={tone}>
       <Icon size={14} aria-hidden="true" />
@@ -272,6 +278,8 @@ function IndexProgress({ name, job }: { name: string; job: PdmIndexJob }) {
 }
 
 export function SolidWorksPdmLinkPanel({
+  toolId,
+  onRightsChange,
   value,
   onChange,
   allowChanges,
@@ -285,6 +293,7 @@ export function SolidWorksPdmLinkPanel({
   const { tools, loading, loadError, indexStatus, statusError, refresh, refreshStatus } =
     usePdmTools(value.pdm_tool_id);
   const [formOpen, setFormOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -300,6 +309,8 @@ export function SolidWorksPdmLinkPanel({
   const busyCallback = useRef(onBusyChange);
   const targetCallback = useRef(onTargetChange);
   const resolutionCallback = useRef(onResolutionChange);
+  const rightsCallback = useRef(onRightsChange);
+  const lastRights = useRef<string | undefined>(undefined);
   const previousLink = useRef(value.pdm_tool_id);
   const requestedLink = useRef<string | null | undefined>(undefined);
 
@@ -307,6 +318,7 @@ export function SolidWorksPdmLinkPanel({
     busyCallback.current = onBusyChange;
     targetCallback.current = onTargetChange;
     resolutionCallback.current = onResolutionChange;
+    rightsCallback.current = onRightsChange;
   });
 
   const linkedId = value.pdm_tool_id;
@@ -335,9 +347,30 @@ export function SolidWorksPdmLinkPanel({
   const views = pdm?.views ?? [];
   const view = findMatchingView(views, database);
   const machineState = resolveMachineState(hostStatus, database);
+  const rights = usePdmRights({
+    toolId,
+    pdmToolId: linkedTool ? linkedId : null,
+    folders: value.approved_folders,
+    allowChanges,
+    enabled: linked && machineState === 'ready',
+  });
   const machineText = machineMessage(machineState, { pdm, database: database ?? '', view });
   const vaultRoot = view?.root ?? null;
-  const user = view?.user || null;
+  const user = rights.state.user || view?.user || null;
+  const folderStates = Object.values(rights.state.folders);
+  const missingWrite = folderStates.filter(
+    (item) => item === 'missing_write' || item === 'not_found',
+  ).length;
+  const folderUnchecked = folderStates.includes('not_checked');
+  const vaultTone =
+    machineState !== 'ready' ||
+    rights.loading ||
+    rights.error ||
+    rights.state.root === 'not_checked'
+      ? 'muted'
+      : rights.state.root === 'ok'
+        ? 'success'
+        : 'warning';
   const loadAlert = state === 'load_failed' && refreshRequested;
   const stateText = indexError
     ? `Could not load the index status: ${statusError}`
@@ -368,7 +401,7 @@ export function SolidWorksPdmLinkPanel({
     no_tools: {
       id: 'solidworks-pdm-no-tools-help',
       label: 'About linking a PDM tool',
-      text: 'No SolidWorks PDM tools exist yet. Set up a connection to your PDM vault database so the AI can search it through this tool. You can skip this: the tool works on SolidWorks models without a vault link.',
+      text: 'No SolidWorks PDM tools exist yet. Set up a search index so the AI can find vault files. You can skip this: the tool works on SolidWorks models without a vault link.',
     },
     linked_missing: {
       id: 'solidworks-pdm-missing-help',
@@ -395,6 +428,16 @@ export function SolidWorksPdmLinkPanel({
         ? 'info'
         : 'warning';
   const StateIcon = MESSAGE_ICON[stateTone];
+
+  const serializedRights = JSON.stringify(linked ? rights.state : null);
+  useEffect(() => {
+    if (lastRights.current === serializedRights) return;
+    lastRights.current = serializedRights;
+    rightsCallback.current?.(JSON.parse(serializedRights) as RightsState | null);
+  }, [serializedRights]);
+  useEffect(() => {
+    setPickerOpen(false);
+  }, [linkedId, allowChanges]);
 
   // The target is reported after every change in the linked tool or its index status.
   useEffect(() => {
@@ -540,7 +583,7 @@ export function SolidWorksPdmLinkPanel({
     <option value="">Loading…</option>
   ) : (
     <>
-      <option value="">None (no vault access)</option>
+      <option value="">None (no search index or vault access)</option>
       {state === 'load_failed' && linkedId !== null && !linkedTool && (
         <option value={linkedId}>Linked tool (not loaded)</option>
       )}
@@ -616,7 +659,13 @@ export function SolidWorksPdmLinkPanel({
             aria-labelledby="solidworks-pdm-vault-title"
           >
             <h4 id="solidworks-pdm-vault-title" className="sw-box-title">
-              Vault
+              Search index (SQL){' '}
+              <InfoPopover id="solidworks-pdm-index-box-help" label="About the search index">
+                Optional. A SolidWorks PDM tool reads the vault database with a read-only SQL login
+                and keeps a search index. The AI uses it to find similar parts by description, part
+                number and data-card values. The SQL connection, index and schedule live on the PDM
+                tool card in Tools.
+              </InfoPopover>
             </h4>
             {state !== 'no_tools' && (
               <div className="form-group">
@@ -666,7 +715,7 @@ export function SolidWorksPdmLinkPanel({
                   disabled={disabled || setupBusy || pending !== null}
                   onClick={openSetup}
                 >
-                  Set up a PDM connection
+                  Set up a search index
                 </button>
               ) : (
                 <button
@@ -674,7 +723,7 @@ export function SolidWorksPdmLinkPanel({
                   ref={triggerRef}
                   type="button"
                   className="btn btn-secondary btn-sm"
-                  aria-label="Set up a new PDM connection"
+                  aria-label="Set up a new search index"
                   disabled={disabled || setupBusy || pending !== null}
                   onClick={openSetup}
                 >
@@ -795,7 +844,14 @@ export function SolidWorksPdmLinkPanel({
             aria-labelledby="solidworks-pdm-machine-title"
           >
             <h4 id="solidworks-pdm-machine-title" className="sw-box-title">
-              This machine
+              Vault access (PDM client){' '}
+              <InfoPopover id="solidworks-pdm-access-box-help" label="About vault access">
+                The PDM client on the SolidWorks machine gets, opens and changes vault files. It
+                works as the PDM user logged in to the vault view there. This is the only PDM user
+                the tool uses: it needs read access, and add and check-out rights in the approved
+                folders if you allow vault changes. The SQL login of the search index is never used
+                for this.
+              </InfoPopover>
             </h4>
             {linked ? (
               <ul id="solidworks-pdm-machine-checks" className="sw-checks">
@@ -871,6 +927,37 @@ export function SolidWorksPdmLinkPanel({
                     'Logged-in user not checked'
                   )}
                 </MachineCheck>
+                <MachineCheck name="vault-rights" tone={vaultTone}>
+                  {machineState !== 'ready' ? (
+                    'Vault access not checked'
+                  ) : rights.loading ? (
+                    'Checking vault access…'
+                  ) : rights.error ? (
+                    'Vault access could not be checked'
+                  ) : rights.state.root === 'ok' ? (
+                    'Can read the vault'
+                  ) : rights.state.root === 'no_read' ? (
+                    <>
+                      <strong>Cannot read</strong> the vault
+                    </>
+                  ) : (
+                    'Vault access not checked'
+                  )}
+                </MachineCheck>
+                {allowChanges && value.approved_folders.length > 0 && (
+                  <MachineCheck
+                    name="folder-rights"
+                    tone={folderUnchecked ? 'muted' : missingWrite ? 'warning' : 'success'}
+                  >
+                    {folderUnchecked
+                      ? 'Folder rights not checked'
+                      : missingWrite
+                        ? `${missingWrite} of ${value.approved_folders.length} approved folders can't be changed`
+                        : value.approved_folders.length === 1
+                          ? 'Can add and check out in the approved folder'
+                          : `Can add and check out in all ${value.approved_folders.length} approved folders`}
+                  </MachineCheck>
+                )}
               </ul>
             ) : suggestion ? (
               <div id="solidworks-pdm-suggestion" className="sw-box">
@@ -900,10 +987,67 @@ export function SolidWorksPdmLinkPanel({
                 </button>
               </div>
             ) : (
-              <p className="sw-muted">Link a PDM tool to check this machine.</p>
+              <p className="sw-muted">
+                Vault access needs a linked search index, which names the vault. Link one to check
+                this machine.
+              </p>
             )}
+            {linked && machineState === 'ready' && (
+              <div className="sw-actions">
+                <button
+                  id="solidworks-pdm-rights-recheck"
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={disabled || setupBusy || pending !== null}
+                  aria-disabled={rights.loading || undefined}
+                  onClick={() => {
+                    if (!rights.loading) rights.recheck();
+                  }}
+                >
+                  {rights.loading ? 'Checking…' : 'Check access again'}
+                </button>
+              </div>
+            )}
+            <p
+              id="solidworks-pdm-rights-status"
+              role="status"
+              aria-live="polite"
+              className="sw-visually-hidden"
+            >
+              {linked && linkedTool && toolId && machineState === 'ready' && !rights.loading
+                ? `${rights.error || rights.state.root === 'not_checked' ? 'Vault access could not be checked.' : rights.state.root === 'ok' ? 'Vault access checked: can read the vault.' : 'Vault access checked: the PDM user cannot read the vault.'}${allowChanges && missingWrite > 0 ? ` ${missingWrite} of ${value.approved_folders.length} approved folders can't be changed.` : ''}`
+                : ''}
+            </p>
           </div>
         </div>
+      )}
+      {!formOpen && linked && rights.error && (
+        <PdmMessage id="solidworks-pdm-rights-error" tone="warning">
+          Could not check vault access: {rights.error}
+        </PdmMessage>
+      )}
+      {!formOpen && linked && rights.state.root === 'no_read' && (
+        <PdmMessage id="solidworks-pdm-rights-no-read" tone="warning">
+          The PDM user cannot read the vault, so the AI cannot get or open vault files. Give this
+          user read access in the PDM Administration tool, then choose Check access again.
+        </PdmMessage>
+      )}
+      {!formOpen && linked && allowChanges && missingWrite > 0 && (
+        <div id="solidworks-pdm-rights-missing-write" className="sw-message" data-tone="warning">
+          <AlertTriangle className="sw-message-icon" size={14} aria-hidden="true" />
+          <span>
+            {`The PDM user cannot add or check out files in ${missingWrite} approved ${missingWrite === 1 ? 'folder' : 'folders'}, or cannot see ${missingWrite === 1 ? 'it' : 'them'}. The AI's changes there will be refused. Grant the rights in the PDM Administration tool or remove ${missingWrite === 1 ? 'that folder' : 'those folders'}.`}{' '}
+            <InfoPopover id="solidworks-pdm-rights-caveat-help" label="About PDM rights">
+              {RIGHTS_CAVEAT}
+            </InfoPopover>
+          </span>
+        </div>
+      )}
+      {!formOpen && linked && !allowChanges && rights.state.extraWriteInfo && (
+        <PdmMessage id="solidworks-pdm-rights-extra-write" tone="info">
+          This PDM user can also add or check out files. Ragtime refuses every change while vault
+          changes are off. For a tool that only reads, a read-only PDM user is the safer choice.
+        </PdmMessage>
       )}
       <div ref={setupRef} hidden={!formOpen}>
         <SolidWorksPdmSetupForm
@@ -969,15 +1113,17 @@ export function SolidWorksPdmLinkPanel({
               <div id="solidworks-pdm-identity">
                 {user ? (
                   <>
-                    Changes appear in PDM as <strong>{user}</strong>
+                    Changes appear in PDM as <strong>{user}</strong>. This user needs add and
+                    check-out rights in the approved folders.
                   </>
                 ) : (
                   'Changes appear in PDM as the vault view user.'
                 )}{' '}
                 <InfoPopover id="solidworks-pdm-identity-help" label="About the PDM user">
                   {user
-                    ? 'The PDM user logged in to the vault view on this machine. Ragtime adds the tool name and the Ragtime user to each check-in comment. Use a dedicated PDM user with only the permissions this tool needs.'
-                    : 'PDM records changes under the PDM user logged in to the vault view on this machine. Install the host and log in to the vault view to see which user that is.'}
+                    ? 'The PDM user logged in to the vault view on this machine. Ragtime adds the tool name and the Ragtime user to each check-in comment. Use a dedicated PDM user with only the rights this tool needs.'
+                    : 'PDM records changes under the PDM user logged in to the vault view on this machine. Install the host and log in to the vault view to see which user that is.'}{' '}
+                  {RIGHTS_CAVEAT}
                 </InfoPopover>
               </div>
               {noFolders && (
@@ -991,10 +1137,32 @@ export function SolidWorksPdmLinkPanel({
                 onChange={changeFolders}
                 vaultRoot={vaultRoot}
                 disabled={disabled || setupBusy}
+                rights={rights.state.folders}
+                onBrowse={() => setPickerOpen(true)}
+                browseDisabledReason={
+                  !toolId
+                    ? 'Save the connection first to browse the vault.'
+                    : !linkedTool || loading
+                      ? 'Wait for the search index tool to load.'
+                      : machineState !== 'ready'
+                        ? 'Install and start the SolidWorks host and log in to the vault view to browse the vault.'
+                        : null
+                }
               />
             </div>
           )}
         </fieldset>
+      )}
+      {pickerOpen && allowChanges && toolId && linkedTool && linkedId && database && (
+        <SolidWorksPdmFolderPicker
+          toolId={toolId}
+          pdmToolId={linkedId}
+          vaultName={database}
+          folders={value.approved_folders}
+          vaultRoot={vaultRoot}
+          onChange={changeFolders}
+          onClose={() => setPickerOpen(false)}
+        />
       )}
     </section>
   );

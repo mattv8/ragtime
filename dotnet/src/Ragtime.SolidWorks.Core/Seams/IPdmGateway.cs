@@ -72,6 +72,14 @@ namespace Ragtime.SolidWorks.Core
         public string? WorkflowState { get; set; }
     }
 
+    public sealed class PdmFolderRights
+    {
+        public bool Read { get; set; }
+        public bool AddFiles { get; set; }
+        public bool CheckOut { get; set; }
+        public bool AddFolders { get; set; }
+    }
+
     public sealed class PdmFolderEntry
     {
         public string Name { get; set; } = string.Empty;
@@ -123,6 +131,10 @@ namespace Ragtime.SolidWorks.Core
         PdmFileState GetFile(string vaultPath);
         /// <summary>Direct children. NotFound when the folder does not exist. Order is not significant.</summary>
         IReadOnlyList<PdmFolderEntry> ListFolder(string vaultPath);
+        /// <summary>Folder-level rights of the logged-in user on one folder (HasRightsEx(flag, 0) per flag). NotFound when the folder does not exist or is not visible.</summary>
+        PdmFolderRights GetFolderRights(string vaultPath);
+        /// <summary>Names of the direct subfolders. NotFound when the folder does not exist. Order is not significant.</summary>
+        IReadOnlyList<string> ListSubFolderNames(string vaultPath);
         /// <summary>configuration "@" = file level. Only variables that have a value. NotFound for a missing file.</summary>
         PdmVariableSet GetVariables(string vaultPath, string configuration);
         /// <summary>

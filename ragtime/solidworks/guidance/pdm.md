@@ -161,7 +161,7 @@ Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
 | `pdm_conflict` `not_checked_out_by_tool` | The tool does not hold this check-out: it was made outside the tool, the 24-hour claim expired, or the file changed by hand. Leave it alone; the person who has it must finish the check-in (`checked_out_by`). |
 | `pdm_conflict` `not_checked_out_here` | The operation needs the file checked out here. Check `pdm.file.info`; `pdm.file.checkout` first if you must edit. |
 | `pdm_conflict` `never_checked_in` | A file added but never checked in cannot be undone. Check it in with a comment. |
-| `pdm_error` | The PDM API reported a failure (`hresult`, `pdm_error`). Report both. Retry only if the user asks. |
+| `pdm_error` | The PDM API reported a failure (`hresult`, `pdm_error`). Report both. A write refused with `E_EDM_PERMISSION_DENIED` is a PDM rights problem; report it and do not retry. Otherwise retry only if the user asks. |
 | `invalid_arguments` on `source` | The source is outside an approved folder's view and outside `work_folder`: "Add files from an approved vault folder or from the tool's work folder <work folder>." Save the file there first. |
 | `invalid_arguments` on `comment` or on a path or name | The comment has control characters or is empty; or a path or name uses non-ASCII characters ("Vault changes are limited to paths with plain ASCII characters."), is malformed, or goes through a symbolic link or junction. Fix it or report it; do not repeat the call. |
 | `operation_timeout` on a vault change | The outcome is unknown: the change may or may not have happened. Read the state with `pdm.file.info` or `pdm.folder.list` first, and retry only if the change is missing. |

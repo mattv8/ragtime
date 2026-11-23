@@ -9,7 +9,40 @@ import { api as clientApi } from '@/api/client';
 import type { SolidWorksHostPanelProps } from './SolidWorksHostPanel';
 import type { SolidWorksOptionsPanelProps } from './SolidWorksOptionsPanel';
 import type { SolidWorksTestResultProps } from './SolidWorksTestResult';
+import type { SolidWorksPdmLinkPanelProps } from './SolidWorksPdmLinkPanel';
+import type { RightsState } from '../utils/solidworksPdmRights';
 import { contentProtectionApi } from '../api/contentProtection';
+
+vi.mock('./SolidWorksPdmLinkPanel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./SolidWorksPdmLinkPanel')>();
+  return {
+    ...actual,
+    SolidWorksPdmLinkPanel: (
+      props: SolidWorksPdmLinkPanelProps & {
+        toolId: string | null;
+        onRightsChange?: (state: RightsState | null) => void;
+      },
+    ) => (
+      <>
+        <div data-testid="pdm-wizard-tool-id">{props.toolId}</div>
+        <button
+          type="button"
+          onClick={() =>
+            props.onRightsChange?.({
+              root: 'ok',
+              folders: {},
+              user: 'rights.user',
+              extraWriteInfo: false,
+            })
+          }
+        >
+          Publish test rights
+        </button>
+        <actual.SolidWorksPdmLinkPanel {...props} />
+      </>
+    ),
+  };
+});
 
 vi.mock('./SolidWorksHostPanel', () => ({
   SolidWorksHostPanel: ({
@@ -2389,6 +2422,39 @@ describe('ToolWizard', () => {
     await screen.findByRole('button', { name: 'Save Changes' });
   };
 
+  it('keeps published rights for Review and passes the SolidWorks tool id', async () => {
+    vi.spyOn(clientApi, 'listToolConfigs').mockResolvedValue([vaultTool()]);
+    await openSolidworksStep();
+    expect(screen.getByTestId('pdm-wizard-tool-id').textContent).toBe('existing-sw');
+    await waitFor(() => expect(document.getElementById('solidworks-pdm-tool')).toBeTruthy());
+    fireEvent.change(document.getElementById('solidworks-pdm-tool')!, {
+      target: { value: 'pdm-vault' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Publish test rights' }));
+    await openSolidworksReview();
+    expect(document.querySelector('[data-sw-review-row="pdm-user"]')?.textContent).toContain(
+      'rights.user',
+    );
+  });
+
+  it('clears published rights when the linked search index changes', async () => {
+    const other = { ...vaultTool(), id: 'pdm-other', name: 'Other vault' };
+    vi.spyOn(clientApi, 'listToolConfigs').mockResolvedValue([vaultTool(), other]);
+    await openSolidworksStep();
+    await waitFor(() => expect(document.getElementById('solidworks-pdm-tool')).toBeTruthy());
+    fireEvent.change(document.getElementById('solidworks-pdm-tool')!, {
+      target: { value: 'pdm-vault' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Publish test rights' }));
+    fireEvent.change(document.getElementById('solidworks-pdm-tool')!, {
+      target: { value: 'pdm-other' },
+    });
+    await openSolidworksReview();
+    expect(document.querySelector('[data-sw-review-row="pdm-user"]')?.textContent).toContain(
+      'not checked',
+    );
+  });
+
   it('renders scripts after PDM and before the test even without a linked vault', async () => {
     await openSolidworksStep();
     const pdm = screen.getByTestId('solidworks-pdm-link-panel');
@@ -2572,7 +2638,7 @@ describe('ToolWizard', () => {
       createDeferredPromise<Awaited<ReturnType<typeof clientApi.discoverMssqlDatabases>>>();
     vi.spyOn(clientApi, 'discoverMssqlDatabases').mockReturnValue(discovery.promise);
     await openSolidworksStep();
-    await screen.findByRole('button', { name: 'Set up a PDM connection' });
+    await screen.findByRole('button', { name: 'Set up a search index' });
     fireEvent.click(document.getElementById('solidworks-pdm-setup-open')!);
     for (const [field, value] of [
       ['host', 'sql'],

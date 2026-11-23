@@ -46,6 +46,30 @@ namespace Ragtime.SolidWorks.Core
         public PdmLinkedInfo? Linked { get; set; }
     }
 
+    public sealed class PdmFolderRightsItem
+    {
+        public string VaultPath { get; set; } = string.Empty;
+        public bool Checked { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Include)]
+        public bool? Exists { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Include)]
+        public PdmFolderRights? Rights { get; set; }
+    }
+
+    public sealed class PdmFolderRightsResult
+    {
+        public string User { get; set; } = string.Empty;
+        public List<PdmFolderRightsItem> Items { get; set; } = new List<PdmFolderRightsItem>();
+    }
+
+    public sealed class PdmFolderChildItem
+    {
+        public string Name { get; set; } = string.Empty;
+        public string VaultPath { get; set; } = string.Empty;
+        [JsonProperty(NullValueHandling = NullValueHandling.Include)]
+        public PdmFolderRights? Rights { get; set; }
+    }
+
     public sealed class PdmFolderItem
     {
         public string Name { get; set; } = string.Empty;

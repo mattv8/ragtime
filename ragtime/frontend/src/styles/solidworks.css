@@ -100,6 +100,16 @@
 .sw-pill[data-tone='danger'] > svg {
   color: var(--color-error);
 }
+.sw-chip-rights {
+  display: inline-flex;
+  align-items: center;
+}
+.sw-chip-rights[data-tone='success'] {
+  color: var(--color-success);
+}
+.sw-chip-rights[data-tone='warning'] {
+  color: var(--color-warning);
+}
 /*
  * Options fieldset as a panel. A float legend keeps the title inside the box instead of on the
  * border; flow-root (not grid) keeps the float honoured, so the legend is not the fieldset's
@@ -235,6 +245,86 @@
   #solidworks-test-button {
     min-height: 44px;
   }
+}
+
+:is(.sw-panel, #solidworks-pdm-folder-picker) .sw-tree,
+:is(.sw-panel, #solidworks-pdm-folder-picker) .sw-tree [role='group'] {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+:is(.sw-panel, #solidworks-pdm-folder-picker) .sw-tree [role='group'] {
+  padding-inline-start: var(--space-lg);
+}
+.sw-tree-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 2rem;
+}
+.sw-tree [role='treeitem']:focus-visible {
+  outline: none;
+}
+.sw-tree [role='treeitem']:focus-visible > .sw-tree-row {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+.sw-tree-row:hover {
+  background: var(--color-surface-hover);
+}
+.sw-tree [aria-disabled='true'] > .sw-tree-row {
+  color: var(--color-text-secondary);
+  cursor: default;
+}
+.sw-tree-chevron {
+  display: inline-flex;
+  width: 16px;
+  flex: none;
+  cursor: pointer;
+}
+.sw-tree-label {
+  cursor: pointer;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sw-tree [aria-disabled='true'] > .sw-tree-row .sw-tree-label {
+  cursor: default;
+}
+.sw-tree-rights {
+  margin-inline-start: auto;
+}
+.sw-tree [role='none'] {
+  padding: var(--space-xs) var(--space-sm);
+}
+.sw-tree-add {
+  visibility: hidden;
+}
+.sw-tree-row:hover .sw-tree-add,
+.sw-tree-row:focus-within .sw-tree-add,
+.sw-tree [role='treeitem']:focus-visible > .sw-tree-row .sw-tree-add {
+  visibility: visible;
+}
+.sw-tree [data-sw-load-more] {
+  padding: var(--space-xs) var(--space-sm) var(--space-xs) calc(16px + var(--space-sm));
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.sw-tree [data-sw-load-more][aria-disabled='true'] {
+  cursor: default;
+  text-decoration: none;
+}
+.sw-tree [data-sw-load-more]:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+.sw-tree-footer {
+  justify-content: space-between;
+}
+@media (pointer: coarse) {
+  .sw-tree-row { min-height: 44px; }
+  .sw-tree-chevron { width: 44px; height: 44px; align-items: center; justify-content: center; }
+  .sw-tree-add { visibility: visible; }
 }
 .sw-input-with-action {
   display: flex;

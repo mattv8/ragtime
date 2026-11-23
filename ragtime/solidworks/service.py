@@ -183,7 +183,9 @@ class SolidworksService:
             return cached if cached is not None else response
         response = copy.deepcopy(response)
         result = response["result"]
-        result["operations"] = [entry for entry in result["operations"] if entry.get("name") != "guide"]
+        result["operations"] = [
+            entry for entry in result["operations"] if entry.get("name") != "guide" and entry.get("name") not in pdm_link.PDM_ADMIN_OPERATIONS
+        ]
         result["operations"].append(copy.deepcopy(_GUIDE_OPERATION))
         version = result.get("host_version") or response.get("host", {}).get("host_version")
         self._store_contract(key, version, copy.deepcopy(response))
@@ -191,6 +193,8 @@ class SolidworksService:
 
     async def execute(self, config: dict, operation: str, arguments: dict | None = None, timeout: int | None = None) -> str:
         safe_operation = operation if isinstance(operation, str) else ""
+        if safe_operation in pdm_link.PDM_ADMIN_OPERATIONS:
+            return self._error(safe_operation, "unknown_operation", f"There is no operation named '{safe_operation}'. Call describe for the list.")
         if operation == "script.run":
             if not (config.get("connection_config") or {}).get("allow_scripts", False):
                 return self._error(operation, "scripts_not_allowed", "Scripts are not enabled for this tool.")

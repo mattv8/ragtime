@@ -5,6 +5,22 @@ import type { SolidworksHostStatus } from '../api/solidworks';
 import type { PdmIndexJob, PdmIndexStatusResponse, ToolConfig } from '../types/api';
 import { SolidWorksPdmLinkPanel, type SolidWorksPdmLinkPanelProps } from './SolidWorksPdmLinkPanel';
 
+const checkRights = vi.hoisted(() => vi.fn());
+vi.mock('../api/solidworks', () => ({ solidworksApi: { checkPdmRights: checkRights } }));
+vi.mock('./SolidWorksPdmFolderPicker', () => ({
+  SolidWorksPdmFolderPicker: (props: {
+    toolId: string;
+    pdmToolId: string;
+    vaultName: string;
+    folders: string[];
+    vaultRoot: string | null;
+    onClose: () => void;
+  }) => (
+    <div data-testid="picker" data-props={JSON.stringify(props)}>
+      <button onClick={props.onClose}>Close picker</button>
+    </div>
+  ),
+}));
 const client = vi.hoisted(() => ({
   listToolConfigs: vi.fn(),
   getPdmIndexStatus: vi.fn(),
@@ -111,6 +127,7 @@ function textOf(id: string): string {
 
 function renderPanel(overrides: Partial<SolidWorksPdmLinkPanelProps> = {}) {
   const props: SolidWorksPdmLinkPanelProps = {
+    toolId: null,
     value: { pdm_tool_id: null, approved_folders: [] },
     onChange: vi.fn(),
     allowChanges: false,
@@ -260,7 +277,7 @@ describe('SolidWorksPdmLinkPanel link states', () => {
     expect(section().dataset.swPdmMachineState).toBe(machine);
     expect(textOf('solidworks-pdm-machine-message')).toContain(sentence);
     expect(byId('solidworks-pdm-machine-checks')?.querySelectorAll('[data-sw-check]').length).toBe(
-      3,
+      4,
     );
     if (machine === 'logged_out') {
       expect(section().querySelector('[data-sw-check="user"]')?.getAttribute('data-tone')).toBe(
@@ -366,6 +383,7 @@ describe('SolidWorksPdmLinkPanel picker and link rules', () => {
       });
       return (
         <SolidWorksPdmLinkPanel
+          toolId={null}
           value={value}
           onChange={setValue}
           allowChanges={false}
@@ -448,6 +466,7 @@ describe('SolidWorksPdmLinkPanel picker and link rules', () => {
   it('re-emits ready resolution when switching between resolved tools', async () => {
     const onResolutionChange = vi.fn();
     const props: SolidWorksPdmLinkPanelProps = {
+      toolId: null,
       value: { pdm_tool_id: 'pdm-a', approved_folders: [] },
       onChange: vi.fn(),
       allowChanges: false,
@@ -479,6 +498,7 @@ describe('SolidWorksPdmLinkPanel picker and link rules', () => {
     client.getPdmIndexStatus.mockResolvedValue(EMPTY_INDEX);
     client.triggerPdmIndex.mockRejectedValueOnce(new Error('failed'));
     const props: SolidWorksPdmLinkPanelProps = {
+      toolId: null,
       value: { pdm_tool_id: 'pdm-a', approved_folders: [] },
       onChange: vi.fn(),
       allowChanges: false,
@@ -693,3 +713,348 @@ function fillSetup() {
   fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'secret' } });
   fireEvent.change(screen.getByLabelText('Database'), { target: { value: 'Ragtime' } });
 }
+
+describe('vault rights integration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client.listToolConfigs.mockResolvedValue([pdmTool()]);
+    client.getPdmIndexStatus.mockResolvedValue(READY);
+    checkRights.mockResolvedValue({
+      checked: true,
+      user: 'rights.user',
+      root: {
+        path: '\\',
+        checked: true,
+        exists: true,
+        rights: { read: true, add_files: true, check_out: true, add_folders: false },
+        write_ready: true,
+      },
+      folders: [
+        {
+          path: '\\13_Ragtime',
+          checked: true,
+          exists: true,
+          rights: { read: true, add_files: false, check_out: false, add_folders: false },
+          write_ready: false,
+        },
+      ],
+      error: null,
+    });
+  });
+  afterEach(cleanup);
+
+  it('keeps recheck focus while loading and ignores repeated clicks', async () => {
+    renderPanel({
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders: [] },
+      hostStatus: hostWithPdm(PDM_OK),
+    });
+    await waitFor(() =>
+      expect(textOf('solidworks-pdm-rights-status')).toBe(
+        'Vault access checked: can read the vault.',
+      ),
+    );
+    checkRights.mockReturnValue(new Promise(() => undefined));
+    const button = byId('solidworks-pdm-rights-recheck') as HTMLButtonElement;
+    button.focus();
+    fireEvent.click(button);
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(button.textContent).toBe('Checking…');
+    expect(document.activeElement).toBe(button);
+    expect(section().querySelector('[data-sw-check="vault-rights"]')?.textContent).toBe(
+      'Checking vault access…',
+    );
+    expect(textOf('solidworks-pdm-rights-status')).toBe('');
+    fireEvent.click(button);
+    expect(checkRights).toHaveBeenCalledTimes(2);
+  });
+
+  it('explains the required search index and the empty choice', async () => {
+    renderPanel();
+    await settled('none_linked');
+    expect(textOf('solidworks-pdm-machine')).toContain(
+      'Vault access needs a linked search index, which names the vault.',
+    );
+    expect((byId('solidworks-pdm-tool') as HTMLSelectElement).options[0].text).toBe(
+      'None (no search index or vault access)',
+    );
+    fireEvent.click(byId('solidworks-pdm-tool-help') as HTMLButtonElement);
+    expect(textOf('solidworks-pdm-tool-help-content')).toContain(
+      'The PDM tool also names the vault',
+    );
+  });
+
+  it.each([
+    [null, 'pdm-a', 'Save the connection first to browse the vault.'],
+    ['sw-a', 'missing', 'Wait for the search index tool to load.'],
+    [
+      'sw-a',
+      'pdm-a',
+      'Install and start the SolidWorks host and log in to the vault view to browse the vault.',
+    ],
+  ])('explains why browsing is unavailable', async (toolId, pdmToolId, reason) => {
+    renderPanel({
+      toolId,
+      value: { pdm_tool_id: pdmToolId, approved_folders: [] },
+      allowChanges: true,
+    });
+    await settled(pdmToolId === 'missing' ? 'linked_missing' : 'linked_ready');
+    expect(textOf('solidworks-pdm-folder-browse-help')).toBe(reason);
+  });
+
+  it('checks rights, publishes stable state, warns and opens the picker', async () => {
+    const onRightsChange = vi.fn();
+    const props: SolidWorksPdmLinkPanelProps = {
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders: LINKED_FOLDERS },
+      onChange: vi.fn(),
+      allowChanges: true,
+      onAllowChangesChange: vi.fn(),
+      hostStatus: hostWithPdm(PDM_OK),
+      onRightsChange,
+    };
+    const { rerender, unmount } = render(<SolidWorksPdmLinkPanel {...props} />);
+    await settled('linked_ready');
+    await waitFor(() => expect(checkRights).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(textOf('solidworks-pdm-rights-missing-write')).toContain('1 approved folder'),
+    );
+    expect(section().querySelector('[data-sw-check="vault-rights"]')?.textContent).toContain(
+      'Can read the vault',
+    );
+    expect(section().querySelector('[data-sw-check="folder-rights"]')?.textContent).toContain(
+      "1 of 1 approved folders can't be changed",
+    );
+    expect(section().querySelector('[data-sw-rights="missing_write"]')).not.toBeNull();
+    expect(byId('solidworks-pdm-rights-extra-write')).toBeNull();
+    expect(textOf('solidworks-pdm-rights-status')).toBe(
+      "Vault access checked: can read the vault. 1 of 1 approved folders can't be changed.",
+    );
+    expect(
+      byId('solidworks-pdm-rights-missing-write')?.querySelector(
+        '#solidworks-pdm-rights-caveat-help',
+      ),
+    ).not.toBeNull();
+    expect(byId('solidworks-pdm-identity')?.querySelectorAll('button')).toHaveLength(1);
+    fireEvent.click(byId('solidworks-pdm-identity-help') as HTMLButtonElement);
+    expect(textOf('solidworks-pdm-identity-help-content')).toContain('These are folder rights.');
+    expect(textOf('solidworks-pdm-identity')).toContain('rights.user');
+    fireEvent.click(byId('solidworks-pdm-folder-browse') as HTMLButtonElement);
+    expect(
+      JSON.parse(screen.getByTestId('picker').getAttribute('data-props') ?? '{}'),
+    ).toMatchObject({
+      toolId: 'sw-a',
+      pdmToolId: 'pdm-a',
+      vaultName: 'Ragtime',
+      folders: LINKED_FOLDERS,
+      vaultRoot: VIEW.root,
+    });
+    const count = onRightsChange.mock.calls.length;
+    rerender(<SolidWorksPdmLinkPanel {...props} />);
+    expect(onRightsChange).toHaveBeenCalledTimes(count);
+    fireEvent.click(byId('solidworks-pdm-rights-recheck') as HTMLButtonElement);
+    await waitFor(() => expect(checkRights).toHaveBeenCalledTimes(2));
+    rerender(<SolidWorksPdmLinkPanel {...props} allowChanges={false} />);
+    expect(screen.queryByTestId('picker')).toBeNull();
+    rerender(
+      <SolidWorksPdmLinkPanel {...props} value={{ pdm_tool_id: null, approved_folders: [] }} />,
+    );
+    await waitFor(() => expect(onRightsChange).toHaveBeenLastCalledWith(null));
+    const finalCount = onRightsChange.mock.calls.length;
+    unmount();
+    expect(onRightsChange).toHaveBeenCalledTimes(finalCount);
+  });
+
+  it('does not request when the host is unavailable and explains disabled browsing', async () => {
+    renderPanel({
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders: LINKED_FOLDERS },
+      allowChanges: true,
+    });
+    await settled('linked_ready');
+    expect((byId('solidworks-pdm-folder-browse') as HTMLButtonElement).disabled).toBe(true);
+    expect(textOf('solidworks-pdm-folder-browse-help')).toContain(
+      'Install and start the SolidWorks host',
+    );
+    expect(checkRights).not.toHaveBeenCalled();
+  });
+
+  it('shows the new box titles and search-index setup copy', async () => {
+    client.listToolConfigs.mockResolvedValue([]);
+    renderPanel();
+    await settled('no_tools');
+    expect(textOf('solidworks-pdm-vault-title')).toContain('Search index (SQL)');
+    expect(textOf('solidworks-pdm-machine-title')).toContain('Vault access (PDM client)');
+    expect(textOf('solidworks-pdm-setup-open')).toBe('Set up a search index');
+    fireEvent.click(byId('solidworks-pdm-no-tools-help') as HTMLButtonElement);
+    expect(textOf('solidworks-pdm-no-tools-help-content')).toContain('Set up a search index');
+  });
+
+  it('shows an error when the rights request fails', async () => {
+    checkRights.mockRejectedValue(new Error('Host unavailable.'));
+    renderPanel({
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders: LINKED_FOLDERS },
+      allowChanges: true,
+      hostStatus: hostWithPdm(PDM_OK),
+    });
+    await waitFor(() =>
+      expect(textOf('solidworks-pdm-rights-error')).toContain('Host unavailable'),
+    );
+    expect(textOf('solidworks-pdm-rights-error')).toBe(
+      'Could not check vault access: Host unavailable.',
+    );
+    expect(textOf('solidworks-pdm-rights-status')).toBe('Vault access could not be checked.');
+    expect(section().querySelector('[data-sw-check="vault-rights"]')?.textContent).toContain(
+      'Vault access could not be checked',
+    );
+    expect(section().querySelector('[data-sw-check="folder-rights"]')?.textContent).toContain(
+      'Folder rights not checked',
+    );
+  });
+
+  it('warns when the vault cannot be read', async () => {
+    checkRights.mockResolvedValue({
+      checked: true,
+      user: null,
+      root: {
+        path: '\\',
+        checked: true,
+        exists: true,
+        rights: { read: false, add_files: false, check_out: false, add_folders: false },
+        write_ready: false,
+      },
+      folders: [],
+      error: null,
+    });
+    renderPanel({
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders: [] },
+      hostStatus: hostWithPdm(PDM_OK),
+    });
+    await waitFor(() => expect(byId('solidworks-pdm-rights-no-read')).not.toBeNull());
+    expect(textOf('solidworks-pdm-rights-status')).toBe(
+      'Vault access checked: the PDM user cannot read the vault.',
+    );
+    expect(section().querySelector('[data-sw-check="vault-rights"]')?.textContent).toContain(
+      'Cannot read',
+    );
+  });
+
+  it('reports extra write access when changes are off', async () => {
+    renderPanel({
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders: LINKED_FOLDERS },
+      hostStatus: hostWithPdm(PDM_OK),
+    });
+    await waitFor(() => expect(byId('solidworks-pdm-rights-extra-write')).not.toBeNull());
+    expect(checkRights).toHaveBeenCalledWith(
+      'sw-a',
+      { pdm_tool_id: 'pdm-a', folders: [] },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('reports write-ready folders', async () => {
+    checkRights.mockResolvedValue({
+      checked: true,
+      user: null,
+      root: {
+        path: '\\',
+        checked: true,
+        exists: true,
+        rights: { read: true, add_files: true, check_out: true, add_folders: false },
+        write_ready: true,
+      },
+      folders: [
+        {
+          path: LINKED_FOLDERS[0],
+          checked: true,
+          exists: true,
+          rights: { read: true, add_files: true, check_out: true, add_folders: false },
+          write_ready: true,
+        },
+      ],
+      error: null,
+    });
+    renderPanel({
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders: LINKED_FOLDERS },
+      allowChanges: true,
+      hostStatus: hostWithPdm(PDM_OK),
+    });
+    await waitFor(() =>
+      expect(section().querySelector('[data-sw-check="folder-rights"]')?.textContent).toContain(
+        'Can add and check out in the approved folder',
+      ),
+    );
+  });
+
+  it('counts a missing folder in the warning and marks its chip', async () => {
+    checkRights.mockResolvedValue({
+      checked: true,
+      user: null,
+      root: {
+        path: '\\',
+        checked: true,
+        exists: true,
+        rights: { read: true, add_files: true, check_out: true, add_folders: false },
+        write_ready: true,
+      },
+      folders: [
+        { path: LINKED_FOLDERS[0], checked: true, exists: false, rights: null, write_ready: false },
+        {
+          path: '\\Available',
+          checked: true,
+          exists: true,
+          rights: { read: true, add_files: true, check_out: true, add_folders: false },
+          write_ready: true,
+        },
+      ],
+      error: null,
+    });
+    renderPanel({
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders: [...LINKED_FOLDERS, '\\Available'] },
+      allowChanges: true,
+      hostStatus: hostWithPdm(PDM_OK),
+    });
+    await waitFor(() =>
+      expect(section().querySelector('[data-sw-check="folder-rights"]')?.textContent).toContain(
+        "1 of 2 approved folders can't be changed",
+      ),
+    );
+    expect(
+      section().querySelector('[data-sw-check="folder-rights"]')?.getAttribute('data-tone'),
+    ).toBe('warning');
+    expect(textOf('solidworks-pdm-rights-missing-write')).toContain('1 approved folder');
+    expect(section().querySelector('li[data-sw-rights="not_found"]')?.textContent).toContain(
+      LINKED_FOLDERS[0],
+    );
+  });
+
+  it.each(['link', 'changes'] as const)('closes an open picker when %s changes', async (change) => {
+    client.listToolConfigs.mockResolvedValue([pdmTool(), pdmTool({ id: 'pdm-b' })]);
+    const props: SolidWorksPdmLinkPanelProps = {
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders: LINKED_FOLDERS },
+      onChange: vi.fn(),
+      allowChanges: true,
+      onAllowChangesChange: vi.fn(),
+      hostStatus: hostWithPdm(PDM_OK),
+    };
+    const { rerender } = render(<SolidWorksPdmLinkPanel {...props} />);
+    await settled('linked_ready');
+    fireEvent.click(byId('solidworks-pdm-folder-browse') as HTMLButtonElement);
+    expect(screen.queryByTestId('picker')).not.toBeNull();
+    rerender(
+      <SolidWorksPdmLinkPanel
+        {...props}
+        allowChanges={change !== 'changes'}
+        value={change === 'link' ? { ...props.value, pdm_tool_id: 'pdm-b' } : props.value}
+      />,
+    );
+    expect(screen.queryByTestId('picker')).toBeNull();
+  });
+});

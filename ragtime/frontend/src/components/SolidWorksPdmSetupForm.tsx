@@ -148,7 +148,7 @@ export function SolidWorksPdmSetupForm({
     <div
       id="solidworks-pdm-setup"
       role="group"
-      aria-label="New PDM connection"
+      aria-label="New search index connection"
       aria-busy={busy}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && !busy) {
@@ -157,6 +157,10 @@ export function SolidWorksPdmSetupForm({
         }
       }}
     >
+      <p id="solidworks-pdm-setup-intro" className="field-help">
+        Ragtime reads the PDM vault database with this SQL login to build the search index. A
+        read-only login is enough. Vault access on this machine uses the PDM user, not this login.
+      </p>
       <fieldset className="sw-pdm-controls" disabled={disabled || busy}>
         <div className="form-group">
           <label htmlFor="solidworks-pdm-setup-host">SQL Server host</label>

@@ -228,6 +228,11 @@ class ContractCoverageTests(unittest.TestCase):
 
 
 class PdmTopicTests(unittest.TestCase):
+    def test_permission_denied_is_not_retried(self):
+        text = (GUIDANCE_DIR / "pdm.md").read_text(encoding="utf-8")
+        self.assertIn("E_EDM_PERMISSION_DENIED", text)
+        self.assertIn("PDM rights problem; report it and do not retry", text)
+
     def setUp(self) -> None:
         self.pdm = _topic_text("pdm")
 

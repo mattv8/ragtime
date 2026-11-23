@@ -29,6 +29,14 @@ describe('SolidWorksPdmSetupForm', () => {
     client.triggerPdmIndex.mockResolvedValue({});
   });
 
+  it('explains the search index SQL login', () => {
+    render(<SolidWorksPdmSetupForm onCreated={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.getByRole('group', { name: 'New search index connection' })).toBeTruthy();
+    expect(document.getElementById('solidworks-pdm-setup-intro')?.textContent).toContain(
+      'Vault access on this machine uses the PDM user, not this login.',
+    );
+  });
+
   it('requires fields, discovers databases and creates with a deny policy', async () => {
     const onCreated = vi.fn();
     render(<SolidWorksPdmSetupForm onCreated={onCreated} onCancel={vi.fn()} />);

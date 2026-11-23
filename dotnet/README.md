@@ -1,7 +1,7 @@
 # SolidWorks host
 
 `RagtimeSolidWorks.sln` contains Core, Host, Runtime, Readers and Pdm projects in
-`src/`, and their tests in `tests/`. The host targets .NET Framework 4.8. Host version: 0.3.0
+`src/`, and their tests in `tests/`. The host targets .NET Framework 4.8. Host version: 0.4.0
 (`Directory.Build.props`, copied into `manifest.json`).
 
 `Ragtime.SolidWorks.Pdm` links the host to the SOLIDWORKS PDM client API. It uses the PDM interop types embedded
