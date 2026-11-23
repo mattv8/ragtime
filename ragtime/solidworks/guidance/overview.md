@@ -62,6 +62,8 @@ before you answer: millimetres = metres x 1000, inches = metres / 0.0254, degree
 | Code | Meaning and action |
 |---|---|
 | `host_not_running` | Host is not installed or did not start. Tell the user to check the tool's host panel; do not retry in a loop. |
+| `host_updating` | Ragtime is updating the SolidWorks host. Tell the user; retry after a few minutes. Do not loop. |
+| `host_stopping` | The host is stopping for an update or restart. Retry in a minute. |
 | `no_interactive_session` | The Windows account has no desktop session. Ask the user to sign in on that machine. |
 | `version_not_installed` | The pinned SolidWorks year is not installed. Ask the user to change the tool's version. |
 | `version_mismatch` | Attach mode: the running SolidWorks is not the pinned year. Ask the user to start the right one. |

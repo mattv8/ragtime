@@ -43,6 +43,13 @@ function renderPanel(props: Partial<SolidWorksOptionsPanelProps> = {}) {
 const input = (id: string) => document.getElementById(id) as HTMLInputElement;
 
 describe('SolidWorksOptionsPanel', () => {
+  it('defaults host updates on and emits the disabled choice', () => {
+    const { onChange } = renderPanel();
+    expect(input('solidworks-auto-update').checked).toBe(true);
+    fireEvent.click(input('solidworks-auto-update'));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ auto_update_host: false }));
+  });
+
   it('shows the defaults for background mode without the obsolete read-only note or write control', () => {
     renderPanel();
     expect(input('solidworks-max-instances').value).toBe('1');
@@ -358,6 +365,7 @@ describe('SolidWorksOptionsPanel', () => {
     expect(onChange).toHaveBeenCalledWith({
       solidworks_version: null,
       allow_scripts: false,
+      auto_update_host: true,
       instance_mode: 'attach',
       max_instances: 1,
       idle_shutdown_seconds: 900,

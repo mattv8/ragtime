@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from ragtime.core.ssh import SSHResult
-from ragtime.solidworks.host_status import PDM_VIEWS_WARNING, SolidworksHostStatusService
+from ragtime.solidworks.host_status import PDM_VIEWS_WARNING, PROBE_SCRIPT, SolidworksHostStatusService
 from ragtime.solidworks.pdm_link import PdmLink, PdmLinkError
 from ragtime.solidworks.transport import SolidworksTransportError, TransportErrorKind
 
@@ -59,13 +59,14 @@ class FakeTransport:
         raise AssertionError("upload_file is not used by the status tests")
 
 
-def probe(present=True, interactive=True):
+def probe(present=True, interactive=True, features=None):
     data = {
         "exe_present": present,
         "host_version": "1.0" if present else None,
         "account": {"name": "DOMAIN\\user", "is_administrator": True},
         "interactive": interactive,
         "installed_versions": [2024],
+        "host_features": features,
     }
     return SSHResult("noise\n" + json.dumps(data), "", 0, True)
 
@@ -110,6 +111,22 @@ class HostStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(details["solidworks_versions"], [2024])
         self.assertEqual(transport.calls[1][1]["operation"], "status")
         self.assertEqual(len(transport.calls), 2)
+
+    async def test_instances_and_updater_hook(self):
+        updater = mock.MagicMock()
+        updater.state_for.return_value = {"state": "pending"}
+        with mock.patch("ragtime.solidworks.host_updater.host_updater", updater):
+            config = {"id": "tool"}
+            status = await SolidworksHostStatusService(lambda _: FakeTransport(probe(), response())).host_status(config)
+            self.assertTrue(status["instances_reported"])
+            self.assertEqual(status["auto_update"], {"state": "pending"})
+            updater.observe.assert_called_with(config, status["host_version"])
+            status = await SolidworksHostStatusService(lambda _: FakeTransport(probe())).host_status(config, probe_only=True)
+            self.assertFalse(status["instances_reported"])
+            updater.observe.side_effect = ValueError("secret")
+            status = await SolidworksHostStatusService(lambda _: FakeTransport(probe(), response())).host_status(config)
+            self.assertTrue(status["running"])
+            self.assertIsNone(status["error"])
 
     async def test_no_response_preserves_probe(self):
         cases = [(False, "no_interactive_session"), (True, "host_not_running"), (None, "host_not_running")]
@@ -166,6 +183,38 @@ class HostStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["error"]["code"], "protocol_mismatch")
         self.assertNotIn("secret", str(status))
 
+    async def test_new_host_error_codes(self):
+        for code in ("host_busy", "host_stopping"):
+            with self.subTest(code=code):
+                transport = FakeTransport(probe(), {"operation": "status", "ok": False, "error": {"code": code}})
+                status = await SolidworksHostStatusService(lambda _: transport).host_status({})
+                self.assertEqual(status["error"]["code"], code)
+
+    async def test_features_validation(self):
+        self.assertIn("$features = @($v.features | ForEach-Object { [string]$_ })", PROBE_SCRIPT)
+        cases = [(["stop-if-idle", "x1"], ["stop-if-idle", "x1"]), ([], []), (None, []), (["good", "BAD"], []), (["a" * 41], []), (["x"] * 21, []), ([1], [])]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                status = await SolidworksHostStatusService(lambda _: FakeTransport(probe(features=value))).host_status({}, probe_only=True)
+                self.assertEqual(status["host_features"], expected)
+
+    async def test_activity_validation(self):
+        good = {"in_flight": 0, "idle_seconds": 5, "pdm_busy": False}
+        cases = [
+            (good, good),
+            (None, None),
+            ({**good, "in_flight": True}, None),
+            ({**good, "idle_seconds": -1}, None),
+            ({**good, "pdm_busy": 0}, None),
+            ({"in_flight": 0}, None),
+        ]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                host = response()
+                host["result"]["activity"] = value
+                status = await SolidworksHostStatusService(lambda _: FakeTransport(probe(), host)).host_status({})
+                self.assertEqual(status["activity"], expected)
+
     async def test_unexpected_error_does_not_expose_config(self):
         transport = FakeTransport(RuntimeError("secret"))
         status = await SolidworksHostStatusService(lambda _: transport).host_status({"password": "secret"})
@@ -199,6 +248,19 @@ class HostStatusTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(status=status):
                 self.assertIn("warning", status)
                 self.assertIsNone(status["warning"])
+                self.assertEqual(status["host_features"], [])
+                self.assertIsNone(status["activity"])
+                self.assertIsNone(status["auto_update"])
+
+    async def test_include_pdm_false_retains_host_pdm_without_extra_call(self):
+        host = response()
+        host["result"]["pdm"] = HOST_PDM
+        transport = FakeTransport(probe(), host)
+        with mock.patch("ragtime.solidworks.host_status.resolve_pdm_link", new=mock.AsyncMock(return_value=LINK)) as resolve:
+            status = await SolidworksHostStatusService(lambda _: transport).host_status(LINKED_CONFIG, include_pdm=False)
+        self.assertEqual(status["pdm"], {**HOST_PDM, "linked": None})
+        self.assertEqual(len(transport.calls), 2)
+        resolve.assert_not_awaited()
 
     async def test_old_host_reports_no_pdm_block_and_no_warning(self):
         transport = FakeTransport(probe(), response())

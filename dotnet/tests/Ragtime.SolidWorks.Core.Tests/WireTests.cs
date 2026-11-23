@@ -659,7 +659,7 @@ namespace Ragtime.SolidWorks.Core.Tests
                 "entity_not_found", "stale_snapshot", "result_too_large", "solidworks_error", "internal_error",
                 "pdm_not_linked", "pdm_unavailable", "pdm_folder_not_approved", "pdm_not_found", "pdm_conflict", "pdm_error",
                 "scripts_not_allowed", "script_compile_failed", "script_compile_unavailable", "script_invalid",
-                "script_failed", "solidworks_unavailable",
+                "script_failed", "solidworks_unavailable", "host_busy", "host_stopping",
             };
 
             Assert.Equal(expected, ErrorCodes.All);

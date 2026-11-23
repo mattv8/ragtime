@@ -53,6 +53,10 @@ Update `third-party-hashes.txt` from the pinned NuGet DLLs and review the change
 On Windows, unzip the host into `%LOCALAPPDATA%\RagtimeSolidWorks\host` and run
 `ragtime-solidworks-host.exe install` as the SolidWorks user in their desktop session.
 
+`ragtime-solidworks-host.exe stop --if-idle <seconds>` (0 to 86400) stops the host only when no work is running, no instance is busy, no background instance it owns has documents open, no PDM item is still running, and the host has been idle for that many seconds. Exit codes: 0 stopped, or not running; 3 busy, with the reasons printed as JSON and the host still running; 2 error, when the host was not confirmed idle or stopped. Plain `stop` ignores the idle rules.
+
+`ragtime-solidworks-host.exe version` prints `host_version`, `protocol` and `features`. Ragtime uses the idle gate only when `features` lists `stop-if-idle`.
+
 ## Development
 
 The development stack mounts `dotnet/artifacts/` read-only at `/opt/ragtime/solidworks-host`. Until the package

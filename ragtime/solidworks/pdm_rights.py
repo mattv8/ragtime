@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from ragtime.indexer.models import ToolType
 from ragtime.indexer.repository import repository
+from ragtime.solidworks.host_activity import HostUpdatingError, host_activity, host_key
 from ragtime.solidworks.host_status import _MESSAGES, _host_context, _status_timeout_seconds
 from ragtime.solidworks.pdm_link import normalize_vault_folder, pdm_context_tool_id
 from ragtime.solidworks.protocol import SolidworksProtocolError, build_request, encode_request
@@ -19,6 +20,7 @@ _ERRORS = {
     "host_not_running": _MESSAGES["host_not_running"],
     "no_interactive_session": _MESSAGES["no_interactive_session"],
     "operation_timeout": "The SolidWorks host did not answer in time. Try again.",
+    "host_updating": "The SolidWorks host is being updated. Try again in a few minutes.",
     "host_update_required": "Update the SolidWorks host to 0.4.0 or later to check vault access.",
     "pdm_not_found": "That vault folder no longer exists.",
     "stale_snapshot": "The folder changed while you were browsing. Reload it.",
@@ -165,31 +167,39 @@ class PdmRightsService:
         user = None
         if context is not None:
             deadline = time.monotonic() + timeout
-            transport = self.transport_factory(config)
-            start = 0
-            while start < len(paths):
-                end = min(start + 25, len(paths))
-                while end > start:
-                    request = build_request("pdm.folder.rights", {"paths": paths[start:end]}, context)
-                    try:
-                        encode_request(request)
-                        break
-                    except SolidworksProtocolError:
-                        end -= 1
-                if end == start:
-                    error = error or _error("internal_error")
-                    start += 1
-                    continue
-                result, failure = await self._call(transport, request, deadline - time.monotonic())
-                if failure is None:
-                    try:
-                        batch_user, batch = _rights_items(result, paths[start:end])
-                        user = user or batch_user
-                        items[start:end] = batch
-                    except (ValueError, TypeError, KeyError):
-                        failure = _error("internal_error")
-                error = error or failure
-                start = end
+
+            async def work(ticket):
+                nonlocal error, user
+                transport = self.transport_factory(config)
+                start = 0
+                while start < len(paths):
+                    end = min(start + 25, len(paths))
+                    while end > start:
+                        request = build_request("pdm.folder.rights", {"paths": paths[start:end]}, context)
+                        try:
+                            encode_request(request)
+                            break
+                        except SolidworksProtocolError:
+                            end -= 1
+                    if end == start:
+                        error = error or _error("internal_error")
+                        start += 1
+                        continue
+                    result, failure = await self._call(transport, request, deadline - time.monotonic())
+                    if failure is None:
+                        try:
+                            batch_user, batch = _rights_items(result, paths[start:end])
+                            user = user or batch_user
+                            items[start:end] = batch
+                        except (ValueError, TypeError, KeyError):
+                            failure = _error("internal_error")
+                    error = error or failure
+                    start = end
+
+            try:
+                await host_activity.run_call(host_key(config), timeout, work)
+            except HostUpdatingError:
+                error = _error("host_updating")
         checked = all(item["checked"] for item in items)
         if not checked and error is None:
             error = _error("timeout")
@@ -204,7 +214,15 @@ class PdmRightsService:
         if snapshot is not None:
             arguments["snapshot"] = snapshot
         request = build_request("pdm.folder.children", arguments, context)
-        result, error = await self._call(self.transport_factory(config), request, timeout)
+        deadline = time.monotonic() + timeout
+
+        async def work(ticket):
+            return await self._call(self.transport_factory(config), request, deadline - time.monotonic())
+
+        try:
+            result, error = await host_activity.run_call(host_key(config), timeout, work)
+        except HostUpdatingError:
+            return {**empty, "error": _error("host_updating")}
         if error is None:
             try:
                 return _folder_result(result)

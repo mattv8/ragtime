@@ -2091,6 +2091,8 @@ export interface RemotePairingResponse {
   transport?: 'direct' | 'tunnel' | null;
   error?: string | null;
   connection_config: SSHShellConnectionConfig;
+  /** Computed by the server for tunnel pairings; never stored. */
+  tunnel_client?: TunnelClientState | null;
 }
 
 export interface RemotePairingCreatedResponse extends RemotePairingResponse {
@@ -2224,6 +2226,40 @@ export type UserspaceMountBackend =
   | 'local'
   | 'cloud_virtual';
 
+export type SolidworksHostAutoUpdateState =
+  | 'current'
+  | 'newer'
+  | 'off'
+  | 'pending'
+  | 'updating'
+  | 'failed';
+export type SolidworksHostAutoUpdateReason =
+  | 'in_use'
+  | 'documents_open'
+  | 'logged_off'
+  | 'not_running'
+  | 'busy';
+
+/** Computed by the server for SolidWorks tools; never stored. */
+export interface SolidworksHostAutoUpdate {
+  enabled: boolean;
+  state: SolidworksHostAutoUpdateState;
+  installed_version: string | null;
+  target_version: string | null;
+  reason: SolidworksHostAutoUpdateReason | null;
+  last_attempt_at: string | null;
+  next_attempt_at: string | null;
+  message: string | null;
+}
+
+/** Computed by the server for tunnel tools; never stored. */
+export interface TunnelClientState {
+  connected: boolean;
+  version: number | null;
+  current_version: number;
+  outdated: boolean;
+}
+
 export interface ToolConfig {
   id: string;
   name: string;
@@ -2244,6 +2280,10 @@ export interface ToolConfig {
     enabled: boolean;
     exists: boolean;
   } | null;
+  /** Computed by the server for SolidWorks tools; never stored. */
+  solidworks_host_update?: SolidworksHostAutoUpdate | null;
+  /** Computed by the server for tunnel tools; never stored. */
+  tunnel_client?: TunnelClientState | null;
   disabled_reason?: string;
   /** Credential field names that are encrypted but cannot be decrypted with the current server key. */
   undecryptable_fields: string[];

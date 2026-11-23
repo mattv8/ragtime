@@ -12,6 +12,9 @@ from collections.abc import Callable
 from ragtime.content_protection.service import authorize_content, current_context
 from ragtime.solidworks import pdm_link
 from ragtime.solidworks.guidance import read_guide
+from ragtime.solidworks.host_activity import HostBusyError, HostUpdatingError, host_activity, host_key
+from ragtime.solidworks.host_artifact import get_host_artifact
+from ragtime.solidworks.host_updater import host_updater, parse_host_version
 from ragtime.solidworks.protocol import (
     SolidworksProtocolError,
     build_request,
@@ -161,18 +164,22 @@ class SolidworksService:
         if entry is not None and entry[0] != host_version:
             del self._contracts[key]
 
-    async def _call(self, transport: SolidworksTransport, key: str | None, request: dict, timeout_seconds: float) -> dict:
+    async def _call(self, transport: SolidworksTransport, key: str | None, request: dict, timeout_seconds: float, config: dict) -> dict:
         response = await transport.call(request, timeout_seconds=timeout_seconds)
+        host = response.get("host") or {}
+        version = host.get("host_version") if isinstance(host, dict) else None
+        if isinstance(version, str):
+            host_updater.observe(config, version)
         if response.get("id") != request["id"] or response.get("operation") != request["operation"]:
             raise _HostMismatchError()
         if response.get("ok"):
             self._forget_if_version_changed(key, (response.get("host") or {}).get("host_version"))
         return response
 
-    async def _describe(self, transport: SolidworksTransport, key: str | None, context: dict, timeout_seconds: float) -> dict:
+    async def _describe(self, transport: SolidworksTransport, key: str | None, context: dict, timeout_seconds: float, config: dict) -> dict:
         request = build_request("describe", {}, context)
         try:
-            response = await self._call(transport, key, request, timeout_seconds)
+            response = await self._call(transport, key, request, timeout_seconds, config)
         except SolidworksTransportError:
             cached = self._cached_contract(key)
             if cached is not None:
@@ -290,59 +297,15 @@ class SolidworksService:
                 if not connection.get("pdm_approved_folders"):
                     return self._error(operation, "pdm_folder_not_approved", "No PDM folders are approved.", {"approved_folders": []})
             key = _tool_key(config)
-            transport = self.transport_factory(config)
-            pdm_context = pdm_link.build_pdm_context(config, link, await pdm_link.resolve_actor_label()) if link and operation != "script.run" else None
 
-            def context():
-                value = self._context(connection, allow_write, self._remaining(deadline))
-                if pdm_context is not None:
-                    value["pdm"] = pdm_context
-                return value
+            async def work(ticket):
+                if ticket.waited and self._remaining(deadline) < MIN_OPERATION_SECONDS:
+                    return self._updating_error(operation, config)
+                return await self._execute_host(config, operation, arguments, connection, allow_write, key, link, deadline)
 
-            if operation == "describe":
-                response = await self._describe(transport, key, context(), self._remaining(deadline))
-                if link and response.get("ok"):
-                    response["result"]["operations"].extend(copy.deepcopy(_PDM_OPERATIONS))
-                if response.get("ok"):
-                    response["result"]["scripts_enabled"] = bool(connection.get("allow_scripts", False))
-                return self._json(response)
-
-            fetched = False
-            if operation != "status":
-                contract = self._cached_contract(key)
-                if (
-                    contract is not None
-                    and operation.startswith("pdm.")
-                    and not any(item.get("name") == operation for item in contract["result"]["operations"])
-                ):
-                    if key is not None:
-                        self._contracts.pop(key, None)
-                    contract = None
-                if contract is None:
-                    fetched = True
-                    contract = await self._describe(transport, key, context(), self._remaining(deadline))
-                    if not contract.get("ok"):
-                        return self._json(contract)
-                denied = self._check_contract(contract, operation, allow_write)
-                if denied is not None:
-                    return denied
-                entry = next(item for item in contract["result"]["operations"] if item.get("name") == operation)
-                if operation.startswith("pdm.") and entry.get("access") == "write" and not connection.get("pdm_approved_folders"):
-                    return self._error(operation, "pdm_folder_not_approved", "No PDM folders are approved.", {"approved_folders": []})
-            remaining = self._remaining(deadline)
-            if fetched and remaining < MIN_OPERATION_SECONDS:
-                return self._error(operation, "operation_timeout", "The operation timed out; check the host and timeout.")
-
-            request = build_request(operation, arguments, context())
-            try:
-                encode_request(request)
-            except SolidworksProtocolError:
-                details = {"field": "source"} if operation == "script.run" else None
-                return self._error(operation, "invalid_arguments", "The request is invalid or too large.", details)
-            response = await self._call(transport, key, request, remaining)
-            if operation == "status" and response.get("ok"):
-                response["result"]["scripts_enabled"] = bool(connection.get("allow_scripts", False))
-            return self._json(response)
+            return await host_activity.run_call(host_key(config), max(0.0, self._remaining(deadline) - MIN_OPERATION_SECONDS), work)
+        except HostUpdatingError:
+            return self._updating_error(safe_operation, config)
         except _HostMismatchError:
             return self._error(safe_operation, "internal_error", HOST_MISMATCH_MESSAGE)
         except SolidworksTransportError as exc:
@@ -355,6 +318,91 @@ class SolidworksService:
             return self._error(safe_operation, "internal_error", "Check the SSH connection and credentials.")
         except Exception:
             return self._error(safe_operation, "internal_error", "The operation failed; check the host configuration.")
+
+    async def _execute_host(self, config, operation, arguments, connection, allow_write, key, link, deadline):
+        transport = self.transport_factory(config)
+        pdm_context = pdm_link.build_pdm_context(config, link, await pdm_link.resolve_actor_label()) if link and operation != "script.run" else None
+
+        def context():
+            value = self._context(connection, allow_write, self._remaining(deadline))
+            if pdm_context is not None:
+                value["pdm"] = pdm_context
+            return value
+
+        if operation == "describe":
+            response = await self._describe(transport, key, context(), self._remaining(deadline), config)
+            if link and response.get("ok"):
+                response["result"]["operations"].extend(copy.deepcopy(_PDM_OPERATIONS))
+            if response.get("ok"):
+                response["result"]["scripts_enabled"] = bool(connection.get("allow_scripts", False))
+            return self._json(response)
+
+        fetched = False
+        if operation != "status":
+            contract = self._cached_contract(key)
+            if contract is not None and operation.startswith("pdm.") and not any(item.get("name") == operation for item in contract["result"]["operations"]):
+                if key is not None:
+                    self._contracts.pop(key, None)
+                contract = None
+            if contract is None:
+                fetched = True
+                contract = await self._describe(transport, key, context(), self._remaining(deadline), config)
+                if not contract.get("ok"):
+                    return self._json(contract)
+            contract, denied, fetched = await self._validate_contract(contract, operation, allow_write, fetched, transport, key, context, deadline, config)
+            if denied is not None:
+                return denied
+            entry = next(item for item in contract["result"]["operations"] if item.get("name") == operation)
+            if operation.startswith("pdm.") and entry.get("access") == "write" and not connection.get("pdm_approved_folders"):
+                return self._error(operation, "pdm_folder_not_approved", "No PDM folders are approved.", {"approved_folders": []})
+        remaining = self._remaining(deadline)
+        if fetched and remaining < MIN_OPERATION_SECONDS:
+            return self._error(operation, "operation_timeout", "The operation timed out; check the host and timeout.")
+
+        request = build_request(operation, arguments, context())
+        try:
+            encode_request(request)
+        except SolidworksProtocolError:
+            details = {"field": "source"} if operation == "script.run" else None
+            return self._error(operation, "invalid_arguments", "The request is invalid or too large.", details)
+        response = await self._call(transport, key, request, remaining, config)
+        if operation == "status" and response.get("ok"):
+            response["result"]["scripts_enabled"] = bool(connection.get("allow_scripts", False))
+        return self._json(response)
+
+    def _updating_error(self, operation: str, config: dict, message: str = "The SolidWorks host is being updated. Try again in a few minutes.") -> str:
+        state = host_updater.state_for(config.get("id") or "") or {}
+        return self._error(operation, "host_updating", message, {key: state.get(key) for key in ("state", "installed_version", "target_version")})
+
+    async def _validate_contract(self, contract, operation, allow_write, fetched, transport, key, context, deadline, config):
+        denied = self._check_contract(contract, operation, allow_write)
+        missing = not any(item.get("name") == operation for item in contract["result"]["operations"])
+        if missing and self._outdated_contract(contract):
+            if not fetched:
+                if key is not None:
+                    self._contracts.pop(key, None)
+                fetched = True
+                contract = await self._describe(transport, key, context(), self._remaining(deadline), config)
+                if not contract.get("ok"):
+                    return contract, self._json(contract), fetched
+                denied = self._check_contract(contract, operation, allow_write)
+                missing = not any(item.get("name") == operation for item in contract["result"]["operations"])
+            if missing and self._outdated_contract(contract):
+                if (config.get("connection_config") or {}).get("auto_update_host", True) is not False:
+                    host_updater.request_now(config)
+                    message = "This operation needs a newer SolidWorks host. Ragtime updates it when the host is idle; try again in a few minutes."
+                    return contract, self._updating_error(operation, config, message), fetched
+                message = "This operation needs a newer SolidWorks host. Update it from the tool's host panel."
+                return contract, self._error(operation, "unknown_operation", message), fetched
+        return contract, denied, fetched
+
+    @staticmethod
+    def _outdated_contract(contract: dict) -> bool:
+        version = contract["result"].get("host_version") or (contract.get("host") or {}).get("host_version")
+        installed = parse_host_version(version)
+        artifact = get_host_artifact()
+        target = parse_host_version(artifact.host_version) if artifact else None
+        return installed is not None and target is not None and installed < target
 
     def _remaining(self, deadline: float) -> float:
         return deadline - self.clock()
@@ -405,7 +453,19 @@ class SolidworksService:
 
         status = SolidworksHostStatusService(transport_factory=self.transport_factory)
         installer = SolidworksHostInstaller(transport_factory=self.transport_factory, status_service=status)
-        return await installer.install_host(config)
+
+        async def work():
+            result = await installer.install_host(config)
+            try:
+                host_updater.note_manual_action(config, result)
+            except Exception as exc:
+                logger.warning("Host updater manual action hook failed: %s", type(exc).__name__)
+            return result
+
+        try:
+            return await host_activity.run_exclusive(host_key(config), 60, work)
+        except HostBusyError:
+            return await installer.busy_status(config)
 
     async def uninstall_host(self, config: dict) -> dict:
         from ragtime.solidworks.host_installer import SolidworksHostInstaller
@@ -413,7 +473,19 @@ class SolidworksService:
 
         status = SolidworksHostStatusService(transport_factory=self.transport_factory)
         installer = SolidworksHostInstaller(transport_factory=self.transport_factory, status_service=status)
-        return await installer.uninstall_host(config)
+
+        async def work():
+            result = await installer.uninstall_host(config)
+            try:
+                host_updater.note_manual_action(config, result)
+            except Exception as exc:
+                logger.warning("Host updater manual action hook failed: %s", type(exc).__name__)
+            return result
+
+        try:
+            return await host_activity.run_exclusive(host_key(config), 60, work)
+        except HostBusyError:
+            return await installer.busy_status(config)
 
 
 solidworks_service = SolidworksService()

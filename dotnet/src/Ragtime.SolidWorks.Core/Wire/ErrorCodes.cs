@@ -86,6 +86,12 @@ namespace Ragtime.SolidWorks.Core
         public const string ScriptFailed = "script_failed";
         public const string SolidworksUnavailable = "solidworks_unavailable";
 
+        /// <summary>The host refused to stop because it is in use.</summary>
+        public const string HostBusy = "host_busy";
+
+        /// <summary>The host is stopping; new work is refused.</summary>
+        public const string HostStopping = "host_stopping";
+
         /// <summary>Every code Core may produce, in contract order.</summary>
         public static IReadOnlyList<string> All { get; } = new[]
         {
@@ -96,6 +102,7 @@ namespace Ragtime.SolidWorks.Core
             EntityNotFound, StaleSnapshot, ResultTooLarge, SolidworksError, InternalError,
             PdmNotLinked, PdmUnavailable, PdmFolderNotApproved, PdmNotFound, PdmConflict, PdmError,
             ScriptsNotAllowed, ScriptCompileFailed, ScriptCompileUnavailable, ScriptInvalid, ScriptFailed, SolidworksUnavailable,
+            HostBusy, HostStopping,
         };
     }
 }

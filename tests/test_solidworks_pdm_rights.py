@@ -1,3 +1,5 @@
+import asyncio
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -60,6 +62,23 @@ class PdmRightsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"]["code"], "pdm_vault_invalid")
         self.assertEqual(self.transport.requests, [])
 
+    async def test_updating_gate_maps_both_operations(self):
+        from ragtime.solidworks.host_activity import HostUpdatingError  # inline-import: keep
+
+        async def blocked(key, timeout, work):
+            raise HostUpdatingError()
+
+        with patch("ragtime.solidworks.pdm_rights.host_activity") as activity:
+            activity.run_call = blocked
+            rights = await self.service.rights({}, "pdm", ["\\folder"])
+            folders = await self.service.folders({}, "pdm", "\\", 0, None)
+        self.assertFalse(rights["checked"])
+        self.assertFalse(rights["root"]["checked"])
+        self.assertFalse(rights["folders"][0]["checked"])
+        self.assertEqual(rights["error"]["code"], "host_updating")
+        self.assertEqual(folders["error"]["code"], "host_updating")
+        self.assertEqual(self.transport.requests, [])
+
     async def test_non_pdm_tool_is_not_found(self):
         self.tool.tool_type = ToolType.SOLIDWORKS
         with self.assertRaises(PdmToolNotFound):
@@ -71,6 +90,76 @@ class PdmRightsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response["checked"])
         self.assertGreater(len(self.transport.requests), 1)
         self.assertTrue(all(len(request["arguments"]["paths"]) <= 25 for request in self.transport.requests))
+
+    async def test_all_batches_share_one_gate(self):
+        from ragtime.solidworks.host_activity import GateTicket  # inline-import: keep
+
+        entered = 0
+        held = False
+        original = self.transport.call
+
+        async def gate(key, timeout, work):
+            nonlocal entered, held
+            entered += 1
+            held = True
+            try:
+                return await work(GateTicket(False))
+            finally:
+                held = False
+
+        async def call(request, *, timeout_seconds):
+            self.assertTrue(held)
+            return await original(request, timeout_seconds=timeout_seconds)
+
+        self.transport.call = call
+        with patch("ragtime.solidworks.pdm_rights.host_activity") as activity:
+            activity.run_call = gate
+            result = await self.service.rights({}, "pdm", ["\\" + str(i) + "x" * 245 for i in range(25)])
+        self.assertTrue(result["checked"])
+        self.assertGreater(len(self.transport.requests), 1)
+        self.assertEqual(entered, 1)
+
+    async def test_cancelled_rights_keeps_gate_across_batches(self):
+        from ragtime.solidworks.host_activity import HostActivity, HostBusyError, host_key  # inline-import: keep
+
+        activity = HostActivity(poll_seconds=0.001)
+        config = {"connection_config": {"pairing_id": "host"}}
+        key = host_key(config)
+        started = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        original = self.transport.call
+
+        async def call(request, *, timeout_seconds):
+            if not self.transport.requests:
+
+                def block():
+                    loop.call_soon_threadsafe(started.set)
+                    release.wait(5)
+
+                await asyncio.to_thread(block)
+            self.assertEqual(activity.snapshot(key).in_flight, 1)
+            return await original(request, timeout_seconds=timeout_seconds)
+
+        self.transport.call = call
+        with patch("ragtime.solidworks.pdm_rights.host_activity", activity):
+            task = asyncio.create_task(self.service.rights(config, "pdm", ["\\" + str(i) + "x" * 245 for i in range(25)]))
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                self.assertEqual(activity.snapshot(key).in_flight, 1)
+                with self.assertRaises(HostBusyError):
+                    await activity.run_exclusive(key, 0.01, AsyncMock())
+            finally:
+                release.set()
+            for _ in range(100):
+                if activity.snapshot(key).in_flight == 0:
+                    break
+                await asyncio.sleep(0.001)
+            self.assertEqual(activity.snapshot(key).in_flight, 0)
+            self.assertGreater(len(self.transport.requests), 1)
 
     async def test_partial_failure_and_correlation(self):
         original = self.transport.call

@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle,
   Circle,
+  Clock,
   Info,
   RefreshCw,
   XCircle,
@@ -14,8 +15,82 @@ import {
   type SolidworksHostArtifact,
   type SolidworksHostStatus,
 } from '../api/solidworks';
+import type { SolidworksHostAutoUpdate } from '../types/api';
+import {
+  formatAttemptTime,
+  HOST_UPDATE_OFF_TEXT,
+  hostUpdateFailureParts,
+  hostUpdateUpdatingText,
+  hostUpdateWaitingText,
+} from '../utils/solidworksHostUpdate';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 import { InfoPopover } from './shared/InfoPopover';
+
+function HostUpdateLine({
+  update,
+  panelState,
+}: {
+  update: SolidworksHostAutoUpdate;
+  panelState: State;
+}) {
+  let icon: ReactNode;
+  let text: ReactNode;
+  const now = new Date();
+  switch (update.state) {
+    case 'off':
+      if (panelState !== 'running_update') return null;
+      icon = <Info className="sw-message-icon" size={14} aria-hidden="true" />;
+      text = HOST_UPDATE_OFF_TEXT;
+      break;
+    case 'pending':
+      icon = <Clock className="sw-message-icon" size={14} aria-hidden="true" />;
+      text = `Waiting to update automatically. ${hostUpdateWaitingText(update)}`;
+      break;
+    case 'updating':
+      icon = <span className="rc-polling-indicator" aria-hidden="true" />;
+      text = hostUpdateUpdatingText(update);
+      break;
+    case 'failed': {
+      icon = <AlertTriangle className="sw-message-icon" size={14} aria-hidden="true" />;
+      const { last, next, message } = hostUpdateFailureParts(update, now);
+      text = (
+        <>
+          Automatic update failed
+          {last && (
+            <>
+              {' '}
+              at <time dateTime={last}>{formatAttemptTime(last, now)}</time>
+            </>
+          )}
+          .{message && <> {message}</>} Ragtime tries again{' '}
+          {next ? (
+            <>
+              at <time dateTime={next}>{formatAttemptTime(next, now)}</time>
+            </>
+          ) : (
+            'soon'
+          )}
+          .
+        </>
+      );
+      break;
+    }
+    default:
+      return null;
+  }
+  return (
+    <p
+      id="solidworks-host-auto-update"
+      className="sw-message"
+      data-tone={update.state === 'failed' ? 'warning' : 'info'}
+      data-sw-auto-update={update.state}
+      data-sw-auto-update-reason={update.reason ?? undefined}
+    >
+      {icon}
+      <span>{text}</span>
+    </p>
+  );
+}
 
 export interface SolidWorksHostPanelProps {
   toolId: string | null;
@@ -431,7 +506,12 @@ export function SolidWorksHostPanel({
     uninstalled && status?.reachable ? 'not_installed' : observedState(status, artifact);
   const resting = failureState(failure) ?? observed;
   const polling = POLLING_STATES.includes(resting) && attempts < POLL_LIMIT;
-  const pollable = Boolean(toolId && connectionReady && polling);
+  const pollable = Boolean(
+    toolId &&
+    connectionReady &&
+    (polling ||
+      (!busy && !failure && status?.auto_update?.state === 'updating' && attempts < POLL_LIMIT)),
+  );
 
   useEffect(() => {
     if (!pollable || !toolId) return;
@@ -654,6 +734,14 @@ export function SolidWorksHostPanel({
             Updating restarts the host and closes any SolidWorks it started. Calls in progress fail.
           </InfoPopover>
         )}
+      </div>
+      <div id="solidworks-host-auto-update-live" role="status" aria-live="polite">
+        {status?.auto_update &&
+          !busy &&
+          !failure &&
+          ['running_current', 'running_update', 'not_responding', 'no_desktop_session'].includes(
+            state,
+          ) && <HostUpdateLine update={status.auto_update} panelState={state} />}
       </div>
       {state === 'request_failed' && !showAlert && failure?.message && <p>{failure.message}</p>}
       {status?.warning && (

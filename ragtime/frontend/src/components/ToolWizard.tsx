@@ -2445,6 +2445,7 @@ export function ToolWizard({
       idle_shutdown_seconds:
         config.idle_shutdown_seconds ?? SOLIDWORKS_DEFAULT_OPTIONS.idle_shutdown_seconds,
       allow_scripts: config.allow_scripts ?? false,
+      auto_update_host: config.auto_update_host !== false,
     };
   });
   const [solidworksHostStatus, setSolidworksHostStatus] = useState<SolidworksHostStatus | null>(
@@ -7673,6 +7674,12 @@ export function ToolWizard({
                 {solidworksOptions.instance_mode === 'attach'
                   ? 'Attach to open SolidWorks'
                   : `Background instance, up to ${solidworksOptions.max_instances} at a time, closed after ${(solidworksOptions.idle_shutdown_seconds ?? 900) / 60} minutes idle`}
+              </p>
+              <p data-sw-review-row="host-updates">
+                Host updates:{' '}
+                {solidworksOptions.auto_update_host !== false
+                  ? 'Automatic when idle'
+                  : 'Manual only'}
               </p>
             </>
           ) : (

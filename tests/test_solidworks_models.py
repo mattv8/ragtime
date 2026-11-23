@@ -13,6 +13,13 @@ def test_solidworks_type_and_config_defaults():
     assert config.pdm_approved_folders == []
 
 
+def test_solidworks_auto_update_host_defaults_on_and_round_trips():
+    assert SolidworksConnectionConfig(host="example", user="alice").auto_update_host is True
+    config = SolidworksConnectionConfig.model_validate({"host": "example", "user": "alice", "auto_update_host": False})
+    assert config.auto_update_host is False
+    assert config.model_dump()["auto_update_host"] is False
+
+
 def test_solidworks_pdm_folders_normalized():
     config = SolidworksConnectionConfig(host="example", user="alice", pdm_tool_id="pdm", pdm_approved_folders=["/Design/Parts"])
     assert config.pdm_approved_folders == [r"\Design\Parts"]

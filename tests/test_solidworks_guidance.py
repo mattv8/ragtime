@@ -116,6 +116,8 @@ CONTRACT_OPERATIONS = (
 # Error codes an agent can act on (overview table).
 ACTIONABLE_ERROR_CODES = (
     "host_not_running",
+    "host_updating",
+    "host_stopping",
     "no_interactive_session",
     "version_not_installed",
     "version_mismatch",
@@ -248,7 +250,12 @@ class PdmTopicTests(unittest.TestCase):
 
     def test_pdm_topic_explains_unknown_operation_for_pdm(self) -> None:
         self.assertIn("`unknown_operation`", self.pdm)
-        self.assertIn("Update the SolidWorks host to use PDM operations.", self.pdm)
+        self.assertIn("Update the SolidWorks host from the tool's host panel to use PDM operations.", self.pdm)
+
+    def test_unknown_operation_row_points_to_the_host_panel(self) -> None:
+        row = next(line for line in self.pdm.splitlines() if line.startswith("| `unknown_operation` on `pdm.*`"))
+        self.assertIn("host panel", row)
+        self.assertIn("`host_updating`", row)
 
     def test_pdm_topic_states_the_hard_limits(self) -> None:
         for phrase in (

@@ -2511,12 +2511,40 @@ describe('ToolWizard', () => {
       'Scripts: Off',
     );
     expect(screen.getByText('Access to SolidWorks: Read model data only')).toBeTruthy();
+    expect(document.querySelector('[data-sw-review-row="host-updates"]')?.textContent).toBe(
+      'Host updates: Automatic when idle',
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
       'existing-sw',
       expect.objectContaining({
-        connection_config: expect.objectContaining({ allow_scripts: false }),
+        connection_config: expect.objectContaining({
+          allow_scripts: false,
+          auto_update_host: true,
+        }),
+      }),
+    );
+  });
+
+  it.each([true, false])('reviews and saves host updates enabled=%s', async (enabled) => {
+    const tool = savedSolidworksTool();
+    tool.connection_config = {
+      ...(tool.connection_config as SolidworksConnectionConfig),
+      auto_update_host: enabled,
+    };
+    const onSave = vi.fn();
+    await openSolidworksStep(tool, onSave);
+    await openSolidworksReview();
+    expect(document.querySelector('[data-sw-review-row="host-updates"]')?.textContent).toBe(
+      `Host updates: ${enabled ? 'Automatic when idle' : 'Manual only'}`,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'existing-sw',
+      expect.objectContaining({
+        connection_config: expect.objectContaining({ auto_update_host: enabled }),
       }),
     );
   });

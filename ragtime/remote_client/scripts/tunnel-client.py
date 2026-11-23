@@ -17,6 +17,7 @@ import time
 from urllib.parse import urlsplit
 
 OPEN, DATA, CLOSE, PING, PONG = range(1, 6)
+TUNNEL_CLIENT_VERSION = 2
 HEADER_SIZE = 5
 MAX_DATA = 64 * 1024
 MAX_MESSAGE = 1024 * 1024
@@ -183,6 +184,7 @@ def connect(config):
             "Sec-WebSocket-Version: 13",
             "Sec-WebSocket-Protocol: {0}".format(SUBPROTOCOL),
             "Authorization: Bearer {0}".format(config["credential"]),
+            "X-Ragtime-Tunnel-Client-Version: {0}".format(TUNNEL_CLIENT_VERSION),
             "X-Ragtime-Pairing-ID: {0}".format(config["pairing_id"]),
             "\r\n",
         )

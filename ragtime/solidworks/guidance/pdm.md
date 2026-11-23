@@ -165,6 +165,6 @@ Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
 | `invalid_arguments` on `source` | The source is outside an approved folder's view and outside `work_folder`: "Add files from an approved vault folder or from the tool's work folder <work folder>." Save the file there first. |
 | `invalid_arguments` on `comment` or on a path or name | The comment has control characters or is empty; or a path or name uses non-ASCII characters ("Vault changes are limited to paths with plain ASCII characters."), is malformed, or goes through a symbolic link or junction. Fix it or report it; do not repeat the call. |
 | `operation_timeout` on a vault change | The outcome is unknown: the change may or may not have happened. Read the state with `pdm.file.info` or `pdm.folder.list` first, and retry only if the change is missing. |
-| `unknown_operation` on `pdm.*` | The SolidWorks host predates PDM support. Tell the user: "Update the SolidWorks host to use PDM operations." Do not retry. |
+| `unknown_operation` on `pdm.*` | The SolidWorks host predates PDM support and is not updated automatically (the tool's **Keep the host up to date** is off). Tell the user: "Update the SolidWorks host from the tool's host panel to use PDM operations." Do not retry. While Ragtime is updating the host, the answer is `host_updating` instead. |
 | `write_not_allowed` | Changes are not enabled for this tool. Do not retry; tell the user. |
 | `result_too_large` on `pdm.file.get_latest` | More than 500 files. Set `include_references` to false or fetch fewer files. |

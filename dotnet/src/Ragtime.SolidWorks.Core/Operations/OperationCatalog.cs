@@ -288,8 +288,10 @@ namespace Ragtime.SolidWorks.Core
                 "Internal: asks the host to close its owned instances and exit.",
                 ProtocolInfo.Access.Read,
                 paged: false,
-                argumentsSchema: SchemaTypes.NoArguments(),
-                result: "{stopping: true}.",
+                argumentsSchema: new ObjectSchema()
+                    .Property("if_idle_seconds", SchemaTypes.Integer(0, 86400, "Refuse with host_busy unless the host has been idle this many seconds and nothing would be lost."))
+                    .Build(),
+                result: "{stopping: true}, or host_busy with details.reasons when if_idle_seconds is given and the host is in use.",
                 isInternal: true),
         };
     }

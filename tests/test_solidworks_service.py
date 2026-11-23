@@ -1,5 +1,7 @@
+import asyncio
 import json
 import sys
+import threading
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -104,12 +106,216 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         installer.install_host.assert_awaited_once_with(self.config)
         installer.uninstall_host.assert_awaited_once_with(self.config)
 
+    async def test_manual_actions_handle_busy_and_notify(self):
+        from ragtime.solidworks.host_activity import HostBusyError  # inline-import: keep
+
+        installer = MagicMock()
+        installer.install_host = AsyncMock(return_value={"installed": True})
+        installer.uninstall_host = AsyncMock(return_value={"installed": False})
+        installer.busy_status = AsyncMock(return_value={"error": {"code": "host_busy"}})
+
+        async def busy(key, timeout, work):
+            raise HostBusyError()
+
+        async def available(key, timeout, work):
+            self.assertEqual(timeout, 60)
+            return await work()
+
+        with (
+            patch("ragtime.solidworks.host_installer.SolidworksHostInstaller", return_value=installer),
+            patch("ragtime.solidworks.service.host_updater") as updater,
+            patch("ragtime.solidworks.service.host_activity") as activity,
+        ):
+            activity.run_exclusive = busy
+            self.assertEqual((await self.service.install_host(self.config))["error"]["code"], "host_busy")
+            self.assertEqual((await self.service.uninstall_host(self.config))["error"]["code"], "host_busy")
+            installer.install_host.assert_not_awaited()
+            installer.uninstall_host.assert_not_awaited()
+            activity.run_exclusive = available
+            await self.service.install_host(self.config)
+            await self.service.uninstall_host(self.config)
+            self.assertEqual(updater.note_manual_action.call_count, 2)
+
     async def test_guide_and_validation(self):
         self.assertEqual((await self.execute("guide"))["result"]["topic"], "overview")
         self.assertEqual((await self.execute("guide", {"topic": "unknown"}))["error"]["code"], "invalid_arguments")
         self.assertEqual((await self.execute(""))["error"]["code"], "invalid_arguments")
         self.assertEqual((await self.execute("status", []))["error"]["code"], "invalid_arguments")
         self.assertEqual(self.transport.calls, [])
+
+    async def test_gate_timeout_and_deadline_guard(self):
+        from ragtime.solidworks.host_activity import GateTicket, HostUpdatingError  # inline-import: keep
+
+        async def blocked(key, timeout, work):
+            raise HostUpdatingError()
+
+        updater = MagicMock()
+        updater.state_for.return_value = {"state": "updating", "installed_version": "1.0.0", "target_version": "2.0.0"}
+        with patch("ragtime.solidworks.service.host_updater", updater), patch("ragtime.solidworks.service.host_activity") as activity:
+            activity.run_call = blocked
+            result = await self.execute("status")
+            self.assertEqual(result["error"]["code"], "host_updating")
+            self.assertEqual(result["error"]["details"]["state"], "updating")
+
+            async def waited(key, timeout, work):
+                self.clock.now += 5
+                return await work(GateTicket(True))
+
+            activity.run_call = waited
+            result = await self.execute("status", timeout=10)
+            self.assertEqual(result["error"]["code"], "host_updating")
+            self.assertEqual(self.transport.calls, [])
+
+            async def uncontended(key, timeout, work):
+                self.clock.now += 5
+                return await work(GateTicket(False))
+
+            activity.run_call = uncontended
+            self.assertTrue((await self.execute("status", timeout=10))["ok"])
+
+    async def test_call_waits_for_exclusive_release(self):
+        from ragtime.solidworks.host_activity import HostActivity, host_key  # inline-import: keep
+
+        activity = HostActivity(poll_seconds=0.001)
+        self.config["connection_config"] = {"pairing_id": "host"}
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def hold():
+            started.set()
+            await release.wait()
+
+        with patch("ragtime.solidworks.service.host_activity", activity):
+            holder = asyncio.create_task(activity.run_exclusive(host_key(self.config), 1, hold))
+            await started.wait()
+            try:
+                task = asyncio.create_task(self.execute("status"))
+                await asyncio.sleep(0.01)
+                self.assertEqual(self.transport.calls, [])
+            finally:
+                release.set()
+                await holder
+            self.assertTrue((await task)["ok"])
+
+    async def test_cancelled_call_keeps_gate_until_worker_finishes(self):
+        from ragtime.solidworks.host_activity import HostActivity, HostBusyError, host_key  # inline-import: keep
+
+        activity = HostActivity(poll_seconds=0.001)
+        self.config["connection_config"] = {"pairing_id": "host"}
+        key = host_key(self.config)
+        started = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        original = self.transport.call
+
+        async def call(request, *, timeout_seconds):
+            def block():
+                loop.call_soon_threadsafe(started.set)
+                release.wait(5)
+
+            await asyncio.to_thread(block)
+            return await original(request, timeout_seconds=timeout_seconds)
+
+        self.transport.call = call
+        with patch("ragtime.solidworks.service.host_activity", activity):
+            task = asyncio.create_task(self.execute("status"))
+            exclusive = None
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                self.assertEqual(activity.snapshot(key).in_flight, 1)
+                with self.assertRaises(HostBusyError):
+                    await activity.run_exclusive(key, 0.01, AsyncMock())
+                exclusive = asyncio.create_task(activity.run_exclusive(key, 1, AsyncMock(return_value="released")))
+                await asyncio.sleep(0.01)
+                self.assertFalse(exclusive.done())
+            finally:
+                release.set()
+            assert exclusive is not None
+            self.assertEqual(await asyncio.wait_for(exclusive, 1), "released")
+            for _ in range(100):
+                if activity.snapshot(key).in_flight == 0:
+                    break
+                await asyncio.sleep(0.001)
+            self.assertEqual(activity.snapshot(key).in_flight, 0)
+
+    async def test_cancelled_install_keeps_exclusive_and_notifies(self):
+        from ragtime.solidworks.host_activity import HostActivity, HostUpdatingError, host_key  # inline-import: keep
+
+        activity = HostActivity(poll_seconds=0.001)
+        self.config["connection_config"] = {"pairing_id": "host"}
+        key = host_key(self.config)
+        started, finish = asyncio.Event(), asyncio.Event()
+        installer = MagicMock()
+
+        async def install(config):
+            started.set()
+            await finish.wait()
+            return {"installed": True}
+
+        installer.install_host = install
+        with (
+            patch("ragtime.solidworks.service.host_activity", activity),
+            patch("ragtime.solidworks.service.host_updater") as updater,
+            patch("ragtime.solidworks.host_installer.SolidworksHostInstaller", return_value=installer),
+        ):
+            task = asyncio.create_task(self.service.install_host(self.config))
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                self.assertTrue(activity.snapshot(key).exclusive)
+                with self.assertRaises(HostUpdatingError):
+                    await activity.run_call(key, 0.01, AsyncMock())
+            finally:
+                finish.set()
+            for _ in range(100):
+                if not activity.snapshot(key).exclusive:
+                    break
+                await asyncio.sleep(0.001)
+            self.assertFalse(activity.snapshot(key).exclusive)
+            updater.note_manual_action.assert_called_once_with(self.config, {"installed": True})
+
+    async def test_observes_describe_and_operation_envelopes(self):
+        self.transport.host_version = "1.0.0"
+        self.config["allow_write"] = True
+        with patch("ragtime.solidworks.service.host_updater") as updater:
+            await self.execute("change")
+            self.assertEqual(updater.observe.call_count, 2)
+            self.transport.response_overrides = {"ok": False, "error": {"code": "busy"}}
+            await self.execute("status")
+            self.assertEqual(updater.observe.call_count, 3)
+
+    async def test_outdated_cached_contract_refresh_and_missing_messages(self):
+        artifact = MagicMock(host_version="2.0.0")
+        self.transport.host_version = "1.0.0"
+        with patch("ragtime.solidworks.service.get_host_artifact", return_value=artifact), patch("ragtime.solidworks.service.host_updater") as updater:
+            updater.state_for.return_value = None
+            await self.execute("describe")
+            self.service._contracts["tool"][1]["result"]["host_version"] = "1.0.0"
+            self.transport.operations.append({"name": "new", "access": "read"})
+            result = await self.execute("new")
+            self.assertTrue(result["ok"])
+            self.assertEqual(self.forwarded(), ["describe", "describe", "new"])
+            self.transport.operations.clear()
+            original = self.transport.call
+
+            async def old_call(request, *, timeout_seconds):
+                response = await original(request, timeout_seconds=timeout_seconds)
+                if request["operation"] == "describe":
+                    response["result"]["host_version"] = "1.0.0"
+                return response
+
+            self.transport.call = old_call
+            result = await self.execute("missing")
+            self.assertEqual(result["error"]["code"], "host_updating")
+            updater.request_now.assert_called_once_with(self.config)
+            self.config["connection_config"] = {"auto_update_host": False}
+            result = await self.execute("missing")
+            self.assertEqual(result["error"]["code"], "unknown_operation")
+            self.assertIn("host panel", result["error"]["message"])
 
     async def test_describe_cache_and_write_gate(self):
         describe = await self.execute("describe")

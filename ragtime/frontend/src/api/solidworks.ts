@@ -1,4 +1,4 @@
-import type { SSHShellConnectionConfig } from '../types/api';
+import type { SolidworksHostAutoUpdate, SSHShellConnectionConfig } from '../types/api';
 
 export type SolidworksInstanceMode = 'background' | 'attach';
 export interface SolidworksOptions {
@@ -7,6 +7,7 @@ export interface SolidworksOptions {
   max_instances?: number;
   idle_shutdown_seconds?: number;
   allow_scripts?: boolean;
+  auto_update_host?: boolean;
 }
 export type SolidworksConnectionConfig = SSHShellConnectionConfig &
   SolidworksOptions & {
@@ -19,6 +20,11 @@ export interface SolidworksHostArtifact {
   protocol: number | null;
   sha256: string | null;
   size_bytes: number | null;
+}
+export interface SolidworksHostActivity {
+  in_flight: number;
+  idle_seconds: number;
+  pdm_busy: boolean;
 }
 export interface SolidworksHostStatus {
   reachable: boolean;
@@ -38,6 +44,10 @@ export interface SolidworksHostStatus {
   error: { code: string; message: string } | null;
   /** Non-blocking note, e.g. an uninstall that could not delete locked files. */
   warning?: string | null;
+  host_features?: string[];
+  activity?: SolidworksHostActivity | null;
+  /** Computed by Ragtime from the host update state; never stored. */
+  auto_update?: SolidworksHostAutoUpdate | null;
 }
 export const SOLIDWORKS_DEFAULT_OPTIONS: Required<SolidworksOptions> = {
   solidworks_version: null,
@@ -45,6 +55,7 @@ export const SOLIDWORKS_DEFAULT_OPTIONS: Required<SolidworksOptions> = {
   max_instances: 1,
   idle_shutdown_seconds: 900,
   allow_scripts: false,
+  auto_update_host: true,
 };
 export const SOLIDWORKS_DEFAULT_TIMEOUT_SECONDS = 100;
 

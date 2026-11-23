@@ -9,6 +9,7 @@ from typing import Literal, Protocol
 import paramiko
 
 from ragtime.core.ssh import RAGTIME_OUTPUT_LIMIT_MARKER, SSHConfig, SSHResult, _create_ssh_client, execute_ssh_command
+from ragtime.solidworks.host_activity import run_blocking
 from ragtime.solidworks.protocol import SolidworksProtocolError, encode_request, parse_response
 
 TransportErrorKind = Literal["ssh_unreachable", "ssh_auth_failed", "timeout", "no_response"]
@@ -76,7 +77,7 @@ class SshSolidworksTransport:
 
     async def run_powershell(self, script: str, *, timeout_seconds: float) -> SSHResult:
         config = build_ssh_config(self.connection_config, timeout=timeout_seconds)
-        return await asyncio.to_thread(execute_ssh_command, config, script)
+        return await run_blocking(execute_ssh_command, config, script)
 
     async def call(self, request: dict, *, timeout_seconds: float) -> dict:
         encoded = encode_request(request)
@@ -129,7 +130,7 @@ class SshSolidworksTransport:
                     timer.cancel()
                 client.close()
 
-        work = asyncio.to_thread(upload)
+        work = run_blocking(upload)
         if timeout_seconds > 0:
             await asyncio.wait_for(work, timeout_seconds)
         else:

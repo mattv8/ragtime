@@ -14,6 +14,9 @@ in the README's SolidWorks section.
   wizard's host panel; `pdm_link.py` resolves the PDM link; `pdm_rights.py`
   serves the rights check and folder picker; `routes.py` is the admin-only
   `/indexes/solidworks` API; `guidance/*.md` is the agent-facing guide.
+- Host updates: `host_updater.py` updates outdated hosts, and
+  `host_activity.py` gates Ragtime's calls while an update runs (see
+  "Host updates" below).
 - Config: `SolidworksConnectionConfig` (`ragtime/indexer/models.py`) extends
   the SSH config. `_validate_solidworks_pdm_link` (`ragtime/indexer/routes.py`)
   checks the link on create and update. Quick connect and tool deletion reuse
@@ -43,8 +46,9 @@ in the README's SolidWorks section.
   operation is missing.
 - Adding a host operation: a catalog entry (`SpecShapeSerializationTests`
   asserts the order of the `pdm.*` entries), dispatch, DTOs, `Fakes.cs` and
-  tests, a host version bump in `dotnet/Directory.Build.props` so the wizard
-  offers **Update host**, and the guidance topic with
+  tests, a host version bump in `dotnet/Directory.Build.props` so Ragtime
+  updates installed hosts when they are idle, or the wizard offers
+  **Update host**, and the guidance topic with
   `tests/test_solidworks_guidance.py`. A write operation also goes in
   `PDM_WRITE_OPERATIONS`, an admin-only one in `PDM_ADMIN_OPERATIONS`.
 - Error codes in `Wire/ErrorCodes.cs` are wire contract; guidance tables and
@@ -59,6 +63,46 @@ in the README's SolidWorks section.
   the host shares one deadline across all steps of a request. A COM call that
   outlives its deadline leaves its instance or the PDM worker busy until it
   returns.
+
+## Host updates
+
+- `host_updater` keeps its state in memory and runs in the single API worker.
+  It reads host versions from every host envelope and from `status`, and it
+  updates only when the installed `x.y.z` is below the packaged one. It never
+  downgrades.
+- `auto_update_host` is a per-tool setting in `connection_config`, on by
+  default; a missing key counts as on. If any enabled tool on the same host key
+  has it off, automatic updates are off for that host.
+- State is per `host_key` (`host_activity.host_key`: the pairing ID, else SSH
+  host, port and user). Tools that share a key share one host, and hosts are
+  updated one at a time. Quiet period 300 s after the last call; SSH checks at
+  most every 300 s per key; after a failure, backoff of 30 min, 2 h, 8 h, then
+  24 h. A new packaged version resets the backoff.
+- Before SSH, the updater checks Ragtime's own state. It then calls `status`
+  without PDM and skips a host that is busy, not running, logged off, has
+  documents open in a background instance it owns, or reports an in-flight call
+  or PDM item.
+- `host_activity` gates Ragtime's calls per `host_key`. Calls wait while an
+  exclusive update holds the key, then answer `host_updating`. Manual install and
+  uninstall take the key exclusively and answer `host_busy` on timeout.
+- The host gates its own stop. `stop --if-idle N` (`host.shutdown` with
+  `if_idle_seconds`) refuses with `host_busy` and `reasons` while work is in
+  flight, the host was used within N seconds, an instance is busy, an owned
+  background instance has documents open, or PDM is busy. The installer runs it
+  before uninstalling an old host; exit 3 keeps the old host. The CLI waits up
+  to 90 s for the host to exit after a successful gate, and the gated install
+  times out after 240 s (ungated installs use 90 s).
+- Activity-neutral operations (`describe`, `status`, `pdm.status`,
+  `host.shutdown`) still answer while the host stops; other work answers
+  `host_stopping`. `status` reports `activity` (in-flight count, idle seconds,
+  PDM busy).
+- Ragtime passes the idle gate only when the installed host lists
+  `stop-if-idle` in its `version` `features`. Older hosts get no gate.
+- Tunnel client versions: clients send `X-Ragtime-Tunnel-Client-Version`. The
+  version is in `TUNNEL_CLIENT_VERSION` in `tunnel_protocol.py` and in both
+  client scripts. A hash test pins the scripts, so bump the version and the
+  hashes together. The version is display only; Ragtime does not update tunnel
+  clients.
 
 ## Safety invariants
 

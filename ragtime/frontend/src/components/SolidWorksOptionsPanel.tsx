@@ -333,6 +333,43 @@ export function SolidWorksOptionsPanel({
           {timeoutWarning}
         </Message>
       )}
+      <div id="solidworks-auto-update-row" className="sw-switch-row">
+        <label>
+          <input
+            id="solidworks-auto-update"
+            type="checkbox"
+            role="switch"
+            className="sw-switch"
+            checked={options.auto_update_host !== false}
+            aria-describedby="solidworks-auto-update-summary"
+            onChange={(event) => update({ auto_update_host: event.target.checked })}
+          />
+          Keep the host up to date
+        </label>
+        <InfoPopover id="solidworks-auto-update-help" label="About host updates">
+          <p>
+            When on, Ragtime updates the SolidWorks host by itself whenever this Ragtime server has
+            a newer host version than the one installed.
+          </p>
+          <p>
+            It only does this when the host is idle: no request is running, none ran in the last 5
+            minutes, and no document is open in a SolidWorks instance the host started.
+          </p>
+          <p>
+            An update restarts the host and closes the SolidWorks instances it started. A SolidWorks
+            you started yourself is not touched. If an update fails, the previous version is
+            restored and Ragtime tries again later.
+          </p>
+          <p>
+            When off, use <strong>Update host</strong> in the host panel. Saved with the tool.
+          </p>
+        </InfoPopover>
+        <span id="solidworks-auto-update-summary" className="sw-switch-summary">
+          {options.auto_update_host !== false
+            ? 'On: Ragtime updates the host when it is idle'
+            : 'Off: update the host yourself from the host panel'}
+        </span>
+      </div>
     </fieldset>
   );
 }

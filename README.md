@@ -559,7 +559,7 @@ A **SolidWorks** tool lets agents read SolidWorks models on a Windows machine: o
 4. Set the [options](#solidworks-options). Optionally link a PDM vault ([PDM vault access](#pdm-vault-access)) and turn on **Allow scripts** ([Scripts](#scripts)).
 5. Click **Test Connection**, then complete the remaining wizard steps and save.
 
-When the Ragtime image includes a different host version than the installed one, the host panel offers **Update host**; updating also closes the SolidWorks instances the host started. While the host is running, **Uninstall host** stops it, removes its logon task and deletes the host folder; logs, the work folder and PDM check-out records under `%LOCALAPPDATA%\RagtimeSolidWorks` remain. Deleting the tool does not uninstall the host, so uninstall it first if you want it removed from the machine.
+When the Ragtime image includes a newer host version than the installed one, Ragtime updates the host by itself once it is idle: no request is running, none has run for five minutes, and no document is open in a SolidWorks instance the host started. The **Keep the host up to date** switch on the tool (on by default) turns this off. **Update host** in the host panel updates at once. Either way, the update closes the SolidWorks instances the host started. A failed update restores the previous version and is retried later. Ragtime never installs an older host. While the host is running, **Uninstall host** stops it, removes its logon task and deletes the host folder; logs, the work folder and PDM check-out records under `%LOCALAPPDATA%\RagtimeSolidWorks` remain. Deleting the tool does not uninstall the host, so uninstall it first if you want it removed from the machine.
 
 #### SolidWorks options
 
@@ -624,6 +624,7 @@ Scripts are not sandboxed: they run as the Windows account, with its file, netwo
 | **Waiting for desktop session** | The host is installed, but the account has no desktop session. Sign in to the machine as that account. Ragtime checks again every 10 seconds for about five minutes; after that, choose **Check again**. |
 | **Not running** | The account is signed in, but the host did not answer. Choose **Reinstall host** to register and start its logon task again. The host log is `%LOCALAPPDATA%\RagtimeSolidWorks\logs\host.log` on the machine. |
 | **Unreachable** | Ragtime cannot reach the machine over SSH. See [Connect a remote machine](REMOTE_CLIENT.md#troubleshooting). |
+| **Automatic update failed** (host panel); **Host update failed** badge on the tool card | The last update did not finish, and the previous host was restored. Ragtime retries later; choose **Update host** to try now. |
 
 ### Preview DNS Setup (Reverse Proxy Deployments)
 

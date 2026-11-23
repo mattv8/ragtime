@@ -10,6 +10,9 @@
   gap: var(--space-sm);
   min-width: 0;
 }
+#solidworks-host-auto-update-live:empty {
+  margin-top: calc(-1 * var(--space-sm));
+}
 .sw-panel[data-tone='error'] {
   border-color: var(--color-error-border);
   background: var(--color-error-light);
@@ -155,6 +158,12 @@
 .sw-message-icon {
   flex: none;
   margin-top: 0.125em;
+}
+.sw-message > .rc-polling-indicator {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0.125em 0 0;
 }
 /* Boxed callout for the administrator warning (ux-spec mockup a). */
 .sw-message[data-boxed='true'] {

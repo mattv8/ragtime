@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$TunnelClientVersion = 2
 if ([Net.ServicePointManager]::SecurityProtocol -ne [Net.SecurityProtocolType]::SystemDefault) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
@@ -58,6 +59,7 @@ while ($true) {
     try {
         $socket.Options.AddSubProtocol('ragtime-tunnel-v1')
         $socket.Options.SetRequestHeader('Authorization', "Bearer $($config.credential)")
+        $socket.Options.SetRequestHeader('X-Ragtime-Tunnel-Client-Version', [string]$TunnelClientVersion)
         $socket.Options.SetRequestHeader('X-Ragtime-Pairing-ID', [string]$config.pairing_id)
         $socket.ConnectAsync($serverUri, $cts.Token).GetAwaiter().GetResult()
         if ($socket.SubProtocol -ne 'ragtime-tunnel-v1') { throw 'Server did not select ragtime-tunnel-v1' }

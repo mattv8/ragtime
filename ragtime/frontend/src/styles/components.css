@@ -12215,6 +12215,36 @@ fieldset legend.legend-with-status .legend-divider {
   min-width: 0;
 }
 
+/* Secondary text colour: .field-help's muted token fails 4.5:1 (see solidworks.css). */
+#rc-tunnel-client {
+  display: flex;
+  flex: 1 0 100%;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+#rc-tunnel-client svg {
+  flex: none;
+  margin-top: 0.125em;
+  color: var(--color-warning);
+}
+
+/* Focusable tool-card badges (host update, tunnel client): keyboard focus must be visible. */
+.tool-badge[tabindex]:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* Spinner sized to the 12px badge icons. */
+.tool-badge > .rc-polling-indicator {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+}
+
 .rc-command-expiry {
   display: inline-flex;
   flex-wrap: wrap;

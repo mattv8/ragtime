@@ -88,6 +88,7 @@ class PairingResponse(BaseModel):
     transport: str | None = None
     error: str | None = None
     connection_config: dict = Field(default_factory=dict)
+    tunnel_client: dict | None = None
 
 
 class PairingCreatedResponse(PairingResponse):

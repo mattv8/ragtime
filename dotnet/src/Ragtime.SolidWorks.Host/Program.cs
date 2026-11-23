@@ -46,7 +46,9 @@ namespace Ragtime.SolidWorks.Host
                 case CommandNames.Install:
                     return InstallCommand.Run(HostEnvironment.Create(HostLog.ForCurrentUser()));
                 case CommandNames.Stop:
-                    return StopCommand.Run(HostEnvironment.Create(HostLog.ForCurrentUser()));
+                    return command.IfIdleSeconds is int ifIdle
+                        ? StopCommand.RunIfIdle(HostEnvironment.Create(HostLog.ForCurrentUser()), ifIdle)
+                        : StopCommand.Run(HostEnvironment.Create(HostLog.ForCurrentUser()));
                 case CommandNames.Uninstall:
                     return UninstallCommand.Run(HostEnvironment.Create(HostLog.ForCurrentUser()));
                 default:

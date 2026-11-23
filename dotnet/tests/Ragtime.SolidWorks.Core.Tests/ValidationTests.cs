@@ -15,6 +15,9 @@ namespace Ragtime.SolidWorks.Core.Tests
             yield return new object[] { "script.run", "{\"source\":\"return null;\",\"purpose\":\"Inspect a model\",\"arguments\":{\"nested\":{\"items\":[null,1]}}}" };
             yield return new object[] { "describe", "{}" };
             yield return new object[] { "status", "{}" };
+            yield return new object[] { "host.shutdown", "{}" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":0}" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":86400}" };
             yield return new object[] { "documents.list", "{}" };
             yield return new object[] { "document.open", "{\"path\":\"C:\\\\Models\\\\part.sldprt\"}" };
             yield return new object[] { "document.open", "{\"path\":\"C:\\\\Models\\\\a.SLDASM\",\"configuration\":\"Default\"}" };
@@ -51,6 +54,11 @@ namespace Ragtime.SolidWorks.Core.Tests
             yield return new object[] { "script.run", "{}", "source" };
             yield return new object[] { "describe", "{\"x\":1}", "x" };
             yield return new object[] { "status", "{\"x\":1}", "x" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":-1}", "if_idle_seconds" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":86401}", "if_idle_seconds" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":\"5\"}", "if_idle_seconds" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":1.5}", "if_idle_seconds" };
+            yield return new object[] { "host.shutdown", "{\"x\":1}", "x" };
             yield return new object[] { "documents.list", "{\"limit\":0}", "limit" };
             yield return new object[] { "document.open", "{}", "path" };
             yield return new object[] { "document.open", "{\"path\":\"C:\\\\a.sldprt\",\"bogus\":1}", "bogus" };

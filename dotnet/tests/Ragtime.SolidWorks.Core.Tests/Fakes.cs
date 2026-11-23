@@ -41,6 +41,8 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         public List<SessionDocumentInfo> Open { get; } = new List<SessionDocumentInfo>();
 
+        public Action? BeforeListOpenDocuments { get; set; }
+
         public List<string> Closed { get; } = new List<string>();
 
         public List<string> Calls { get; } = new List<string>();
@@ -64,6 +66,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         public IReadOnlyList<SessionDocumentInfo> ListOpenDocuments()
         {
+            BeforeListOpenDocuments?.Invoke();
             Calls.Add(nameof(ListOpenDocuments));
             return Open.ToList();
         }
@@ -747,6 +750,21 @@ namespace Ragtime.SolidWorks.Core.Tests
         public PdmGatewayException? RunFailure { get; set; }
 
         public int RunCount => RunVaults.Count;
+
+        private bool _isBusy;
+        public Action? OnIsBusyRead { get; set; }
+
+        /// <summary>What IsBusy reports: true while a timed-out PDM item is still running.</summary>
+        public bool IsBusy
+        {
+            get
+            {
+                var busy = _isBusy;
+                OnIsBusyRead?.Invoke();
+                return busy;
+            }
+            set => _isBusy = value;
+        }
 
         public PdmClientFacts GetClientFacts() => Facts;
 

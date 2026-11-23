@@ -48,6 +48,11 @@ namespace Ragtime.SolidWorks.Core
         private readonly IScriptRunner? _scriptRunner;
         private readonly Action<string>? _hostLog;
         private readonly DocumentRegistry _documents = new DocumentRegistry();
+        private readonly object _activityLock = new object();
+        private int _inFlight;
+        private long _lastWorkEndedMs;
+        private long _activityGeneration;
+        private bool _stopping;
 
         /// <summary>Creates the processor.</summary>
         /// <param name="instances">Instance manager (Runtime lane).</param>
@@ -85,6 +90,7 @@ namespace Ragtime.SolidWorks.Core
             _hostVersion = hostVersion ?? throw new ArgumentNullException(nameof(hostVersion));
             _shutdown = shutdown ?? throw new ArgumentNullException(nameof(shutdown));
             _clock = clock ?? new SystemMonotonicClock();
+            _lastWorkEndedMs = _clock.ElapsedMilliseconds;
             _unexpectedErrorSink = unexpectedErrorSink;
             _pdm = pdm;
             _pdmClaims = pdmClaims ?? new InMemoryPdmClaimStore();
@@ -151,6 +157,41 @@ namespace Ragtime.SolidWorks.Core
                     ErrorCodes.UnknownOperation,
                     $"There is no operation named '{request.Operation}'. Call describe for the list.");
 
+            var isWork = definition.Name != "describe" && definition.Name != "status"
+                && definition.Name != "pdm.status" && definition.Name != "host.shutdown";
+            if (isWork)
+            {
+                lock (_activityLock)
+                {
+                    if (_stopping)
+                    {
+                        throw HostError.Coded(ErrorCodes.HostStopping, "The SolidWorks host is stopping for an update or restart. Try again in a minute.");
+                    }
+                    _inFlight++;
+                    _activityGeneration++;
+                }
+            }
+
+            try
+            {
+                return await ExecuteRegisteredAsync(definition, request, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (isWork)
+                {
+                    lock (_activityLock)
+                    {
+                        _inFlight--;
+                        _lastWorkEndedMs = _clock.ElapsedMilliseconds;
+                        _activityGeneration++;
+                    }
+                }
+            }
+        }
+
+        private async Task<Outcome> ExecuteRegisteredAsync(OperationDefinition definition, ParsedRequest request, CancellationToken cancellationToken)
+        {
             switch (definition.Access)
             {
                 case ProtocolInfo.Access.Write when !request.Context.AllowWrite:
@@ -194,7 +235,7 @@ namespace Ragtime.SolidWorks.Core
                     return Plain(BuildStatus(), context);
 
                 case "host.shutdown":
-                    await _shutdown(cancellationToken).ConfigureAwait(false);
+                    await ShutdownAsync(request.Arguments, cancellationToken).ConfigureAwait(false);
                     return Plain(new ShutdownResult(), context);
 
                 case "documents.list":
@@ -218,6 +259,62 @@ namespace Ragtime.SolidWorks.Core
                     return await ModelOperationAsync(definition, request, deadline, cancellationToken).ConfigureAwait(false);
             }
         }
+
+        private async Task ShutdownAsync(JObject arguments, CancellationToken cancellationToken)
+        {
+            var threshold = (int?)arguments["if_idle_seconds"];
+            if (threshold.HasValue)
+            {
+                StopIfIdle(threshold.Value);
+            }
+            else
+            {
+                lock (_activityLock)
+                {
+                    _stopping = true;
+                }
+            }
+            await _shutdown(cancellationToken).ConfigureAwait(false);
+        }
+
+        private void StopIfIdle(int threshold)
+        {
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                long generation;
+                lock (_activityLock)
+                {
+                    if (_stopping) return;
+                    generation = _activityGeneration;
+                }
+
+                var instances = CurrentInstances();
+                var pdmBusy = _pdm?.IsBusy ?? false;
+                lock (_activityLock)
+                {
+                    if (_stopping) return;
+                    if (_activityGeneration != generation)
+                    {
+                        if (attempt < 2) continue;
+                        throw HostError.Coded(ErrorCodes.HostBusy, "The SolidWorks host is in use.",
+                            new JObject { ["reasons"] = new JArray(HostIdleRule.RequestInFlight) });
+                    }
+
+                    var reasons = HostIdleRule.BlockingReasons(_inFlight, IdleSeconds(), threshold, instances, pdmBusy);
+                    if (reasons.Count > 0)
+                    {
+                        throw HostError.Coded(ErrorCodes.HostBusy, "The SolidWorks host is in use.",
+                            new JObject { ["reasons"] = new JArray(reasons) });
+                    }
+                    _stopping = true;
+                    return;
+                }
+            }
+        }
+
+        private int IdleSeconds() => _inFlight > 0
+            ? 0
+            : (int)Math.Min(int.MaxValue, (_clock.ElapsedMilliseconds - _lastWorkEndedMs) / 1000);
 
         private async Task<Outcome> RunScriptAsync(ParsedRequest request, Deadline deadline, CancellationToken cancellationToken)
         {
@@ -547,6 +644,16 @@ namespace Ragtime.SolidWorks.Core
             var instances = CurrentInstances()
                 .Select(ToInstanceInfo)
                 .ToList();
+            HostActivityInfo activity;
+            lock (_activityLock)
+            {
+                activity = new HostActivityInfo
+                {
+                    InFlight = _inFlight,
+                    IdleSeconds = IdleSeconds(),
+                    PdmBusy = _pdm?.IsBusy ?? false,
+                };
+            }
 
             return new StatusResult
             {
@@ -569,6 +676,7 @@ namespace Ragtime.SolidWorks.Core
                     Instances = instances,
                 },
                 Pdm = PdmOperations.ClientStatusOf(_pdm),
+                Activity = activity,
                 UptimeSeconds = facts.UptimeSeconds,
             };
         }

@@ -13,8 +13,20 @@ namespace Ragtime.SolidWorks.Host
         /// <summary>The status request used by install.</summary>
         public static string StatusLine(string id) => Line(Build(id, "status", StatusDeadlineSeconds));
 
-        /// <summary>The internal host.shutdown request used by stop and uninstall.</summary>
-        public static string ShutdownLine(string id) => Line(Build(id, "host.shutdown", ShutdownDeadlineSeconds));
+        /// <summary>
+        /// The internal host.shutdown request used by stop and uninstall. With <paramref name="ifIdleSeconds"/> the host
+        /// stops only when it has been idle that long (<c>if_idle_seconds</c>); without it the stop is unconditional.
+        /// </summary>
+        public static string ShutdownLine(string id, int? ifIdleSeconds = null)
+        {
+            var request = Build(id, "host.shutdown", ShutdownDeadlineSeconds);
+            if (ifIdleSeconds is int seconds)
+            {
+                ((JObject)request["arguments"]!)["if_idle_seconds"] = WireJson.Value(seconds);
+            }
+
+            return Line(request);
+        }
 
         private static string Line(JObject request) => ResponseEnvelope.ToLine(request);
 

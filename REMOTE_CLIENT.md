@@ -61,6 +61,10 @@ Key-plus-password or interactive authentication requirements can prevent unatten
 
 Check the target's service/task state and outbound HTTPS connectivity. Reconnection restores the transport; it does not replay interrupted commands. Check command outcomes before retrying operations that may have changed data.
 
+## Tunnel client versions
+
+A tunnel client reports its version when it connects. The pairing panel shows a "Tunnel client: version …" line, which says when the version is older or unknown. The tool card shows **Tunnel client outdated** for such a client; clients installed before this check report no version. The tunnel keeps working. Ragtime cannot update tunnel clients yet.
+
 ## Remove access
 
 Revoke the pairing or delete the tool in Ragtime to stop its managed transport. Revocation cannot remove a key file on a machine that is offline. Shared OpenSSH installations and unrelated keys remain intact.

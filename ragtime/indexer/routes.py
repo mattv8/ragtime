@@ -398,6 +398,7 @@ from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_
 from ragtime.indexer.service import UPLOAD_TMP_DIR, indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.tool_health import tool_health_monitor
+from ragtime.indexer.tool_runtime_fields import with_runtime_fields
 from ragtime.indexer.tool_selection import intersect_tool_ids, require_valid_tool_selection_mode, resolve_effective_tool_ids
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
@@ -2629,7 +2630,7 @@ async def normalize_http_api_openapi(
 async def list_tool_configs(enabled_only: bool = False, _user: User = Depends(require_admin)):
     """List all tool configurations. Admin only."""
     tools = await repository.list_tool_configs()
-    return [_with_pdm_link(tool, tools) for tool in tools if not enabled_only or tool.enabled]
+    return [with_runtime_fields(_with_pdm_link(tool, tools)) for tool in tools if not enabled_only or tool.enabled]
 
 
 # =========================================================================
@@ -3042,8 +3043,8 @@ async def get_tool_config(tool_id: str, _user: User = Depends(require_admin)):
     if config is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
     if config.tool_type == ToolType.SOLIDWORKS:
-        return _with_pdm_link(config, await repository.list_tool_configs())
-    return config
+        config = _with_pdm_link(config, await repository.list_tool_configs())
+    return with_runtime_fields(config)
 
 
 @router.put("/tools/{tool_id}", response_model=ToolConfig, tags=["Tools"])

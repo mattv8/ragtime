@@ -7,6 +7,7 @@ import {
   type SolidworksHostStatus,
 } from '../api/solidworks';
 import { deferred } from '../testHelpers/deferred';
+import type { SolidworksHostAutoUpdate } from '../types/api';
 import { SolidWorksHostPanel } from './SolidWorksHostPanel';
 
 vi.mock('../api/solidworks', async (importOriginal) => {
@@ -132,6 +133,122 @@ afterEach(() => {
 });
 
 describe('SolidWorksHostPanel states', () => {
+  it.each(['off', 'pending', 'updating', 'failed', 'current', 'newer'] as const)(
+    'shows the correct auto-update line for %s',
+    async (state) => {
+      const auto_update: SolidworksHostAutoUpdate = {
+        enabled: state !== 'off',
+        state,
+        installed_version: '0.1.0',
+        target_version: '0.2.0',
+        reason: null,
+        last_attempt_at: null,
+        next_attempt_at: null,
+        message: null,
+      };
+      getStatus.mockResolvedValue({ ...ST_UPDATE, auto_update });
+      renderPanel();
+      await waitFor(() => expect(panelState()).toBe('running_update'));
+      const line = document.getElementById('solidworks-host-auto-update');
+      if (state === 'current' || state === 'newer') expect(line).toBeNull();
+      else expect(line?.getAttribute('data-sw-auto-update')).toBe(state);
+      expect(
+        (screen.getByRole('button', { name: /Update host/i }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    },
+  );
+
+  it('hides off when no update is available', async () => {
+    getStatus.mockResolvedValue({
+      ...ST_RUNNING,
+      auto_update: {
+        enabled: false,
+        state: 'off',
+        installed_version: null,
+        target_version: null,
+        reason: null,
+        last_attempt_at: null,
+        next_attempt_at: null,
+        message: null,
+      },
+    });
+    renderPanel();
+    await waitFor(() => expect(panelState()).toBe('running_current'));
+    expect(document.getElementById('solidworks-host-auto-update')).toBeNull();
+  });
+
+  it.each([ST_NO_SESSION, ST_NOT_RESPONDING])(
+    'hides off when an update is available but the host is not running',
+    async (status) => {
+      getStatus.mockResolvedValue({
+        ...status,
+        update_available: true,
+        auto_update: {
+          enabled: false,
+          state: 'off',
+          installed_version: '0.1.0',
+          target_version: '0.2.0',
+          reason: null,
+          last_attempt_at: null,
+          next_attempt_at: null,
+          message: null,
+        },
+      });
+      renderPanel();
+      await waitFor(() => expect(panelState()).not.toBe('checking'));
+      expect(document.getElementById('solidworks-host-auto-update')).toBeNull();
+    },
+  );
+
+  it('renders failure timestamps as time elements and preserves the message', async () => {
+    getStatus.mockResolvedValue({
+      ...ST_UPDATE,
+      auto_update: {
+        enabled: true,
+        state: 'failed',
+        installed_version: '0.1.0',
+        target_version: '0.2.0',
+        reason: null,
+        last_attempt_at: '2020-01-01T12:00:00Z',
+        next_attempt_at: '2099-01-01T12:00:00Z',
+        message: 'Try later.',
+      },
+    });
+    renderPanel();
+    await waitFor(() =>
+      expect(document.querySelectorAll('#solidworks-host-auto-update time')).toHaveLength(2),
+    );
+    expect(document.getElementById('solidworks-host-auto-update')?.textContent).toContain(
+      'Try later.',
+    );
+    const times = document.querySelectorAll('#solidworks-host-auto-update time');
+    expect(times[0].getAttribute('datetime')).toBe('2020-01-01T12:00:00Z');
+    expect(times[1].getAttribute('datetime')).toBe('2099-01-01T12:00:00Z');
+  });
+
+  it.each(['updating', 'pending', 'failed'] as const)(
+    'polls a running host only when %s is updating',
+    async (state) => {
+      vi.useFakeTimers();
+      getStatus.mockResolvedValue({
+        ...ST_UPDATE,
+        auto_update: {
+          enabled: true,
+          state,
+          installed_version: '0.1.0',
+          target_version: '0.2.0',
+          reason: null,
+          last_attempt_at: null,
+          next_attempt_at: null,
+          message: null,
+        },
+      });
+      renderPanel();
+      await flush();
+      await advance(10000);
+      expect(getStatus).toHaveBeenCalledTimes(state === 'updating' ? 2 : 1);
+    },
+  );
   it('blocked without a saved connection: no request, no buttons, onStatusChange(null)', () => {
     const onStatusChange = vi.fn();
     renderPanel({ toolId: null, connectionReady: false, onStatusChange });

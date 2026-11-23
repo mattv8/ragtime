@@ -222,6 +222,12 @@ namespace Ragtime.SolidWorks.Core
 
     public interface IPdmGateway
     {
+        /// <summary>
+        /// True while a PDM item whose caller gave up (timed out) is still running on the PDM thread. Never blocks
+        /// and never throws.
+        /// </summary>
+        bool IsBusy { get; }
+
         /// <summary>No login, no network wait; safe on every status request. Never throws.</summary>
         PdmClientFacts GetClientFacts();
 
