@@ -1,10 +1,13 @@
-# SolidWorks host
+# SolidWorks agent
+
+The program is called the SolidWorks agent in Ragtime's interface and docs. Its project, file, folder, task and JSON
+field names still say "host" (`Ragtime.SolidWorks.Host`, `ragtime-solidworks-host.exe`, `host_version`); they are unchanged.
 
 `RagtimeSolidWorks.sln` contains Core, Host, Runtime, Readers and Pdm projects in
-`src/`, and their tests in `tests/`. The host targets .NET Framework 4.8. Host version: 0.4.0
-(`Directory.Build.props`, copied into `manifest.json`).
+`src/`, and their tests in `tests/`. The agent (the Host project's executable) targets .NET Framework 4.8. Agent version: 0.4.0
+(`Directory.Build.props`, copied into `manifest.json` as `host_version`).
 
-`Ragtime.SolidWorks.Pdm` links the host to the SOLIDWORKS PDM client API. It uses the PDM interop types embedded
+`Ragtime.SolidWorks.Pdm` links the agent to the SOLIDWORKS PDM client API. It uses the PDM interop types embedded
 from the compile-time NuGet reference `SolidWorks.EPDM.Interop.epdm` 32.1.0; nothing from that package is
 redistributed, so the zip contains no `EPDM*.dll` (`build-host-zip.sh` fails if one appears). The PDM client must be
 installed on the target computer for the `pdm.*` operations; without it they answer `client_missing` and
@@ -16,7 +19,7 @@ bound to the tool and to the exact check-out: it is valid only while the file is
 on the same computer at the same local path, and it expires 24 hours after it was made. Check-in with
 `keep_checked_out` renews it. Only valid claims let the tool check in, change or undo a file; anything else is refused
 with `not_checked_out_by_tool`. Records that do not parse, including the old `vault|fileId` lines, are skipped, so
-those files have no claim. A missing or corrupt file starts empty; the host keeps at most 10,000 claims and drops the
+those files have no claim. A missing or corrupt file starts empty; the agent keeps at most 10,000 claims and drops the
 oldest.
 
 Residual limit: a person who undoes and checks out the same file again on the same computer, at the same local path,
@@ -25,10 +28,10 @@ within 24 hours and without a tool call in between, looks the same as the tool's
 The work folder, `%LOCALAPPDATA%\RagtimeSolidWorks\work\`, is created when `serve` starts. `pdm.file.add` may read
 from it as well as from the local view of an approved vault folder; any other source path is refused with
 `invalid_arguments`. Save new models there or straight into an approved vault folder. If the folder cannot be created,
-the host logs it and `pdm.status` reports `work_folder: null`.
+the agent logs it and `pdm.status` reports `work_folder: null`.
 
 Security note: approved folders and the work folder protect against mistakes by the AI. They do not protect against
-other programs running as the same Windows user, which can talk to the host pipe directly.
+other programs running as the same Windows user, which can talk to the agent's pipe directly.
 
 ## Scripts
 
@@ -50,10 +53,10 @@ To retain the zip and manifest, mount an output directory and pass its path to
 When updating dependencies, regenerate all `packages.lock.json` files with a restore in a private SDK-container copy.
 Update `third-party-hashes.txt` from the pinned NuGet DLLs and review the changed hashes.
 
-On Windows, unzip the host into `%LOCALAPPDATA%\RagtimeSolidWorks\host` and run
+On Windows, unzip the agent package into `%LOCALAPPDATA%\RagtimeSolidWorks\host` and run
 `ragtime-solidworks-host.exe install` as the SolidWorks user in their desktop session.
 
-`ragtime-solidworks-host.exe stop --if-idle <seconds>` (0 to 86400) stops the host only when no work is running, no instance is busy, no background instance it owns has documents open, no PDM item is still running, and the host has been idle for that many seconds. Exit codes: 0 stopped, or not running; 3 busy, with the reasons printed as JSON and the host still running; 2 error, when the host was not confirmed idle or stopped. Plain `stop` ignores the idle rules.
+`ragtime-solidworks-host.exe stop --if-idle <seconds>` (0 to 86400) stops the agent only when no work is running, no instance is busy, no background instance it owns has documents open, no PDM item is still running, and the agent has been idle for that many seconds. Exit codes: 0 stopped, or not running; 3 busy, with the reasons printed as JSON and the agent still running; 2 error, when the agent was not confirmed idle or stopped. Plain `stop` ignores the idle rules.
 
 `ragtime-solidworks-host.exe version` prints `host_version`, `protocol` and `features`. Ragtime uses the idle gate only when `features` lists `stop-if-idle`.
 

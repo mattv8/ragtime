@@ -5,6 +5,9 @@ sketch geometry and constraints, dimensions, mates, components, custom propertie
 properties. Results are JSON, with no screenshots. Read operations never write SolidWorks documents;
 `script.run` can build or edit models when the tool allows scripts (see `scripts`).
 
+The **SolidWorks agent** is the Ragtime program on the Windows machine that does the SolidWorks work for this
+tool. In this guide the term always means that program, never you.
+
 ## Call shape
 
 Every call goes to the same tool with an `operation` and optional `arguments`:
@@ -18,8 +21,8 @@ Every call goes to the same tool with an `operation` and optional `arguments`:
 ## First steps
 
 1. `guide`: read this file (or another topic, see the index below).
-2. `describe`: the exact operation list with argument schemas, from the installed host.
-3. `status`: is the host running, which SolidWorks versions are installed, which instances exist.
+2. `describe`: the exact operation list with argument schemas, from the installed SolidWorks agent.
+3. `status`: is the SolidWorks agent running, which SolidWorks versions are installed, which instances exist.
 4. `documents.list` to see open documents, or `document.open` with a local path.
 5. Then use the topic-specific operations. Read `model.summary` before listing large models.
 
@@ -31,7 +34,8 @@ Every call goes to the same tool with an `operation` and optional `arguments`:
 
 - `ok` true: the data is in `result`.
 - `ok` false: `error.code` names the problem, `error.message` says it in one sentence,
-  `error.details` may add facts. `host` shows the SolidWorks instance involved, if any.
+  `error.details` may add facts. The `host` field describes the SolidWorks agent and shows the SolidWorks instance
+  involved, if any.
 - Errors are returned, not raised. Read `error.code` and act on the table below.
 
 ## Units
@@ -61,9 +65,9 @@ before you answer: millimetres = metres x 1000, inches = metres / 0.0254, degree
 
 | Code | Meaning and action |
 |---|---|
-| `host_not_running` | Host is not installed or did not start. Tell the user to check the tool's host panel; do not retry in a loop. |
-| `host_updating` | Ragtime is updating the SolidWorks host. Tell the user; retry after a few minutes. Do not loop. |
-| `host_stopping` | The host is stopping for an update or restart. Retry in a minute. |
+| `host_not_running` | The SolidWorks agent is not installed or did not start. Tell the user to check the SolidWorks agent panel in the tool's settings; do not retry in a loop. |
+| `host_updating` | Ragtime is updating the SolidWorks agent. Tell the user; retry after a few minutes. Do not loop. |
+| `host_stopping` | The SolidWorks agent is stopping for an update or restart. Retry in a minute. |
 | `no_interactive_session` | The Windows account has no desktop session. Ask the user to sign in on that machine. |
 | `version_not_installed` | The pinned SolidWorks year is not installed. Ask the user to change the tool's version. |
 | `version_mismatch` | Attach mode: the running SolidWorks is not the pinned year. Ask the user to start the right one. |

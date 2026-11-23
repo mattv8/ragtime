@@ -6540,8 +6540,8 @@ export function ToolWizard({
       <p className="wizard-help">
         {toolType === 'solidworks'
           ? connectionMode === 'quick'
-            ? 'Connect to the Windows machine that has SolidWorks installed. Run the command as the Windows account that works in SolidWorks. The next step installs a small host program for that account. To pair a different account, use the (i) button.'
-            : 'Connect to the Windows machine that has SolidWorks installed with your own SSH details. The next step installs a small host program for that account.'
+            ? 'Connect to the Windows machine that has SolidWorks installed. Run the command as the Windows account that works in SolidWorks. The next step installs the SolidWorks agent, a small Ragtime program, for that account. To pair a different account, use the (i) button.'
+            : 'Connect to the Windows machine that has SolidWorks installed with your own SSH details. The next step installs the SolidWorks agent, a small Ragtime program, for that account.'
           : 'Connect to a remote server via SSH to run shell commands.'}
       </p>
       <div className="connection-tabs" role="group" aria-label="Connection method">
@@ -7653,13 +7653,13 @@ export function ToolWizard({
                   ? `Paired machine ${sshConfig.host}`
                   : `${sshConfig.user}@${sshConfig.host}:${sshConfig.port || 22}`}
               </p>
-              {solidworksHostStatus?.running === true && <p>SolidWorks host: running</p>}
+              {solidworksHostStatus?.running === true && <p>SolidWorks agent: running</p>}
               {solidworksHostStatus?.running === false && (
                 <p className="sw-message" data-tone="warning">
                   <AlertTriangle className="sw-message-icon" size={14} aria-hidden="true" />
                   <span>
-                    SolidWorks host: not running yet. Calls fail until the host is installed and the
-                    account is logged in.
+                    SolidWorks agent: not running yet. Calls fail until the agent is installed and
+                    the account is logged in.
                   </span>
                 </p>
               )}
@@ -7676,7 +7676,7 @@ export function ToolWizard({
                   : `Background instance, up to ${solidworksOptions.max_instances} at a time, closed after ${(solidworksOptions.idle_shutdown_seconds ?? 900) / 60} minutes idle`}
               </p>
               <p data-sw-review-row="host-updates">
-                Host updates:{' '}
+                Agent updates:{' '}
                 {solidworksOptions.auto_update_host !== false
                   ? 'Automatic when idle'
                   : 'Manual only'}
@@ -7745,7 +7745,7 @@ export function ToolWizard({
             className="wizard-content sw-step"
           >
             <p className="wizard-help">
-              Install the host, choose how SolidWorks starts, then test.
+              Install the agent, choose how SolidWorks starts, then test.
             </p>
             <SolidWorksHostPanel
               toolId={existingTool?.id ?? createdToolId}

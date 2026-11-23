@@ -14,7 +14,7 @@ from ragtime.solidworks.protocol import SolidworksProtocolError, encode_request,
 
 TransportErrorKind = Literal["ssh_unreachable", "ssh_auth_failed", "timeout", "no_response"]
 SOLIDWORKS_MAX_OUTPUT_BYTES = 1024 * 1024
-OUTPUT_LIMIT_MESSAGE = "The SolidWorks host returned too much output."
+OUTPUT_LIMIT_MESSAGE = "The SolidWorks agent returned too much output."
 
 
 class SolidworksTransportError(Exception):
@@ -61,12 +61,12 @@ def _classify_failure(result: SSHResult) -> SolidworksTransportError:
         return SolidworksTransportError("no_response", OUTPUT_LIMIT_MESSAGE, output_limit=True)
     stderr = result.stderr.lower()
     if "timed out" in stderr or "timeout" in stderr:
-        return SolidworksTransportError("timeout", "The SolidWorks host request timed out.")
+        return SolidworksTransportError("timeout", "The SolidWorks agent request timed out.")
     if "ssh authentication failed" in stderr or "authenticationexception" in stderr:
         return SolidworksTransportError("ssh_auth_failed", "SSH authentication failed; check the configured credentials.")
     if result.exit_code == -1 and (stderr.startswith("ssh ") or not stderr):
-        return SolidworksTransportError("ssh_unreachable", "SSH connection failed; check the host and connection.")
-    return SolidworksTransportError("no_response", "The SolidWorks host did not return a valid response.")
+        return SolidworksTransportError("ssh_unreachable", "SSH connection failed; check the SSH host and connection.")
+    return SolidworksTransportError("no_response", "The SolidWorks agent did not return a valid response.")
 
 
 class SshSolidworksTransport:
@@ -87,9 +87,9 @@ class SshSolidworksTransport:
         except paramiko.AuthenticationException:
             raise SolidworksTransportError("ssh_auth_failed", "SSH authentication failed; check the configured credentials.") from None
         except TimeoutError:
-            raise SolidworksTransportError("timeout", "The SolidWorks host request timed out.") from None
+            raise SolidworksTransportError("timeout", "The SolidWorks agent request timed out.") from None
         except (OSError, ValueError, paramiko.SSHException):
-            raise SolidworksTransportError("ssh_unreachable", "SSH connection failed; check the host and connection.") from None
+            raise SolidworksTransportError("ssh_unreachable", "SSH connection failed; check the SSH host and connection.") from None
         try:
             return parse_response(result.stdout)
         except SolidworksProtocolError:

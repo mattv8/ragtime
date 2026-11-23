@@ -86,7 +86,7 @@ namespace Ragtime.SolidWorks.Core
             {
                 throw HostError.Coded(
                     ErrorCodes.ProtocolMismatch,
-                    $"This host speaks protocol {ProtocolInfo.Version}, not {received}.",
+                    $"This SolidWorks agent speaks protocol {ProtocolInfo.Version}, not {received}.",
                     new JObject
                     {
                         ["expected"] = WireJson.Value(ProtocolInfo.Version),

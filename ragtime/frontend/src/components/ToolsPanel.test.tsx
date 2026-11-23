@@ -729,7 +729,7 @@ describe('ToolsPanel', () => {
     );
   });
 
-  describe('host update and tunnel client badges', () => {
+  describe('agent update and tunnel client badges', () => {
     const hostUpdate = (
       overrides: Partial<SolidworksHostAutoUpdate> = {},
     ): SolidworksHostAutoUpdate => ({
@@ -774,7 +774,7 @@ describe('ToolsPanel', () => {
         ),
       );
 
-    it('shows a pending host update badge with the installed and target versions and reason', async () => {
+    it('shows a pending agent update badge with the installed and target versions and reason', async () => {
       apiMock.listToolConfigs.mockResolvedValue([
         solidworksTool('sw-pending', 'SW pending', {
           solidworks_host_update: hostUpdate({ reason: 'documents_open' }),
@@ -784,11 +784,11 @@ describe('ToolsPanel', () => {
 
       const card = await cardFor('SW pending');
       const badge = card.querySelector('[data-tool-badge="host-update-pending"]') as HTMLElement;
-      expect(badgeLabel(badge)).toBe('Host update pending');
+      expect(badgeLabel(badge)).toBe('Agent update pending');
       expect(badge.className).toBe('tool-badge');
       expect(badge.tabIndex).toBe(0);
       const detail =
-        'Version 0.3.0 is running; 0.4.0 will be installed automatically. A document is open in a SolidWorks the host started. Ragtime updates the host after that instance closes.';
+        'Version 0.3.0 is running; 0.4.0 will be installed automatically. A document is open in a SolidWorks instance the agent started. Ragtime updates the agent after that instance closes.';
       expect(badge.parentElement?.getAttribute('data-popover-content')).toBe(detail);
       expect(badgeDetail(badge)).toBe(detail);
     });
@@ -803,14 +803,14 @@ describe('ToolsPanel', () => {
 
       const card = await cardFor('SW updating');
       const badge = card.querySelector('[data-tool-badge="host-updating"]') as HTMLElement;
-      expect(badgeLabel(badge)).toBe('Updating host…');
+      expect(badgeLabel(badge)).toBe('Updating agent…');
       expect(badge.className).toBe('tool-badge');
       expect(badge.tabIndex).toBe(0);
       expect(badge.querySelector('.rc-polling-indicator')?.getAttribute('aria-hidden')).toBe(
         'true',
       );
       const detail =
-        'Ragtime is updating the host to version 0.4.0. Requests wait until it finishes.';
+        'Ragtime is updating the agent to version 0.4.0. Requests wait until it finishes.';
       expect(badge.parentElement?.getAttribute('data-popover-content')).toBe(detail);
       expect(badgeDetail(badge)).toBe(detail);
     });
@@ -819,7 +819,7 @@ describe('ToolsPanel', () => {
       const failedUpdate = hostUpdate({
         state: 'failed',
         reason: null,
-        message: 'The installer could not replace the host.',
+        message: 'The installer could not replace the agent.',
         last_attempt_at: null,
         next_attempt_at: null,
       });
@@ -830,16 +830,16 @@ describe('ToolsPanel', () => {
 
       const card = await cardFor('SW failed');
       const badge = card.querySelector('[data-tool-badge="host-update-failed"]') as HTMLElement;
-      expect(badgeLabel(badge)).toBe('Host update failed');
+      expect(badgeLabel(badge)).toBe('Agent update failed');
       expect(badge.className).toBe('tool-badge badge-warning');
       expect(badge.tabIndex).toBe(0);
-      const detail = `${hostUpdateFailureText(failedUpdate)} Open the tool to update the host yourself.`;
-      expect(detail).toContain('The installer could not replace the host.');
+      const detail = `${hostUpdateFailureText(failedUpdate)} Open the tool to update the agent yourself.`;
+      expect(detail).toContain('The installer could not replace the agent.');
       expect(badge.parentElement?.getAttribute('data-popover-content')).toBe(detail);
       expect(badgeDetail(badge)).toBe(detail);
     });
 
-    it('shows at most one host update badge per SolidWorks tool', async () => {
+    it('shows at most one agent update badge per SolidWorks tool', async () => {
       apiMock.listToolConfigs.mockResolvedValue([
         solidworksTool('sw-one', 'SW one', {
           solidworks_host_update: hostUpdate({ state: 'failed', reason: null }),
@@ -858,7 +858,7 @@ describe('ToolsPanel', () => {
       ['current', hostUpdate({ state: 'current', reason: null })],
       ['newer', hostUpdate({ state: 'newer', reason: null })],
       ['absent', null],
-    ])('shows no host update badge when the host state is %s', async (label, update) => {
+    ])('shows no agent update badge when the agent state is %s', async (label, update) => {
       const name = `SW ${label}`;
       apiMock.listToolConfigs.mockResolvedValue([
         solidworksTool('sw-quiet', name, { solidworks_host_update: update }),
@@ -869,7 +869,7 @@ describe('ToolsPanel', () => {
       expect(hostBadgesIn(card)).toHaveLength(0);
     });
 
-    it('never shows a host update badge for a tool that is not SolidWorks', async () => {
+    it('never shows an agent update badge for a tool that is not SolidWorks', async () => {
       apiMock.listToolConfigs.mockResolvedValue([
         { ...ungroupedTool, name: 'Plain shell', solidworks_host_update: hostUpdate() },
       ]);

@@ -469,7 +469,7 @@ namespace Ragtime.SolidWorks.Runtime
             {
                 throw HostError.Coded(
                     failureCode,
-                    "The host could not create its session for this SolidWorks instance.",
+                    "The SolidWorks agent could not create its session for this SolidWorks instance.",
                     new JObject { ["exception_type"] = WireJson.Value(error.GetType().Name) });
             }
         }

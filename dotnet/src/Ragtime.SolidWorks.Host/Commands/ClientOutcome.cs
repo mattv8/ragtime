@@ -45,7 +45,7 @@ namespace Ragtime.SolidWorks.Host
                 id,
                 operation,
                 ErrorCodes.HostNotRunning,
-                "The host pipe is owned by another account, so it was not used and no host was started. Ask that account to stop its host.",
+                "The SolidWorks agent pipe is owned by another account, so it was not used and none was started. Ask that account to stop its SolidWorks agent.",
                 new JObject { ["pipe_owner_mismatch"] = WireJson.Value(true) },
                 HostInfo.ForHost(env.HostVersion),
                 elapsedMs);

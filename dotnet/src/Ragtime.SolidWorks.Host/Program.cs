@@ -66,7 +66,7 @@ namespace Ragtime.SolidWorks.Host
                     null,
                     HostEnvironment.ReadHostVersion(),
                     ErrorCodes.InternalError,
-                    "The host tool failed unexpectedly. See host.log for details.",
+                    "The SolidWorks agent failed unexpectedly. See host.log for details.",
                     0)));
             }
 

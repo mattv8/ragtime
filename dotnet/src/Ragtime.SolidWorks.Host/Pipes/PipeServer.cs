@@ -362,7 +362,7 @@ namespace Ragtime.SolidWorks.Host
         {
             try
             {
-                var line = ResponseEnvelope.ToLine(ClientEnvelopes.Failure(null, null, _hostVersion, ErrorCodes.InternalError, "The host is busy.", 0));
+                var line = ResponseEnvelope.ToLine(ClientEnvelopes.Failure(null, null, _hostVersion, ErrorCodes.InternalError, "The SolidWorks agent is busy.", 0));
                 await SendAsync(client, line).ConfigureAwait(false);
             }
             catch (Exception)

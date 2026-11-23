@@ -263,7 +263,7 @@ describe('SolidWorksPdmReview', () => {
     expect(renderReview({ hostStatus })).toContain(sentence);
   });
 
-  it('says the machine is not checked when the host is not running', () => {
+  it('says the machine is not checked when the agent is not running', () => {
     expect(renderReview({ hostStatus: null })).toContain('Vault view on the machine: not checked');
   });
 

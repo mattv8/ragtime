@@ -63,9 +63,9 @@ async def host_artifact():
 async def host_download():
     artifact = get_host_artifact()
     if artifact is None:
-        raise HTTPException(status_code=503, detail="SolidWorks host artifact unavailable")
+        raise HTTPException(status_code=503, detail="SolidWorks agent package unavailable")
     if not verify_host_artifact(artifact):
-        raise HTTPException(status_code=503, detail="SolidWorks host artifact failed its integrity check")
+        raise HTTPException(status_code=503, detail="SolidWorks agent package failed its integrity check")
     return FileResponse(artifact.path, media_type="application/zip", filename=artifact.file_name)
 
 
@@ -80,7 +80,7 @@ async def install_host(tool_id: str):
     try:
         return await solidworks_service.install_host(config)
     except HostArtifactUnavailableError as exc:
-        raise HTTPException(status_code=503, detail="SolidWorks host artifact unavailable") from exc
+        raise HTTPException(status_code=503, detail="SolidWorks agent package unavailable") from exc
 
 
 @router.post("/tools/{tool_id}/host/uninstall")

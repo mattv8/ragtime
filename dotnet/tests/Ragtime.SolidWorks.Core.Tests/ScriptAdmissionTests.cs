@@ -163,7 +163,7 @@ namespace Ragtime.SolidWorks.Core.Tests
             context["allow_scripts"] = scripts;
             var response = await h.CallAsync("script.run", Arguments(), context);
             Assert.Equal(scripts ? "internal_error" : "scripts_not_allowed", (string?)response["error"]!["code"]);
-            Assert.Equal(scripts ? "Scripts are not available in this host." : "Scripts are not enabled for this tool.",
+            Assert.Equal(scripts ? "Scripts are not available in this SolidWorks agent." : "Scripts are not enabled for this tool.",
                 (string?)response["error"]!["message"]);
             Assert.Empty(h.Manager.Targets);
 

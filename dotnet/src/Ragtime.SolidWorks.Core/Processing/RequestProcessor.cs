@@ -143,7 +143,7 @@ namespace Ragtime.SolidWorks.Core
                     id,
                     operation,
                     ErrorCodes.InternalError,
-                    "The host failed while handling the request. See the host log.",
+                    "The SolidWorks agent failed while handling the request. See the SolidWorks agent log.",
                     new JObject { ["exception_type"] = WireJson.Value(exception.GetType().Name) },
                     HostInfo.ForHost(_hostVersion),
                     ElapsedSince(started)));
@@ -165,7 +165,7 @@ namespace Ragtime.SolidWorks.Core
                 {
                     if (_stopping)
                     {
-                        throw HostError.Coded(ErrorCodes.HostStopping, "The SolidWorks host is stopping for an update or restart. Try again in a minute.");
+                        throw HostError.Coded(ErrorCodes.HostStopping, "The SolidWorks agent is stopping for an update or restart. Try again in a minute.");
                     }
                     _inFlight++;
                     _activityGeneration++;
@@ -296,14 +296,14 @@ namespace Ragtime.SolidWorks.Core
                     if (_activityGeneration != generation)
                     {
                         if (attempt < 2) continue;
-                        throw HostError.Coded(ErrorCodes.HostBusy, "The SolidWorks host is in use.",
+                        throw HostError.Coded(ErrorCodes.HostBusy, "The SolidWorks agent is in use.",
                             new JObject { ["reasons"] = new JArray(HostIdleRule.RequestInFlight) });
                     }
 
                     var reasons = HostIdleRule.BlockingReasons(_inFlight, IdleSeconds(), threshold, instances, pdmBusy);
                     if (reasons.Count > 0)
                     {
-                        throw HostError.Coded(ErrorCodes.HostBusy, "The SolidWorks host is in use.",
+                        throw HostError.Coded(ErrorCodes.HostBusy, "The SolidWorks agent is in use.",
                             new JObject { ["reasons"] = new JArray(reasons) });
                     }
                     _stopping = true;
@@ -320,7 +320,7 @@ namespace Ragtime.SolidWorks.Core
         {
             if (_scriptRunner == null)
             {
-                throw HostError.Coded(ErrorCodes.InternalError, "Scripts are not available in this host.");
+                throw HostError.Coded(ErrorCodes.InternalError, "Scripts are not available in this SolidWorks agent.");
             }
             RequireInstalledPin(request.Operation, request.Context);
             var instance = ArgumentReader.OptionalString(request.Arguments, "instance");
@@ -396,7 +396,7 @@ namespace Ragtime.SolidWorks.Core
                 // Refused before any lookup: attach mode never closes a document, even one the host opened earlier.
                 throw HostError.InvalidArguments(
                     "document",
-                    "document.close is not available in attach mode. The host closes only the documents it opened in background mode.");
+                    "document.close is not available in attach mode. The SolidWorks agent closes only the documents it opened in background mode.");
             }
 
             var document = await ResolveDocumentAsync(
@@ -409,7 +409,7 @@ namespace Ragtime.SolidWorks.Core
             {
                 throw HostError.InvalidArguments(
                     "document",
-                    "Only documents that the host opened can be closed. This one was already open in SolidWorks, so it was left alone.");
+                    "Only documents that the SolidWorks agent opened can be closed. This one was already open in SolidWorks, so it was left alone.");
             }
 
             var run = await RunOnInstanceAsync(

@@ -29,7 +29,7 @@ const INSTANCE_MODES: ReadonlyArray<readonly [SolidworksInstanceMode, string, st
   [
     'background',
     'Background instance',
-    'The host starts its own hidden SolidWorks and closes it when idle. Best for a shared or unattended machine.',
+    'The agent starts its own hidden SolidWorks and closes it when idle. Best for a shared or unattended machine.',
   ],
   [
     'attach',
@@ -156,7 +156,7 @@ function timeoutError(draft: number): string {
 function versionHelp(pin: number | null, mode: SolidworksInstanceMode): string {
   if (pin === null) return 'Uses the newest SolidWorks found on the machine.';
   return mode === 'background'
-    ? `The host only starts SolidWorks ${pin}. Calls fail if it is not installed.`
+    ? `The agent only starts SolidWorks ${pin}. Calls fail if it is not installed.`
     : `Calls fail if the open SolidWorks is not ${pin}.`;
 }
 
@@ -179,7 +179,7 @@ export function SolidWorksOptionsPanel({
     ? {
         id: 'solidworks-version-warning',
         tone: 'info' as const,
-        text: 'Start the host to choose from installed versions.',
+        text: 'Start the agent to choose from installed versions.',
       }
     : pinNotInstalled
       ? {
@@ -299,7 +299,7 @@ export function SolidWorksOptionsPanel({
             max={MAX_INSTANCES_LIMIT}
             infoId="solidworks-max-instances-help"
             infoLabel="About max instances"
-            info="How many SolidWorks processes the host may run at once. Each uses memory and may use a licence seat. In testing, two instances under one Windows account used one floating licence; check your own licence terms."
+            info="How many SolidWorks processes the agent may run at once. Each uses memory and may use a licence seat. In testing, two instances under one Windows account used one floating licence; check your own licence terms."
             errorId="solidworks-max-instances-error"
             error={() => `Enter a whole number from 1 to ${MAX_INSTANCES_LIMIT}.`}
             onChange={(next) => update({ max_instances: next })}
@@ -344,30 +344,30 @@ export function SolidWorksOptionsPanel({
             aria-describedby="solidworks-auto-update-summary"
             onChange={(event) => update({ auto_update_host: event.target.checked })}
           />
-          Keep the host up to date
+          Keep the agent up to date
         </label>
-        <InfoPopover id="solidworks-auto-update-help" label="About host updates">
+        <InfoPopover id="solidworks-auto-update-help" label="About agent updates">
           <p>
-            When on, Ragtime updates the SolidWorks host by itself whenever this Ragtime server has
-            a newer host version than the one installed.
+            When on, Ragtime updates the SolidWorks agent by itself whenever this Ragtime server has
+            a newer agent version than the one installed.
           </p>
           <p>
-            It only does this when the host is idle: no request is running, none ran in the last 5
-            minutes, and no document is open in a SolidWorks instance the host started.
+            It only does this when the agent is idle: no request is running, none ran in the last 5
+            minutes, and no document is open in a SolidWorks instance the agent started.
           </p>
           <p>
-            An update restarts the host and closes the SolidWorks instances it started. A SolidWorks
-            you started yourself is not touched. If an update fails, the previous version is
-            restored and Ragtime tries again later.
+            An update restarts the agent and closes the SolidWorks instances it started. A
+            SolidWorks you started yourself is not touched. If an update fails, the previous version
+            is restored and Ragtime tries again later.
           </p>
           <p>
-            When off, use <strong>Update host</strong> in the host panel. Saved with the tool.
+            When off, use <strong>Update agent</strong> in the agent panel. Saved with the tool.
           </p>
         </InfoPopover>
         <span id="solidworks-auto-update-summary" className="sw-switch-summary">
           {options.auto_update_host !== false
-            ? 'On: Ragtime updates the host when it is idle'
-            : 'Off: update the host yourself from the host panel'}
+            ? 'On: Ragtime updates the agent when it is idle'
+            : 'Off: update the agent yourself from the agent panel'}
         </span>
       </div>
     </fieldset>

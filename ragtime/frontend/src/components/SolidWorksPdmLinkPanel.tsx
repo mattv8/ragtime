@@ -220,15 +220,15 @@ function machineMessage(
   const views = pdm?.views ?? [];
   switch (state) {
     case 'unknown':
-      return 'Install the SolidWorks host and start it above to check the PDM client and vault view on this machine.';
+      return 'Install the SolidWorks agent and start it above to check the PDM client and vault view on this machine.';
     case 'client_missing':
-      return 'The PDM client is not installed on this machine. Vault search works, but the AI cannot get, open or change vault files here. Install the PDM client, then choose Check again in the SolidWorks host panel.';
+      return 'The PDM client is not installed on this machine. Vault search works, but the AI cannot get, open or change vault files here. Install the PDM client, then choose Check again in the SolidWorks agent panel.';
     case 'no_views':
-      return `The PDM client${version} is installed but has no vault view. Create a vault view for “${database}” with the PDM View Setup wizard, then choose Check again in the SolidWorks host panel.`;
+      return `The PDM client${version} is installed but has no vault view. Create a vault view for “${database}” with the PDM View Setup wizard, then choose Check again in the SolidWorks agent panel.`;
     case 'vault_mismatch':
       return `This machine has vault views for ${views.map((item) => item.vault).join(', ')}, but the linked PDM tool reads “${database}”. Choose the PDM tool for one of these vaults, or add a vault view for “${database}”. Files cannot be opened or changed here until the names match.`;
     case 'logged_out':
-      return `The vault view “${view?.vault ?? database}” is not logged in. Log in to it in the PDM client on this machine, then choose Check again in the SolidWorks host panel. The AI can open and change files only while the view is logged in.`;
+      return `The vault view “${view?.vault ?? database}” is not logged in. Log in to it in the PDM client on this machine, then choose Check again in the SolidWorks agent panel. The AI can open and change files only while the view is logged in.`;
     case 'ready':
       return null;
   }
@@ -389,7 +389,7 @@ export function SolidWorksPdmLinkPanel({
   const suggestion = linked ? null : findSuggestion(tools, views);
   const noFolders = allowChanges && value.approved_folders.length === 0;
   const machineShort: Record<Exclude<PdmMachineState, 'ready'>, string> = {
-    unknown: 'Start the SolidWorks host above to check this machine.',
+    unknown: 'Start the SolidWorks agent above to check this machine.',
     client_missing: 'Without the PDM client the AI cannot get, open or change vault files here.',
     no_views: 'No vault view on this machine, so the AI cannot open or change vault files.',
     vault_mismatch: `This machine has no vault view for “${database}”.`,
@@ -1118,7 +1118,7 @@ export function SolidWorksPdmLinkPanel({
                 <InfoPopover id="solidworks-pdm-identity-help" label="About the PDM user">
                   {user
                     ? 'The PDM user logged in to the vault view on this machine. Ragtime adds the tool name and the Ragtime user to each check-in comment. Use a dedicated PDM user with only the rights this tool needs.'
-                    : 'PDM records changes under the PDM user logged in to the vault view on this machine. Install the host and log in to the vault view to see which user that is.'}{' '}
+                    : 'PDM records changes under the PDM user logged in to the vault view on this machine. Install the SolidWorks agent and log in to the vault view to see which user that is.'}{' '}
                   {RIGHTS_CAVEAT}
                 </InfoPopover>
               </div>
@@ -1152,7 +1152,7 @@ export function SolidWorksPdmLinkPanel({
                     ? 'Save the connection first to browse the vault.'
                     : !linkedTool || loading || !linkedId || !database
                       ? 'Wait for the search index tool to load.'
-                      : 'Install and start the SolidWorks host and log in to the vault view to browse the vault.'}
+                      : 'Install and start the SolidWorks agent and log in to the vault view to browse the vault.'}
                 </p>
               )}
             </div>

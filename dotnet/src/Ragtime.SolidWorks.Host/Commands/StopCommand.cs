@@ -45,7 +45,7 @@ namespace Ragtime.SolidWorks.Host
                     null,
                     null,
                     ErrorCodes.OperationTimeout,
-                    "The SolidWorks host did not stop within 30 seconds.",
+                    "The SolidWorks agent did not stop within 30 seconds.",
                     watch.ElapsedMilliseconds);
             }
 
@@ -86,7 +86,7 @@ namespace Ragtime.SolidWorks.Host
                         null,
                         null,
                         ErrorCodes.HostNotRunning,
-                        "The SolidWorks host is running but does not answer. Nothing was stopped.",
+                        "The SolidWorks agent is running but does not answer. Nothing was stopped.",
                         watch.ElapsedMilliseconds),
                     ExitCodes.Failure);
             }
@@ -128,7 +128,7 @@ namespace Ragtime.SolidWorks.Host
                         id,
                         null,
                         ErrorCodes.OperationTimeout,
-                        "The SolidWorks host did not stop within 90 seconds.",
+                        "The SolidWorks agent did not stop within 90 seconds.",
                         watch.ElapsedMilliseconds),
                     ExitCodes.Failure);
             }

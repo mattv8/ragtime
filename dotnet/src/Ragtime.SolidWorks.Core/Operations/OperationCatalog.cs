@@ -21,11 +21,11 @@ namespace Ragtime.SolidWorks.Core
                 ProtocolInfo.Access.Read,
                 paged: false,
                 argumentsSchema: SchemaTypes.NoArguments(),
-                result: "Protocol, host version and the operations array (name, summary, access, paged, arguments, result)."),
+                result: "Protocol, host_version and the operations array (name, summary, access, paged, arguments, result)."),
 
             new OperationDefinition(
                 "status",
-                "Reports the host account, its desktop session, installed SolidWorks versions and the instances.",
+                "Reports the Windows account the SolidWorks agent runs as, its desktop session, installed SolidWorks versions and the instances.",
                 ProtocolInfo.Access.Read,
                 paged: false,
                 argumentsSchema: SchemaTypes.NoArguments(),
@@ -33,7 +33,7 @@ namespace Ragtime.SolidWorks.Core
 
             new OperationDefinition(
                 "documents.list",
-                "Lists the documents the host knows about in every instance.",
+                "Lists the documents the SolidWorks agent knows about in every instance.",
                 ProtocolInfo.Access.Read,
                 paged: true,
                 argumentsSchema: new ObjectSchema().Paged().Build(),
@@ -52,7 +52,7 @@ namespace Ragtime.SolidWorks.Core
 
             new OperationDefinition(
                 "document.close",
-                "Closes a document that the host opened. Never saves.",
+                "Closes a document that the SolidWorks agent opened. Never saves.",
                 ProtocolInfo.Access.Read,
                 paged: false,
                 argumentsSchema: new ObjectSchema()
@@ -285,13 +285,13 @@ namespace Ragtime.SolidWorks.Core
 
             new OperationDefinition(
                 "host.shutdown",
-                "Internal: asks the host to close its owned instances and exit.",
+                "Internal: asks the SolidWorks agent to close its owned instances and exit.",
                 ProtocolInfo.Access.Read,
                 paged: false,
                 argumentsSchema: new ObjectSchema()
-                    .Property("if_idle_seconds", SchemaTypes.Integer(0, 86400, "Refuse with host_busy unless the host has been idle this many seconds and nothing would be lost."))
+                    .Property("if_idle_seconds", SchemaTypes.Integer(0, 86400, "Refuse with host_busy unless the SolidWorks agent has been idle this many seconds and nothing would be lost."))
                     .Build(),
-                result: "{stopping: true}, or host_busy with details.reasons when if_idle_seconds is given and the host is in use.",
+                result: "{stopping: true}, or host_busy with details.reasons when if_idle_seconds is given and the SolidWorks agent is in use.",
                 isInternal: true),
         };
     }

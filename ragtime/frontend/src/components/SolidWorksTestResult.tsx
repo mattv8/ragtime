@@ -51,7 +51,7 @@ export function SolidWorksTestResult({ result }: SolidWorksTestResultProps) {
       {result.success ? (
         <dl id="solidworks-test-facts" className="rc-facts-list">
           <div>
-            <dt>Host version</dt>
+            <dt>Agent version</dt>
             <dd>{describeText(details.host_version)}</dd>
           </div>
           <div>

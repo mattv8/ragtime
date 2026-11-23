@@ -243,7 +243,7 @@ describe('SolidWorksPdmLinkPanel link states', () => {
   });
 
   it.each([
-    ['unknown', null, 'Start the SolidWorks host above to check this machine.'],
+    ['unknown', null, 'Start the SolidWorks agent above to check this machine.'],
     [
       'client_missing',
       hostWithPdm({ client_installed: false, client_version: null, views: [] }),
@@ -786,7 +786,7 @@ describe('vault rights integration', () => {
     [
       'sw-a',
       'pdm-a',
-      'Install and start the SolidWorks host and log in to the vault view to browse the vault.',
+      'Install and start the SolidWorks agent and log in to the vault view to browse the vault.',
     ],
   ])('explains why browsing is unavailable', async (toolId, pdmToolId, reason) => {
     renderPanel({
@@ -860,7 +860,7 @@ describe('vault rights integration', () => {
     expect(onRightsChange).toHaveBeenCalledTimes(finalCount);
   });
 
-  it('does not request when the host is unavailable and explains disabled browsing', async () => {
+  it('does not request when the agent is unavailable and explains disabled browsing', async () => {
     renderPanel({
       toolId: 'sw-a',
       value: { pdm_tool_id: 'pdm-a', approved_folders: LINKED_FOLDERS },
@@ -869,7 +869,7 @@ describe('vault rights integration', () => {
     await settled('linked_ready');
     expect(screen.queryByTestId('folder-browser')).toBeNull();
     expect(textOf('solidworks-pdm-folder-browse-help')).toContain(
-      'Install and start the SolidWorks host',
+      'Install and start the SolidWorks agent',
     );
     expect(checkRights).not.toHaveBeenCalled();
   });

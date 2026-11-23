@@ -19,13 +19,13 @@ _ERRORS = {
     "ssh_unreachable": _MESSAGES["ssh_unreachable"],
     "host_not_running": _MESSAGES["host_not_running"],
     "no_interactive_session": _MESSAGES["no_interactive_session"],
-    "operation_timeout": "The SolidWorks host did not answer in time. Try again.",
-    "host_updating": "The SolidWorks host is being updated. Try again in a few minutes.",
-    "host_update_required": "Update the SolidWorks host to 0.4.0 or later to check vault access.",
+    "operation_timeout": "The SolidWorks agent did not answer in time. Try again.",
+    "host_updating": "The SolidWorks agent is being updated. Try again in a few minutes.",
+    "host_update_required": "Update the SolidWorks agent to 0.4.0 or later to check vault access.",
     "pdm_not_found": "That vault folder no longer exists.",
     "stale_snapshot": "The folder changed while you were browsing. Reload it.",
     "invalid_arguments": "The vault path is not valid.",
-    "internal_error": "The SolidWorks host gave an unexpected answer.",
+    "internal_error": "The SolidWorks agent gave an unexpected answer.",
     "pdm_vault_invalid": "The search index's vault database name cannot be used as a vault name.",
 }
 _PDM_REASONS = {

@@ -338,9 +338,9 @@ function hostUpdateBadgeText(update: SolidworksHostAutoUpdate, kind: HostUpdateB
   if (kind === 'pending') return hostUpdatePendingText(update);
   if (kind === 'updating') {
     const target = update.target_version ? ` to version ${update.target_version}` : '';
-    return `Ragtime is updating the host${target}. Requests wait until it finishes.`;
+    return `Ragtime is updating the agent${target}. Requests wait until it finishes.`;
   }
-  return `${hostUpdateFailureText(update)} Open the tool to update the host yourself.`;
+  return `${hostUpdateFailureText(update)} Open the tool to update the agent yourself.`;
 }
 
 function tunnelClientOutdatedText(client: TunnelClientState): string {
@@ -384,19 +384,19 @@ interface HostUpdateBadgeProps {
 function HostUpdateBadge({ update, kind }: HostUpdateBadgeProps) {
   const badge = {
     pending: {
-      label: 'Host update pending',
+      label: 'Agent update pending',
       hook: 'host-update-pending',
       className: 'tool-badge',
       icon: <Icon name="refresh" size={12} />,
     },
     updating: {
-      label: 'Updating host…',
+      label: 'Updating agent…',
       hook: 'host-updating',
       className: 'tool-badge',
       icon: <span className="rc-polling-indicator" aria-hidden="true" />,
     },
     failed: {
-      label: 'Host update failed',
+      label: 'Agent update failed',
       hook: 'host-update-failed',
       className: 'tool-badge badge-warning',
       icon: <Icon name="alert-triangle" size={12} />,

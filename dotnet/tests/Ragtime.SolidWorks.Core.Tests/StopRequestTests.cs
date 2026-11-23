@@ -45,7 +45,7 @@ namespace Ragtime.SolidWorks.Core.Tests
         [Fact]
         public void BusyEnvelopeKeepsOnlyStringReasons()
         {
-            var line = "{\"protocol\":1,\"id\":\"stop-1\",\"ok\":false,\"error\":{\"code\":\"host_busy\",\"message\":\"The SolidWorks host is in use.\",\"details\":{\"reasons\":[\"request_in_flight\",5,\"documents_open\",null]}}}";
+            var line = "{\"protocol\":1,\"id\":\"stop-1\",\"ok\":false,\"error\":{\"code\":\"host_busy\",\"message\":\"The SolidWorks agent is in use.\",\"details\":{\"reasons\":[\"request_in_flight\",5,\"documents_open\",null]}}}";
 
             var reply = StopRequest.Interpret(line, "stop-1");
 
@@ -64,10 +64,10 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         [Theory]
         [InlineData("{\"id\":\"stop-1\",\"ok\":false,\"error\":{\"code\":\"host_stopping\",\"message\":\"Stopping.\"}}", "host_stopping", "Stopping.")]
-        [InlineData("{\"id\":\"stop-1\",\"ok\":false,\"error\":{\"code\":\"internal_error\"}}", "internal_error", "The SolidWorks host reported an error.")]
+        [InlineData("{\"id\":\"stop-1\",\"ok\":false,\"error\":{\"code\":\"internal_error\"}}", "internal_error", "The SolidWorks agent reported an error.")]
         [InlineData("{\"id\":\"stop-1\",\"ok\":false,\"error\":{\"code\":7,\"message\":\"x\"}}", "internal_error", "x")]
-        [InlineData("{\"id\":\"stop-1\",\"ok\":false,\"error\":{\"code\":\"pdm_error\",\"message\":3}}", "pdm_error", "The SolidWorks host reported an error.")]
-        [InlineData("{\"id\":\"stop-1\",\"ok\":false}", "internal_error", "The SolidWorks host reported an error.")]
+        [InlineData("{\"id\":\"stop-1\",\"ok\":false,\"error\":{\"code\":\"pdm_error\",\"message\":3}}", "pdm_error", "The SolidWorks agent reported an error.")]
+        [InlineData("{\"id\":\"stop-1\",\"ok\":false}", "internal_error", "The SolidWorks agent reported an error.")]
         public void OtherErrorsFailWithTheirCode(string line, string code, string message)
         {
             var reply = StopRequest.Interpret(line, "stop-1");
@@ -98,7 +98,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             Assert.Equal(StopReplyKind.Failed, reply.Kind);
             Assert.Equal("internal_error", reply.Code);
-            Assert.Equal("The SolidWorks host gave an unreadable answer.", reply.Message);
+            Assert.Equal("The SolidWorks agent gave an unreadable answer.", reply.Message);
         }
     }
 }

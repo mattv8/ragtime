@@ -13,7 +13,7 @@ namespace Ragtime.SolidWorks.Host
     /// </summary>
     internal static class CallCommand
     {
-        private const string IncompleteResponseMessage = "The host closed the connection before answering completely.";
+        private const string IncompleteResponseMessage = "The SolidWorks agent closed the connection before answering completely.";
         private static readonly TimeSpan PipeWait = TimeSpan.FromSeconds(20);
 
         public static int Run(CommandLine command, HostEnvironment env)
@@ -53,7 +53,7 @@ namespace Ragtime.SolidWorks.Host
             {
                 log.Write("call: refused an internal operation; nothing was sent and no host was started.");
                 return ClientOutcome.Print(
-                    ClientOutcome.Failure(env, id, operation, ErrorCodes.UnknownOperation, "The operation is internal to the host and cannot be called.", watch.ElapsedMilliseconds),
+                    ClientOutcome.Failure(env, id, operation, ErrorCodes.UnknownOperation, "The operation is internal to the SolidWorks agent and cannot be called.", watch.ElapsedMilliseconds),
                     ExitCodes.Failure);
             }
 
@@ -142,7 +142,7 @@ namespace Ragtime.SolidWorks.Host
                         id,
                         operation,
                         ErrorCodes.OperationTimeout,
-                        "The SolidWorks host did not answer within the request deadline plus 5 seconds.",
+                        "The SolidWorks agent did not answer within the request deadline plus 5 seconds.",
                         watch.ElapsedMilliseconds),
                     ExitCodes.Failure);
             }

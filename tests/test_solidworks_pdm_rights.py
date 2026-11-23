@@ -192,7 +192,7 @@ class PdmRightsTests(unittest.IsolatedAsyncioTestCase):
         response = await self.service.rights({}, "pdm", ["\\folder"])
         self.assertTrue(response["root"]["checked"])
         self.assertFalse(response["folders"][0]["checked"])
-        self.assertEqual(response["error"], {"code": "operation_timeout", "message": "The SolidWorks host did not answer in time. Try again."})
+        self.assertEqual(response["error"], {"code": "operation_timeout", "message": "The SolidWorks agent did not answer in time. Try again."})
 
     def test_error_mapping_never_echoes_details(self):
         for source, expected in [
@@ -225,10 +225,10 @@ class PdmRightsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_host_error_envelopes_are_mapped_without_secrets(self):
         cases = [
-            ("host_not_running", None, "host_not_running", "The SolidWorks host is not running or did not respond."),
+            ("host_not_running", None, "host_not_running", "The SolidWorks agent is not running or did not respond."),
             ("no_interactive_session", None, "no_interactive_session", "The account has no interactive desktop session."),
-            ("operation_timeout", None, "operation_timeout", "The SolidWorks host did not answer in time. Try again."),
-            ("unknown_operation", None, "host_update_required", "Update the SolidWorks host to 0.4.0 or later to check vault access."),
+            ("operation_timeout", None, "operation_timeout", "The SolidWorks agent did not answer in time. Try again."),
+            ("unknown_operation", None, "host_update_required", "Update the SolidWorks agent to 0.4.0 or later to check vault access."),
             ("pdm_unavailable", "client_missing", "pdm_unavailable", "The PDM client is not installed on this machine."),
             ("pdm_unavailable", "view_missing", "pdm_unavailable", "This machine has no vault view for the linked vault."),
             ("pdm_unavailable", "login_failed", "pdm_unavailable", "Logging in to the vault view failed. Log in once in the PDM client on this machine."),
@@ -236,7 +236,7 @@ class PdmRightsTests(unittest.IsolatedAsyncioTestCase):
             ("pdm_not_found", None, "pdm_not_found", "That vault folder no longer exists."),
             ("stale_snapshot", None, "stale_snapshot", "The folder changed while you were browsing. Reload it."),
             ("invalid_arguments", None, "invalid_arguments", "The vault path is not valid."),
-            ("unexpected", None, "internal_error", "The SolidWorks host gave an unexpected answer."),
+            ("unexpected", None, "internal_error", "The SolidWorks agent gave an unexpected answer."),
         ]
         for code, reason, expected, message in cases:
 
@@ -261,9 +261,9 @@ class PdmRightsTests(unittest.IsolatedAsyncioTestCase):
     async def test_transport_errors_are_mapped_without_secrets_in_logs(self):
         cases: list[tuple[TransportErrorKind, str, str]] = [
             ("ssh_auth_failed", "ssh_auth_failed", "SSH authentication failed; check the configured credentials."),
-            ("ssh_unreachable", "ssh_unreachable", "SSH connection failed; check the host and connection."),
-            ("timeout", "operation_timeout", "The SolidWorks host did not answer in time. Try again."),
-            ("no_response", "host_not_running", "The SolidWorks host is not running or did not respond."),
+            ("ssh_unreachable", "ssh_unreachable", "SSH connection failed; check the SSH host and connection."),
+            ("timeout", "operation_timeout", "The SolidWorks agent did not answer in time. Try again."),
+            ("no_response", "host_not_running", "The SolidWorks agent is not running or did not respond."),
         ]
         for kind, expected, message in cases:
             with (

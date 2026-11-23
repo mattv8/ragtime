@@ -7,15 +7,15 @@ import type {
 export type HostUpdateBadgeKind = 'pending' | 'updating' | 'failed';
 
 const WAITING_TEXT_BY_REASON: Record<SolidworksHostAutoUpdateReason, string> = {
-  in_use: 'The host is in use. Ragtime updates it after 5 minutes without requests.',
+  in_use: 'The agent is in use. Ragtime updates it after 5 minutes without requests.',
   documents_open:
-    'A document is open in a SolidWorks the host started. Ragtime updates the host after that instance closes.',
+    'A document is open in a SolidWorks instance the agent started. Ragtime updates the agent after that instance closes.',
   logged_off:
-    'No one is logged in as the host account. Ragtime updates the host once the host is running again.',
-  not_running: 'The host is not running. Ragtime updates it once it is running.',
-  busy: 'The host was busy when the update started. Ragtime tries again shortly.',
+    'No one is logged in to the Windows account the agent runs as. Ragtime updates the agent once it is running again.',
+  not_running: 'The agent is not running. Ragtime updates it once it is running.',
+  busy: 'The agent was busy when the update started. Ragtime tries again shortly.',
 };
-const WAITING_TEXT_WITHOUT_REASON = 'Ragtime updates the host when it is idle.';
+const WAITING_TEXT_WITHOUT_REASON = 'Ragtime updates the agent when it is idle.';
 
 const BADGE_KIND_BY_STATE: Partial<Record<SolidworksHostAutoUpdateState, HostUpdateBadgeKind>> = {
   pending: 'pending',
@@ -51,11 +51,11 @@ export function hostUpdateWaitingText(update: SolidworksHostAutoUpdate): string 
 }
 
 export const HOST_UPDATE_OFF_TEXT =
-  'Automatic updates are off for this tool. Choose Update host to update now.';
+  'Automatic updates are off for this tool. Choose Update agent to update now.';
 
 export function hostUpdateUpdatingText(update: SolidworksHostAutoUpdate): string {
   const version = update.target_version ? ` to version ${update.target_version}` : '';
-  return `Updating the host${version}… Requests wait until it finishes, usually a minute or two.`;
+  return `Updating the agent${version}… Requests wait until it finishes, usually a minute or two.`;
 }
 
 export function hostUpdateFailureParts(

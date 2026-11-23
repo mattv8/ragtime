@@ -14,7 +14,7 @@ namespace Ragtime.SolidWorks.Host
     /// </summary>
     internal static class InstallCommand
     {
-        private const string IncompleteResponseMessage = "The host closed the connection before answering completely.";
+        private const string IncompleteResponseMessage = "The SolidWorks agent closed the connection before answering completely.";
         private static readonly TimeSpan PipeWait = TimeSpan.FromSeconds(20);
         private static readonly TimeSpan StatusTimeout = TimeSpan.FromSeconds(20);
 
@@ -91,7 +91,7 @@ namespace Ragtime.SolidWorks.Host
             catch (TimeoutException)
             {
                 return ClientOutcome.Print(
-                    ClientOutcome.Failure(env, id, "status", ErrorCodes.OperationTimeout, "The SolidWorks host did not answer the status request in time.", watch.ElapsedMilliseconds),
+                    ClientOutcome.Failure(env, id, "status", ErrorCodes.OperationTimeout, "The SolidWorks agent did not answer the status request in time.", watch.ElapsedMilliseconds),
                     ExitCodes.Failure);
             }
             catch (Exception exception)

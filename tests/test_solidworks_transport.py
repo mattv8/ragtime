@@ -83,7 +83,7 @@ class SolidworksTransportTests(unittest.IsolatedAsyncioTestCase):
                 await self.transport.call(build_request("status", {}, {}), timeout_seconds=5)
         self.assertEqual(caught.exception.kind, "no_response")
         self.assertTrue(caught.exception.output_limit)
-        self.assertEqual(str(caught.exception), "The SolidWorks host returned too much output.")
+        self.assertEqual(str(caught.exception), "The SolidWorks agent returned too much output.")
 
     async def test_run_powershell_returns_result(self):
         result = SSHResult("ok", "", 0, True)

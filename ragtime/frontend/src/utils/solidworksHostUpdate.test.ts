@@ -32,18 +32,18 @@ function update(overrides: Partial<SolidworksHostAutoUpdate> = {}): SolidworksHo
 
 describe('hostUpdateWaitingText', () => {
   it.each<[SolidworksHostAutoUpdateReason | null, string]>([
-    ['in_use', 'The host is in use. Ragtime updates it after 5 minutes without requests.'],
+    ['in_use', 'The agent is in use. Ragtime updates it after 5 minutes without requests.'],
     [
       'documents_open',
-      'A document is open in a SolidWorks the host started. Ragtime updates the host after that instance closes.',
+      'A document is open in a SolidWorks instance the agent started. Ragtime updates the agent after that instance closes.',
     ],
     [
       'logged_off',
-      'No one is logged in as the host account. Ragtime updates the host once the host is running again.',
+      'No one is logged in to the Windows account the agent runs as. Ragtime updates the agent once it is running again.',
     ],
-    ['not_running', 'The host is not running. Ragtime updates it once it is running.'],
-    ['busy', 'The host was busy when the update started. Ragtime tries again shortly.'],
-    [null, 'Ragtime updates the host when it is idle.'],
+    ['not_running', 'The agent is not running. Ragtime updates it once it is running.'],
+    ['busy', 'The agent was busy when the update started. Ragtime tries again shortly.'],
+    [null, 'Ragtime updates the agent when it is idle.'],
   ])('reason %s', (reason, sentence) => {
     expect(hostUpdateWaitingText(update({ reason }))).toBe(sentence);
   });
@@ -61,12 +61,12 @@ describe('hostUpdateFailureText', () => {
           state: 'failed',
           last_attempt_at: LAST_ISO,
           next_attempt_at: futureNext,
-          message: 'The installer could not replace the host.',
+          message: 'The installer could not replace the agent.',
         }),
         NOW,
       ),
     ).toBe(
-      `Automatic update failed at ${last}. The installer could not replace the host. Ragtime tries again at ${futureNextText}.`,
+      `Automatic update failed at ${last}. The installer could not replace the agent. Ragtime tries again at ${futureNextText}.`,
     );
   });
 

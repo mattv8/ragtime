@@ -63,11 +63,11 @@ DEFAULT_TOOL_TIMEOUT_SECONDS = 100
 STATUS_TIMEOUT_CEILING_SECONDS = 60
 
 _MESSAGES = {
-    "ssh_unreachable": "SSH connection failed; check the host and connection.",
+    "ssh_unreachable": "SSH connection failed; check the SSH host and connection.",
     "ssh_auth_failed": "SSH authentication failed; check the configured credentials.",
-    "host_not_running": "The SolidWorks host is not running or did not respond.",
+    "host_not_running": "The SolidWorks agent is not running or did not respond.",
     "no_interactive_session": "The account has no interactive desktop session.",
-    "internal_error": "The SolidWorks host status could not be checked.",
+    "internal_error": "The SolidWorks agent status could not be checked.",
     "version_not_installed": "The configured SolidWorks version is not installed.",
 }
 PDM_VIEWS_WARNING = "The PDM vault view could not be checked."
@@ -131,7 +131,7 @@ def _status_timeout_seconds(config: dict) -> int:
 
 def _error(code: str) -> dict:
     if code in _HOST_ERROR_CODES and code not in _MESSAGES:
-        return {"code": code, "message": "The SolidWorks host could not report its status."}
+        return {"code": code, "message": "The SolidWorks agent could not report its status."}
     if code not in _MESSAGES:
         code = "host_not_running"
     return {"code": code, "message": _MESSAGES[code]}
@@ -374,4 +374,4 @@ class SolidworksHostStatusService:
                 error = _error("version_not_installed")
         if error:
             return False, error["message"], {"error_code": error["code"], **details}
-        return True, f"SolidWorks host {details['host_version']} is running as {details['account']}.", details
+        return True, f"SolidWorks agent {details['host_version']} is running as {details['account']}.", details

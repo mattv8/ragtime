@@ -181,7 +181,7 @@ namespace Ragtime.SolidWorks.Runtime
                 else
                 {
                     Log($"{record.Id}: pid {record.ProcessId} is not the process the host started; it was not killed");
-                    Finish(record, "no answer after a script; process not the host's");
+                    Finish(record, "no answer after a script; process not started by the SolidWorks agent");
                 }
 
                 return ScriptRecovery.Restarted;
@@ -230,12 +230,12 @@ namespace Ragtime.SolidWorks.Runtime
             Log($"shutdown: closing {toClose.Count} owned instance(s), releasing {attached.Count} attached instance(s)");
             foreach (var record in toClose)
             {
-                RunDetached(() => CloseAndFinishAsync(record, "host shutdown"));
+                RunDetached(() => CloseAndFinishAsync(record, "SolidWorks agent shutdown"));
             }
 
             foreach (var record in attached)
             {
-                Finish(record, "host shutdown");
+                Finish(record, "SolidWorks agent shutdown");
             }
 
             var limit = DateTime.UtcNow.AddMilliseconds(ShutdownWaitMilliseconds);
@@ -507,7 +507,7 @@ namespace Ragtime.SolidWorks.Runtime
                     await ProcessControl.KillAsync(process, Log).ConfigureAwait(false);
                     process.Dispose();
                 });
-                throw HostError.Coded(ErrorCodes.SolidworksNotRunning, "The SolidWorks host is shutting down.");
+                throw HostError.Coded(ErrorCodes.SolidworksNotRunning, "The SolidWorks agent is shutting down.");
             }
 
             var record = created;
@@ -1192,7 +1192,7 @@ namespace Ragtime.SolidWorks.Runtime
         {
             if (_shuttingDown || _disposed)
             {
-                throw HostError.Coded(ErrorCodes.SolidworksNotRunning, "The SolidWorks host is shutting down.");
+                throw HostError.Coded(ErrorCodes.SolidworksNotRunning, "The SolidWorks agent is shutting down.");
             }
         }
 

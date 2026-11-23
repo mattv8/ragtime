@@ -10,8 +10,8 @@ namespace Ragtime.SolidWorks.Core
         /// <summary>Largest idle condition, in seconds, that <c>stop --if-idle</c> accepts (one day).</summary>
         public const int MaxIfIdleSeconds = 86400;
 
-        private const string UnreadableAnswer = "The SolidWorks host gave an unreadable answer.";
-        private const string GenericError = "The SolidWorks host reported an error.";
+        private const string UnreadableAnswer = "The SolidWorks agent gave an unreadable answer.";
+        private const string GenericError = "The SolidWorks agent reported an error.";
 
         /// <summary>
         /// Parses the N of <c>--if-idle N</c>. Accepts ASCII digits only (no sign, spaces or exponent) with a value

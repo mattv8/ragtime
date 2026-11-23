@@ -220,6 +220,9 @@ class OverviewContentTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertIn(field, self.overview)
 
+    def test_overview_defines_the_solidworks_agent(self) -> None:
+        self.assertIn("The **SolidWorks agent** is the Ragtime program on the Windows machine", self.overview)
+
 
 class ContractCoverageTests(unittest.TestCase):
     def test_every_contract_operation_is_documented_in_some_topic(self) -> None:
@@ -250,11 +253,14 @@ class PdmTopicTests(unittest.TestCase):
 
     def test_pdm_topic_explains_unknown_operation_for_pdm(self) -> None:
         self.assertIn("`unknown_operation`", self.pdm)
-        self.assertIn("Update the SolidWorks host from the tool's host panel to use PDM operations.", self.pdm)
+        self.assertIn(
+            "Open the SolidWorks agent panel in the tool's settings and choose Update agent to use PDM operations.",
+            self.pdm,
+        )
 
-    def test_unknown_operation_row_points_to_the_host_panel(self) -> None:
+    def test_unknown_operation_row_points_to_the_agent_panel(self) -> None:
         row = next(line for line in self.pdm.splitlines() if line.startswith("| `unknown_operation` on `pdm.*`"))
-        self.assertIn("host panel", row)
+        self.assertIn("SolidWorks agent panel", row)
         self.assertIn("`host_updating`", row)
 
     def test_pdm_topic_states_the_hard_limits(self) -> None:
@@ -287,7 +293,7 @@ class PdmTopicTests(unittest.TestCase):
 
     def test_pdm_topic_states_discovery_and_read_path_rules(self) -> None:
         for phrase in (
-            "whenever the installed host supports them",
+            "whenever the installed SolidWorks agent",
             "answers `pdm_not_linked` without a link",
             "appear only when a link resolves",
             "printable Unicode",
@@ -370,6 +376,22 @@ class ScriptAwarenessTests(unittest.TestCase):
         for token in ("`script.run`", "`scripts_enabled`"):
             with self.subTest(token=token):
                 self.assertIn(token, overview)
+
+
+class SolidWorksAgentWordingTests(unittest.TestCase):
+    """LLM-facing guidance says "SolidWorks agent", never a bare "agent" (copy.md 1.3)."""
+
+    # Bold or quoted UI labels that keep the word "agent" verbatim (copy.md 1.3 item 2).
+    ALLOWED_AGENT_PHRASES = ("SolidWorks agent", "Keep the agent up to date", "Update agent")
+
+    def test_no_bare_agent_outside_the_allowed_phrases(self) -> None:
+        for path in sorted(GUIDANCE_DIR.glob("*.md")):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                remainder = line
+                for phrase in self.ALLOWED_AGENT_PHRASES:
+                    remainder = remainder.replace(phrase, "")
+                with self.subTest(file=path.name, line=number):
+                    self.assertIsNone(re.search(r"\bagent\b", remainder), line)
 
 
 class OverviewPointerTests(unittest.TestCase):

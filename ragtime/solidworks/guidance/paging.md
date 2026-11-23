@@ -16,7 +16,7 @@ returns one page:
 
 ## Byte budget
 
-The host also stops adding items when a page would exceed its size budget (about 32 KB of JSON).
+The SolidWorks agent (the Ragtime program on the Windows machine) also stops adding items when a page would exceed its size budget (about 32 KB of JSON).
 So a page can hold fewer items than `limit` even when more exist. It is not an error. Always
 follow `next_offset`, not `offset + limit`. A page always holds at least one item. If a single
 item is too large, the call fails with `result_too_large`.
@@ -28,7 +28,7 @@ several calls:
 
 1. First call: no `snapshot` argument. Note the `snapshot` from the response.
 2. Next calls: send the same `snapshot` with the next `offset`.
-3. If the model changed in between, the host returns `stale_snapshot` with the current hash.
+3. If the model changed in between, the SolidWorks agent returns `stale_snapshot` with the current hash.
    Restart the list from `offset` 0, without `snapshot`, and tell the user the model changed
    while you were reading.
 

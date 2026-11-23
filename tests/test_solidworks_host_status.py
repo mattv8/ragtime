@@ -298,6 +298,7 @@ class HostStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret", str(status))
         self.assertTrue(ok)
         self.assertIn("is running as", message)
+        self.assertTrue(message.startswith("SolidWorks agent "))
         assert details is not None
         self.assertNotIn("pdm_vault", details)
         self.assertEqual(len(transport.calls), 2)

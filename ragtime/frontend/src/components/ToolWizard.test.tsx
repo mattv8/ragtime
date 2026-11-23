@@ -2316,7 +2316,7 @@ describe('ToolWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     expect(screen.getByText('Read model data only', { exact: false })).toBeTruthy();
-    expect(screen.getByText('SolidWorks host: running')).toBeTruthy();
+    expect(screen.getByText('SolidWorks agent: running')).toBeTruthy();
     expect(screen.queryByText(/secret-value/)).toBeNull();
     expect(screen.queryByText(/Max results/)).toBeNull();
     expect(screen.queryByText(/Write operations/)).toBeNull();
@@ -2512,7 +2512,7 @@ describe('ToolWizard', () => {
     );
     expect(screen.getByText('Access to SolidWorks: Read model data only')).toBeTruthy();
     expect(document.querySelector('[data-sw-review-row="host-updates"]')?.textContent).toBe(
-      'Host updates: Automatic when idle',
+      'Agent updates: Automatic when idle',
     );
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
@@ -2527,7 +2527,7 @@ describe('ToolWizard', () => {
     );
   });
 
-  it.each([true, false])('reviews and saves host updates enabled=%s', async (enabled) => {
+  it.each([true, false])('reviews and saves agent updates enabled=%s', async (enabled) => {
     const tool = savedSolidworksTool();
     tool.connection_config = {
       ...(tool.connection_config as SolidworksConnectionConfig),
@@ -2537,7 +2537,7 @@ describe('ToolWizard', () => {
     await openSolidworksStep(tool, onSave);
     await openSolidworksReview();
     expect(document.querySelector('[data-sw-review-row="host-updates"]')?.textContent).toBe(
-      `Host updates: ${enabled ? 'Automatic when idle' : 'Manual only'}`,
+      `Agent updates: ${enabled ? 'Automatic when idle' : 'Manual only'}`,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
@@ -2846,7 +2846,7 @@ describe('ToolWizard', () => {
     expect(apiMock.updateToolConfig).not.toHaveBeenCalledWith('sw-draft', expect.anything());
   });
 
-  it('warns on Review with the warning icon when the host is not running, and stays plain when it is running', async () => {
+  it('warns on Review with the warning icon when the agent is not running, and stays plain when it is running', async () => {
     await openSolidworksStep();
     fireEvent.click(screen.getByRole('button', { name: 'Report host stopped' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -2856,8 +2856,8 @@ describe('ToolWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save Changes' })).toBeTruthy());
 
-    const line = screen.getByText(/SolidWorks host: not running yet\./);
+    const line = screen.getByText(/SolidWorks agent: not running yet\./);
     expect(line.closest('.sw-message')?.getAttribute('data-tone')).toBe('warning');
-    expect(screen.queryByText('SolidWorks host: running')).toBeNull();
+    expect(screen.queryByText('SolidWorks agent: running')).toBeNull();
   });
 });

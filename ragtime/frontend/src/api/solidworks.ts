@@ -179,12 +179,12 @@ const guidance: Record<string, { title: string; hint: string }> = {
     hint: 'Check that the machine is on, OpenSSH Server is running, and the credentials from the connection step are still valid.',
   },
   host_not_running: {
-    title: 'The host did not answer.',
-    hint: 'Install the host in the panel above and make sure this account is logged in to the machine.',
+    title: 'The agent did not answer.',
+    hint: 'Install the agent in the panel above and make sure this account is logged in to the machine.',
   },
   protocol_mismatch: {
-    title: 'The host and Ragtime do not match.',
-    hint: 'Update the host in the panel above.',
+    title: 'The agent and Ragtime do not match.',
+    hint: 'Update the agent in the panel above.',
   },
   no_interactive_session: {
     title: 'No desktop session.',
@@ -204,7 +204,7 @@ const guidance: Record<string, { title: string; hint: string }> = {
   },
   solidworks_start_failed: {
     title: 'SolidWorks did not start.',
-    hint: 'Check that SolidWorks and its licence server work for this account. The host log is %LOCALAPPDATA%\\RagtimeSolidWorks\\logs\\host.log.',
+    hint: 'Check that SolidWorks and its licence server work for this account. The agent log is %LOCALAPPDATA%\\RagtimeSolidWorks\\logs\\host.log.',
   },
   instance_timeout: {
     title: 'The call timed out.',

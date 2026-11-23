@@ -315,7 +315,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             self.config["connection_config"] = {"auto_update_host": False}
             result = await self.execute("missing")
             self.assertEqual(result["error"]["code"], "unknown_operation")
-            self.assertIn("host panel", result["error"]["message"])
+            self.assertIn("SolidWorks agent panel", result["error"]["message"])
 
     async def test_describe_cache_and_write_gate(self):
         describe = await self.execute("describe")
@@ -456,9 +456,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.transport.response_overrides = {"id": "someone-else"}
         response = await self.execute("describe")
         self.assertEqual(response["error"]["code"], "internal_error")
-        self.assertEqual(response["error"]["message"], "The host answered a different request.")
+        self.assertEqual(response["error"]["message"], "The SolidWorks agent answered a different request.")
         self.transport.response_overrides = {"operation": "other"}
-        self.assertEqual((await self.execute("status"))["error"]["message"], "The host answered a different request.")
+        self.assertEqual((await self.execute("status"))["error"]["message"], "The SolidWorks agent answered a different request.")
         self.transport.response_overrides = {}
         self.assertTrue((await self.execute("change"))["ok"])
         self.assertEqual(self.forwarded(), ["describe", "status", "describe", "change"])
@@ -535,7 +535,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             patch.object(pdm_link, "resolve_actor_label", AsyncMock(return_value="alice")),
         ):
             response = await self.execute("pdm.file.checkout")
-            self.assertEqual(response["error"]["message"], "Update the SolidWorks host to use PDM operations.")
+            self.assertEqual(response["error"]["message"], "Update the SolidWorks agent to use PDM operations.")
             self.transport.operations = [{"name": "pdm.file.checkout", "access": "write"}]
             await self.execute("describe")
             self.transport.calls.clear()
@@ -602,7 +602,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.execute("pdm.status"))["error"]["code"], "pdm_not_linked")
         self.load_settings.side_effect = RuntimeError("secret")
         response = await self.execute("pdm.status")
-        self.assertEqual(response["error"]["message"], "The operation failed; check the host configuration.")
+        self.assertEqual(response["error"]["message"], "The operation failed; check the SolidWorks agent and the tool's connection settings.")
         self.assertEqual(self.transport.calls, [])
 
     async def test_unsaved_pdm_config_uses_passed_settings(self):
@@ -632,7 +632,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.forwarded(), ["describe", "describe", "pdm.file.info"])
             self.transport.calls.clear()
             response = await self.execute("pdm.folder.list")
-            self.assertEqual(response["error"]["message"], "Update the SolidWorks host to use PDM operations.")
+            self.assertEqual(response["error"]["message"], "Update the SolidWorks agent to use PDM operations.")
             self.assertEqual(self.forwarded(), ["describe"])
             self.transport.calls.clear()
             self.service._contracts.clear()

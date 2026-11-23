@@ -43,8 +43,10 @@ function renderPanel(props: Partial<SolidWorksOptionsPanelProps> = {}) {
 const input = (id: string) => document.getElementById(id) as HTMLInputElement;
 
 describe('SolidWorksOptionsPanel', () => {
-  it('defaults host updates on and emits the disabled choice', () => {
+  it('defaults agent updates on and emits the disabled choice', () => {
     const { onChange } = renderPanel();
+    expect(screen.getByRole('switch', { name: 'Keep the agent up to date' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'About agent updates' })).toBeTruthy();
     expect(input('solidworks-auto-update').checked).toBe(true);
     fireEvent.click(input('solidworks-auto-update'));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ auto_update_host: false }));
@@ -112,14 +114,14 @@ describe('SolidWorksOptionsPanel', () => {
     );
   });
 
-  it('lists only Any installed version while the host status is unknown', () => {
+  it('lists only Any installed version while the agent status is unknown', () => {
     renderPanel({ hostStatus: null });
     const select = screen.getByLabelText('Version') as HTMLSelectElement;
     expect([...select.options].map((option) => option.textContent)).toEqual([
       'Any installed version',
     ]);
     expect(document.getElementById('solidworks-version-warning')?.textContent).toContain(
-      'Start the host to choose from installed versions.',
+      'Start the agent to choose from installed versions.',
     );
     expect(document.getElementById('solidworks-version-warning')?.getAttribute('data-tone')).toBe(
       'info',
@@ -135,7 +137,7 @@ describe('SolidWorksOptionsPanel', () => {
     ).toBeTruthy();
   });
 
-  it('lists the installed versions newest first when the host is running', () => {
+  it('lists the installed versions newest first when the agent is running', () => {
     renderPanel({ hostStatus: hostStatus({ versions: [2022, 2024] }) });
     const select = screen.getByLabelText('Version') as HTMLSelectElement;
     expect([...select.options].map((option) => option.textContent)).toEqual([
@@ -208,7 +210,7 @@ describe('SolidWorksOptionsPanel', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'About version' }));
     expect(document.getElementById('solidworks-version-help-content')?.textContent).toBe(
-      'The host only starts SolidWorks 2024. Calls fail if it is not installed.',
+      'The agent only starts SolidWorks 2024. Calls fail if it is not installed.',
     );
     rerender(
       <SolidWorksOptionsPanel

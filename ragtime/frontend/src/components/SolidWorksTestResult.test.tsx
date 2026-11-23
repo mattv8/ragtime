@@ -22,7 +22,7 @@ describe('SolidWorksTestResult', () => {
       <SolidWorksTestResult
         result={{
           success: true,
-          message: 'SolidWorks host 0.1.0 is running as HAMMERTON\\cad-agent.',
+          message: 'SolidWorks agent 0.1.0 is running as HAMMERTON\\cad-agent.',
           details: successDetails,
         }}
       />,
@@ -33,11 +33,11 @@ describe('SolidWorksTestResult', () => {
     expect(panel?.hasAttribute('data-sw-error-code')).toBe(false);
     expect(screen.getByText('Passed')).toBeTruthy();
     expect(
-      screen.getByText('SolidWorks host 0.1.0 is running as HAMMERTON\\cad-agent.'),
+      screen.getByText('SolidWorks agent 0.1.0 is running as HAMMERTON\\cad-agent.'),
     ).toBeTruthy();
     const facts = document.getElementById('solidworks-test-facts');
     expect(facts?.tagName).toBe('DL');
-    expect(facts?.textContent).toContain('Host version0.1.0');
+    expect(facts?.textContent).toContain('Agent version0.1.0');
     expect(screen.getByText('2024, 2022')).toBeTruthy();
     expect(screen.getByText('Logged in')).toBeTruthy();
     expect(document.getElementById('solidworks-test-guidance')).toBeNull();
@@ -71,14 +71,14 @@ describe('SolidWorksTestResult', () => {
       <SolidWorksTestResult
         result={{
           success: false,
-          message: 'The host did not answer.',
+          message: 'The agent did not answer.',
           details: { error_code: 'host_not_running' },
         }}
       />,
     );
     const guidance = document.getElementById('solidworks-test-guidance');
     expect(guidance?.querySelector('strong')).toBeNull();
-    expect(guidance?.textContent).toContain('Install the host in the panel above');
+    expect(guidance?.textContent).toContain('Install the agent in the panel above');
   });
 
   it('shows the failure with alert role, guidance, code and the details disclosure', () => {
@@ -109,8 +109,8 @@ describe('SolidWorksTestResult', () => {
   it.each([
     ['ssh_unreachable', 'Ragtime could not sign in over SSH.'],
     ['ssh_auth_failed', 'Ragtime could not sign in over SSH.'],
-    ['host_not_running', 'The host did not answer.'],
-    ['protocol_mismatch', 'The host and Ragtime do not match.'],
+    ['host_not_running', 'The agent did not answer.'],
+    ['protocol_mismatch', 'The agent and Ragtime do not match.'],
     ['no_interactive_session', 'No desktop session.'],
     ['version_not_installed', 'That SolidWorks version is not installed.'],
     ['version_mismatch', 'The open SolidWorks is a different version.'],

@@ -27,8 +27,8 @@ DEFAULT_TIMEOUT_MAX_SECONDS = 100
 MIN_OPERATION_SECONDS = 6
 MAX_RESULT_BYTES = 32768
 MAX_CACHED_TOOLS = 256
-HOST_MISMATCH_MESSAGE = "The host answered a different request."
-UNKNOWN_OPERATION_MESSAGE = "The operation is not listed in the host contract; call describe for the operation list."
+HOST_MISMATCH_MESSAGE = "The SolidWorks agent answered a different request."
+UNKNOWN_OPERATION_MESSAGE = "The SolidWorks agent does not offer this operation; call describe for the operation list."
 logger = logging.getLogger(__name__)
 
 _GUIDE_OPERATION = {
@@ -312,12 +312,12 @@ class SolidworksService:
             if exc.output_limit:
                 return self._error(safe_operation, "internal_error", str(exc))
             if exc.kind == "timeout":
-                return self._error(safe_operation, "operation_timeout", "The operation timed out; check the host and timeout.")
+                return self._error(safe_operation, "operation_timeout", "The operation timed out; check the SolidWorks agent and the timeout.")
             if exc.kind == "no_response":
-                return self._error(safe_operation, "host_not_running", "Check that the SolidWorks host is installed and running.")
+                return self._error(safe_operation, "host_not_running", "Check that the SolidWorks agent is installed and running.")
             return self._error(safe_operation, "internal_error", "Check the SSH connection and credentials.")
         except Exception:
-            return self._error(safe_operation, "internal_error", "The operation failed; check the host configuration.")
+            return self._error(safe_operation, "internal_error", "The operation failed; check the SolidWorks agent and the tool's connection settings.")
 
     async def _execute_host(self, config, operation, arguments, connection, allow_write, key, link, deadline):
         transport = self.transport_factory(config)
@@ -357,7 +357,7 @@ class SolidworksService:
                 return self._error(operation, "pdm_folder_not_approved", "No PDM folders are approved.", {"approved_folders": []})
         remaining = self._remaining(deadline)
         if fetched and remaining < MIN_OPERATION_SECONDS:
-            return self._error(operation, "operation_timeout", "The operation timed out; check the host and timeout.")
+            return self._error(operation, "operation_timeout", "The operation timed out; check the SolidWorks agent and the timeout.")
 
         request = build_request(operation, arguments, context())
         try:
@@ -370,7 +370,7 @@ class SolidworksService:
             response["result"]["scripts_enabled"] = bool(connection.get("allow_scripts", False))
         return self._json(response)
 
-    def _updating_error(self, operation: str, config: dict, message: str = "The SolidWorks host is being updated. Try again in a few minutes.") -> str:
+    def _updating_error(self, operation: str, config: dict, message: str = "The SolidWorks agent is being updated. Try again in a few minutes.") -> str:
         state = host_updater.state_for(config.get("id") or "") or {}
         return self._error(operation, "host_updating", message, {key: state.get(key) for key in ("state", "installed_version", "target_version")})
 
@@ -390,9 +390,9 @@ class SolidworksService:
             if missing and self._outdated_contract(contract):
                 if (config.get("connection_config") or {}).get("auto_update_host", True) is not False:
                     host_updater.request_now(config)
-                    message = "This operation needs a newer SolidWorks host. Ragtime updates it when the host is idle; try again in a few minutes."
+                    message = "This operation needs a newer SolidWorks agent. Ragtime updates the SolidWorks agent when it is idle; try again in a few minutes."
                     return contract, self._updating_error(operation, config, message), fetched
-                message = "This operation needs a newer SolidWorks host. Update it from the tool's host panel."
+                message = "This operation needs a newer SolidWorks agent. Update it from the SolidWorks agent panel in the tool's settings."
                 return contract, self._error(operation, "unknown_operation", message), fetched
         return contract, denied, fetched
 
@@ -411,7 +411,7 @@ class SolidworksService:
         """Return an error envelope when the host contract does not allow the operation, else None."""
         entry = next((item for item in contract["result"]["operations"] if item.get("name") == operation), None)
         if entry is None:
-            message = "Update the SolidWorks host to use PDM operations." if operation.startswith("pdm.") else UNKNOWN_OPERATION_MESSAGE
+            message = "Update the SolidWorks agent to use PDM operations." if operation.startswith("pdm.") else UNKNOWN_OPERATION_MESSAGE
             return self._error(operation, "unknown_operation", message)
         if entry.get("access") == "write" and not allow_write:
             return self._error(operation, "write_not_allowed", "Enable write access for this operation.")

@@ -181,20 +181,20 @@ try {
 }
 """
 
-LOCKED_UNINSTALL_WARNING = "The SolidWorks host was stopped and its logon task removed, but some files could not be deleted."
+LOCKED_UNINSTALL_WARNING = "The SolidWorks agent was stopped and its logon task removed, but some files could not be deleted."
 
 MESSAGES = {
-    "ssh_unreachable": "SSH connection failed; check the host and connection.",
+    "ssh_unreachable": "SSH connection failed; check the SSH host and connection.",
     "ssh_auth_failed": "SSH authentication failed; check the configured credentials.",
-    "upload_failed": "The SolidWorks host upload failed.",
-    "artifact_mismatch": "The packaged SolidWorks host zip does not match its manifest; rebuild the host artifact.",
-    "hash_mismatch": "The uploaded SolidWorks host failed its integrity check.",
-    "install_failed": "The SolidWorks host installation failed.",
-    "install_rolled_back": "The SolidWorks host installation failed; the previous version was restored.",
-    "locked": "The SolidWorks host files are locked; close the host and retry.",
-    "uninstall_failed": "The SolidWorks host could not be stopped or uninstalled.",
-    "host_busy": "The SolidWorks host is in use. The update will run when it is idle.",
-    "host_busy_retry": "The SolidWorks host is busy with another request or update. Try again in a minute.",
+    "upload_failed": "The SolidWorks agent upload failed.",
+    "artifact_mismatch": "The packaged SolidWorks agent zip does not match its manifest; rebuild the agent package.",
+    "hash_mismatch": "The uploaded SolidWorks agent failed its integrity check.",
+    "install_failed": "The SolidWorks agent installation failed.",
+    "install_rolled_back": "The SolidWorks agent installation failed; the previous version was restored.",
+    "locked": "The SolidWorks agent files are locked; close the SolidWorks agent and try again.",
+    "uninstall_failed": "The SolidWorks agent could not be stopped or uninstalled.",
+    "host_busy": "The SolidWorks agent is in use. The update will run when it is idle.",
+    "host_busy_retry": "The SolidWorks agent is busy with another request or update. Try again in a minute.",
 }
 _ERROR_CODES = {"artifact_mismatch": "install_failed", "install_rolled_back": "install_failed", "locked": "install_failed", "host_busy_retry": "host_busy"}
 _INSTALL_SENTINELS = {
@@ -283,7 +283,7 @@ class SolidworksHostInstaller:
             raise ValueError("idle_gate_seconds must be an integer between 0 and 86400")
         artifact = get_host_artifact()
         if artifact is None:
-            raise HostArtifactUnavailableError("SolidWorks host artifact is unavailable.")
+            raise HostArtifactUnavailableError("SolidWorks agent package is unavailable.")
         if not isinstance(artifact.sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact.sha256):
             return await self._status(config, "install_failed")
         if not verify_host_artifact(artifact):

@@ -40,11 +40,11 @@ namespace Ragtime.SolidWorks.Host
         public const string Usage =
             "Usage: ragtime-solidworks-host <command> [options]\n" +
             "  serve                          run the pipe server in the current desktop session\n" +
-            "  call --request-b64 <base64>    forward one request line to the host (stdin when the option is absent)\n" +
+            "  call --request-b64 <base64>    forward one request line to the agent (stdin when the option is absent)\n" +
             "  install                        create the logon task, start it and print the status response\n" +
-            "  stop [--if-idle <seconds>]     ask a running host to exit; with --if-idle only when it is idle\n" +
-            "  uninstall                      stop the host and delete the logon task (files are kept)\n" +
-            "  version                        print the host version and protocol";
+            "  stop [--if-idle <seconds>]     ask a running agent to exit; with --if-idle only when it is idle\n" +
+            "  uninstall                      stop the agent and delete the logon task (files are kept)\n" +
+            "  version                        print the agent version and protocol";
 
         private CommandLine(string name, string? requestBase64, int? ifIdleSeconds = null)
         {
