@@ -1,9 +1,76 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { solidworksApi } from '../api/solidworks';
 import { SolidWorksPdmFolderBrowser } from './SolidWorksPdmFolderBrowser';
 
 vi.mock('../api/solidworks', () => ({ solidworksApi: { listPdmFolders: vi.fn() } }));
+
+type Listing = Awaited<ReturnType<typeof solidworksApi.listPdmFolders>>;
+type ListingItem = Listing['items'][number];
+type Rights = NonNullable<ListingItem['rights']>;
+type BrowserProps = ComponentProps<typeof SolidWorksPdmFolderBrowser>;
+
+const fullRights: Rights = { read: true, add_files: true, check_out: true, add_folders: true };
+const readOnlyRights: Rights = {
+  read: true,
+  add_files: false,
+  check_out: false,
+  add_folders: false,
+};
+const READ_ONLY_REASON =
+  "The PDM user can read this folder but can't add and check out files here.";
+
+function listing(overrides: Partial<Listing> = {}): Listing {
+  return {
+    items: [],
+    offset: 0,
+    next_offset: null,
+    total: 0,
+    snapshot: null,
+    error: null,
+    ...overrides,
+  };
+}
+
+// Lists the given items at the vault root; every other path comes back empty.
+function mockRootListing(items: ListingItem[]) {
+  vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) =>
+    request.path === '\\' ? listing({ items, total: items.length }) : listing(),
+  );
+}
+
+function browserElement(overrides: Partial<BrowserProps> = {}) {
+  return (
+    <SolidWorksPdmFolderBrowser
+      toolId="s"
+      pdmToolId="p"
+      vaultName="Vault"
+      folders={[]}
+      vaultRoot={null}
+      onChange={vi.fn()}
+      {...overrides}
+    />
+  );
+}
+
+function approveButton() {
+  return screen.getByRole('button', { name: 'Approve this folder' }) as HTMLButtonElement;
+}
+
+async function waitForApprovalEnabled() {
+  await waitFor(() => expect(approveButton().disabled).toBe(false));
+}
+
+async function openVaultFolder(badge: RegExp) {
+  fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
+  fireEvent.click(await screen.findByRole('button', { name: badge }));
+}
+
+async function openFolderForApproval(badge: RegExp) {
+  await openVaultFolder(badge);
+  await waitForApprovalEnabled();
+}
 
 describe('SolidWorksPdmFolderBrowser', () => {
   afterEach(cleanup);
@@ -12,24 +79,8 @@ describe('SolidWorksPdmFolderBrowser', () => {
   });
 
   it('loads only when opened', async () => {
-    vi.mocked(solidworksApi.listPdmFolders).mockResolvedValue({
-      items: [],
-      offset: 0,
-      next_offset: null,
-      total: 0,
-      snapshot: null,
-      error: null,
-    });
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
-    );
+    vi.mocked(solidworksApi.listPdmFolders).mockResolvedValue(listing());
+    render(browserElement());
     expect(solidworksApi.listPdmFolders).not.toHaveBeenCalled();
     expect(document.getElementById('solidworks-pdm-folder-browser-status')?.textContent).toBe('');
     fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
@@ -41,67 +92,25 @@ describe('SolidWorksPdmFolderBrowser', () => {
   });
 
   it('re-announces repeated reloads and explains disabled approval', async () => {
-    const { rerender } = render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
-    );
+    const { rerender } = render(browserElement());
     const status = document.getElementById('solidworks-pdm-folder-browser-status')!;
     fireEvent.click(screen.getByRole('button', { name: 'Reload folders' }));
     const first = status.firstElementChild;
     fireEvent.click(screen.getByRole('button', { name: 'Reload folders' }));
     expect(status.textContent).toBe('Reloading folders.');
     expect(status.firstElementChild).not.toBe(first);
-    rerender(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-        disabled
-      />,
-    );
-    vi.mocked(solidworksApi.listPdmFolders).mockResolvedValue({
-      items: [],
-      offset: 0,
-      next_offset: null,
-      total: 0,
-      snapshot: null,
-      error: null,
-    });
+    rerender(browserElement({ disabled: true }));
+    vi.mocked(solidworksApi.listPdmFolders).mockResolvedValue(listing());
     fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
     expect(await screen.findByText('Wait for the current action to finish.')).toBeTruthy();
-    expect(
-      (screen.getByRole('button', { name: 'Approve this folder' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect(approveButton().disabled).toBe(true);
   });
 
   it('shows an error when a restarted snapshot is also stale', async () => {
-    vi.mocked(solidworksApi.listPdmFolders).mockResolvedValue({
-      items: [],
-      offset: 0,
-      next_offset: null,
-      total: 0,
-      snapshot: null,
-      error: { code: 'stale_snapshot', message: 'changed' },
-    });
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
+    vi.mocked(solidworksApi.listPdmFolders).mockResolvedValue(
+      listing({ error: { code: 'stale_snapshot', message: 'changed' } }),
     );
+    render(browserElement());
     fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
     expect(
       await screen.findByText(
@@ -112,15 +121,7 @@ describe('SolidWorksPdmFolderBrowser', () => {
   });
 
   it('ignores a listing that was in flight before reload', async () => {
-    const empty = {
-      items: [],
-      offset: 0,
-      next_offset: null,
-      total: 0,
-      snapshot: null,
-      error: null,
-    };
-    let finish!: (value: Awaited<ReturnType<typeof solidworksApi.listPdmFolders>>) => void;
+    let finish!: (value: Listing) => void;
     vi.mocked(solidworksApi.listPdmFolders)
       .mockImplementationOnce(
         () =>
@@ -128,65 +129,46 @@ describe('SolidWorksPdmFolderBrowser', () => {
             finish = resolve;
           }),
       )
-      .mockResolvedValueOnce(empty);
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
-    );
+      .mockResolvedValueOnce(listing());
+    render(browserElement());
     fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
     await waitFor(() => expect(solidworksApi.listPdmFolders).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: 'Reload folders' }));
     await screen.findByText('No subfolders.');
     await act(async () =>
-      finish({
-        ...empty,
-        total: 1,
-        items: [{ name: 'Old', vault_path: '\\Old', rights: null, write_ready: false }],
-      }),
+      finish(
+        listing({
+          total: 1,
+          items: [{ name: 'Old', vault_path: '\\Old', rights: null, write_ready: false }],
+        }),
+      ),
     );
     expect(screen.queryByRole('button', { name: /Old/ })).toBeNull();
   });
 
   it('navigates, approves a writable folder, and focuses the filter', async () => {
-    const writable = { read: true, add_files: true, check_out: true, add_folders: true };
-    vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) => ({
-      items:
-        request.path === '\\'
-          ? [
-              { name: 'A', vault_path: '\\A', rights: writable, write_ready: true },
-              {
-                name: 'Hidden',
-                vault_path: '\\Hidden',
-                rights: { ...writable, read: false },
-                write_ready: false,
-              },
-            ]
-          : request.path === '\\A'
-            ? [{ name: 'B', vault_path: '\\A\\B', rights: writable, write_ready: true }]
-            : [],
-      offset: 0,
-      next_offset: null,
-      total: request.path === '\\' ? 2 : request.path === '\\A' ? 1 : 0,
-      snapshot: 's',
-      error: null,
-    }));
-    const onChange = vi.fn();
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={onChange}
-      />,
+    vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) =>
+      listing({
+        items:
+          request.path === '\\'
+            ? [
+                { name: 'A', vault_path: '\\A', rights: fullRights, write_ready: true },
+                {
+                  name: 'Hidden',
+                  vault_path: '\\Hidden',
+                  rights: { ...fullRights, read: false },
+                  write_ready: false,
+                },
+              ]
+            : request.path === '\\A'
+              ? [{ name: 'B', vault_path: '\\A\\B', rights: fullRights, write_ready: true }]
+              : [],
+        total: request.path === '\\' ? 2 : request.path === '\\A' ? 1 : 0,
+        snapshot: 's',
+      }),
     );
+    const onChange = vi.fn();
+    render(browserElement({ onChange }));
     fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
     const hidden = await screen.findByRole('button', { name: /Hidden No access/ });
     expect(hidden.getAttribute('aria-disabled')).toBe('true');
@@ -205,12 +187,8 @@ describe('SolidWorksPdmFolderBrowser', () => {
         expect.objectContaining({ path: '\\A\\B' }),
       ),
     );
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Approve this folder' }) as HTMLButtonElement).disabled,
-      ).toBe(false),
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Approve this folder' }));
+    await waitForApprovalEnabled();
+    fireEvent.click(approveButton());
     expect(onChange).toHaveBeenCalledWith(['\\A\\B']);
     expect(document.getElementById('solidworks-pdm-folder-browser-status')?.textContent).toContain(
       'Added \\A\\B.',
@@ -219,43 +197,11 @@ describe('SolidWorksPdmFolderBrowser', () => {
   });
 
   it('shows the replacement notice when approving a parent', async () => {
-    vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) => ({
-      items:
-        request.path === '\\'
-          ? [
-              {
-                name: 'A',
-                vault_path: '\\A',
-                rights: { read: true, add_files: true, check_out: true, add_folders: true },
-                write_ready: true,
-              },
-            ]
-          : [],
-      offset: 0,
-      next_offset: null,
-      total: request.path === '\\' ? 1 : 0,
-      snapshot: null,
-      error: null,
-    }));
+    mockRootListing([{ name: 'A', vault_path: '\\A', rights: fullRights, write_ready: true }]);
     const onChange = vi.fn();
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={['\\A\\B']}
-        vaultRoot={null}
-        onChange={onChange}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
-    fireEvent.click(await screen.findByRole('button', { name: /A Can change/ }));
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Approve this folder' }) as HTMLButtonElement).disabled,
-      ).toBe(false),
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Approve this folder' }));
+    render(browserElement({ folders: ['\\A\\B'], onChange }));
+    await openFolderForApproval(/A Can change/);
+    fireEvent.click(approveButton());
     expect(onChange).toHaveBeenCalledWith(['\\A']);
     expect(
       document.getElementById('solidworks-pdm-folder-browser-feedback')?.textContent,
@@ -263,38 +209,18 @@ describe('SolidWorksPdmFolderBrowser', () => {
   });
 
   it('re-announces identical approval refusals', async () => {
-    const rights = { read: true, add_files: true, check_out: true, add_folders: true };
-    vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) => ({
-      items:
-        request.path === '\\' ? [{ name: 'A', vault_path: '\\A', rights, write_ready: true }] : [],
-      offset: 0,
-      next_offset: null,
-      total: request.path === '\\' ? 1 : 0,
-      snapshot: null,
-      error: null,
-    }));
+    mockRootListing([{ name: 'A', vault_path: '\\A', rights: fullRights, write_ready: true }]);
     render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={Array.from({ length: 25 }, (_, index) => `\\Existing${index}`)}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
+      browserElement({
+        folders: Array.from({ length: 25 }, (_, index) => `\\Existing${index}`),
+      }),
     );
-    fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
-    fireEvent.click(await screen.findByRole('button', { name: /A Can change/ }));
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Approve this folder' }) as HTMLButtonElement).disabled,
-      ).toBe(false),
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Approve this folder' }));
+    await openFolderForApproval(/A Can change/);
+    fireEvent.click(approveButton());
     const status = document.getElementById('solidworks-pdm-folder-browser-status')!;
     const first = status.firstElementChild;
     expect(status.textContent).toContain('25 folders');
-    fireEvent.click(screen.getByRole('button', { name: 'Approve this folder' }));
+    fireEvent.click(approveButton());
     expect(status.firstElementChild).not.toBe(first);
     expect(status.textContent).toContain('25 folders');
   });
@@ -302,16 +228,9 @@ describe('SolidWorksPdmFolderBrowser', () => {
   it('restarts one stale snapshot and caps pages with a truncation notice', async () => {
     vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) => {
       if (request.offset === 1 && vi.mocked(solidworksApi.listPdmFolders).mock.calls.length === 2) {
-        return {
-          items: [],
-          offset: 1,
-          next_offset: null,
-          total: 0,
-          snapshot: null,
-          error: { code: 'stale_snapshot', message: 'stale' },
-        };
+        return listing({ offset: 1, error: { code: 'stale_snapshot', message: 'stale' } });
       }
-      return {
+      return listing({
         items: [
           {
             name: `F${request.offset}`,
@@ -324,19 +243,9 @@ describe('SolidWorksPdmFolderBrowser', () => {
         next_offset: request.offset + 1,
         total: 20,
         snapshot: 'snap',
-        error: null,
-      };
+      });
     });
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
-    );
+    render(browserElement());
     fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
     await screen.findByText(/Showing the first 10 of 20 folders/);
     expect(solidworksApi.listPdmFolders).toHaveBeenCalledTimes(12);
@@ -353,24 +262,8 @@ describe('SolidWorksPdmFolderBrowser', () => {
   it('reports errors and reloads the open folder', async () => {
     vi.mocked(solidworksApi.listPdmFolders)
       .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValueOnce({
-        items: [],
-        offset: 0,
-        next_offset: null,
-        total: 0,
-        snapshot: null,
-        error: null,
-      });
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
-    );
+      .mockResolvedValueOnce(listing());
+    render(browserElement());
     fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
     await screen.findByText('Could not load folders: offline. Choose Reload folders to try again.');
     fireEvent.click(screen.getByRole('button', { name: 'Reload folders' }));
@@ -379,119 +272,67 @@ describe('SolidWorksPdmFolderBrowser', () => {
   });
 
   it('retains rights during reload and refreshes the current folder from its parent', async () => {
-    const rights = { read: true, add_files: false, check_out: false, add_folders: false };
-    const empty = {
-      items: [],
-      offset: 0,
-      next_offset: null,
-      total: 0,
-      snapshot: null,
-      error: null,
-    };
-    let finishParent!: (value: Awaited<ReturnType<typeof solidworksApi.listPdmFolders>>) => void;
+    let finishParent!: (value: Listing) => void;
     let rootRequests = 0;
     vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) => {
-      if (request.path !== '\\') return empty;
+      if (request.path !== '\\') return listing();
       rootRequests += 1;
       if (rootRequests === 1)
-        return {
-          ...empty,
+        return listing({
           total: 1,
-          items: [{ name: 'A', vault_path: '\\A', rights, write_ready: false }],
-        };
+          items: [{ name: 'A', vault_path: '\\A', rights: readOnlyRights, write_ready: false }],
+        });
       return new Promise((resolve) => {
         finishParent = resolve;
       });
     });
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
-    fireEvent.click(await screen.findByRole('button', { name: /A Read only/ }));
-    await screen.findByText(
-      "The PDM user can read this folder but can't add and check out files here.",
-    );
+    render(browserElement());
+    await openVaultFolder(/A Read only/);
+    await screen.findByText(READ_ONLY_REASON);
     fireEvent.click(screen.getByRole('button', { name: 'Reload folders' }));
     await waitFor(() => expect(rootRequests).toBe(2));
-    expect(
-      screen.getByText("The PDM user can read this folder but can't add and check out files here."),
-    ).toBeTruthy();
+    expect(screen.getByText(READ_ONLY_REASON)).toBeTruthy();
     expect(
       screen.queryByText(
         "Rights for this folder aren't checked. Choose Reload folders to try again.",
       ),
     ).toBeNull();
-    finishParent({
-      ...empty,
-      total: 1,
-      items: [
-        {
-          name: 'A',
-          vault_path: '\\A',
-          rights: { ...rights, add_files: true, check_out: true },
-          write_ready: true,
-        },
-      ],
-    });
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Approve this folder' }) as HTMLButtonElement).disabled,
-      ).toBe(false),
-    );
-  });
-
-  it.each(['no-read', 'failure'] as const)('handles a parent refresh: %s', async (outcome) => {
-    const rights = { read: true, add_files: true, check_out: true, add_folders: true };
-    const empty = {
-      items: [],
-      offset: 0,
-      next_offset: null,
-      total: 0,
-      snapshot: null,
-      error: null,
-    };
-    let roots = 0;
-    vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) => {
-      if (request.path !== '\\') return empty;
-      roots += 1;
-      if (roots > 1 && outcome === 'failure') throw new Error('offline');
-      return {
-        ...empty,
+    finishParent(
+      listing({
         total: 1,
         items: [
           {
             name: 'A',
             vault_path: '\\A',
-            rights: { ...rights, read: roots === 1 },
+            rights: { ...readOnlyRights, add_files: true, check_out: true },
             write_ready: true,
           },
         ],
-      };
+      }),
+    );
+    await waitForApprovalEnabled();
+  });
+
+  it.each(['no-read', 'failure'] as const)('handles a parent refresh: %s', async (outcome) => {
+    let roots = 0;
+    vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) => {
+      if (request.path !== '\\') return listing();
+      roots += 1;
+      if (roots > 1 && outcome === 'failure') throw new Error('offline');
+      return listing({
+        total: 1,
+        items: [
+          {
+            name: 'A',
+            vault_path: '\\A',
+            rights: { ...fullRights, read: roots === 1 },
+            write_ready: true,
+          },
+        ],
+      });
     });
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
-    fireEvent.click(await screen.findByRole('button', { name: /A Can change/ }));
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Approve this folder' }) as HTMLButtonElement).disabled,
-      ).toBe(false),
-    );
+    render(browserElement());
+    await openFolderForApproval(/A Can change/);
     fireEvent.click(screen.getByRole('button', { name: 'Reload folders' }));
     if (outcome === 'failure') {
       await waitFor(() =>
@@ -506,75 +347,38 @@ describe('SolidWorksPdmFolderBrowser', () => {
   });
 
   it('names the current folder in the truncation notice', async () => {
-    const rights = { read: true, add_files: true, check_out: true, add_folders: true };
     vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) =>
       request.path === '\\'
-        ? {
-            items: [{ name: 'A', vault_path: '\\A', rights, write_ready: true }],
-            offset: 0,
-            next_offset: null,
+        ? listing({
+            items: [{ name: 'A', vault_path: '\\A', rights: fullRights, write_ready: true }],
             total: 1,
-            snapshot: null,
-            error: null,
-          }
-        : { items: [], offset: 0, next_offset: null, total: 5, snapshot: null, error: null },
+          })
+        : listing({ total: 5 }),
     );
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
-    fireEvent.click(await screen.findByRole('button', { name: /A Can change/ }));
+    render(browserElement());
+    await openVaultFolder(/A Can change/);
     expect(await screen.findByText(/Showing the first 0 of 5 folders in \\A/)).toBeTruthy();
   });
 
   it('ignores a parent refresh after navigating elsewhere', async () => {
-    const rights = { read: true, add_files: false, check_out: false, add_folders: false };
-    const empty = {
-      items: [],
-      offset: 0,
-      next_offset: null,
-      total: 0,
-      snapshot: null,
-      error: null,
-    };
-    const listing = {
-      ...empty,
+    const rootListing = listing({
       total: 1,
-      items: [{ name: 'A', vault_path: '\\A', rights, write_ready: false }],
-    };
-    let finishParent!: (value: Awaited<ReturnType<typeof solidworksApi.listPdmFolders>>) => void;
+      items: [{ name: 'A', vault_path: '\\A', rights: readOnlyRights, write_ready: false }],
+    });
+    let finishParent!: (value: Listing) => void;
     let rootRequests = 0;
     vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) => {
-      if (request.path !== '\\') return empty;
+      if (request.path !== '\\') return listing();
       rootRequests += 1;
       if (rootRequests === 2)
         return new Promise((resolve) => {
           finishParent = resolve;
         });
-      return listing;
+      return rootListing;
     });
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={[]}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
-    fireEvent.click(await screen.findByRole('button', { name: /A Read only/ }));
-    await screen.findByText(
-      "The PDM user can read this folder but can't add and check out files here.",
-    );
+    render(browserElement());
+    await openVaultFolder(/A Read only/);
+    await screen.findByText(READ_ONLY_REASON);
     fireEvent.click(screen.getByRole('button', { name: 'Reload folders' }));
     await waitFor(() => expect(rootRequests).toBe(2));
     await waitFor(() =>
@@ -585,7 +389,7 @@ describe('SolidWorksPdmFolderBrowser', () => {
     fireEvent.click(screen.getByRole('button', { name: '..' }));
     await screen.findByRole('button', { name: /A Read only/ });
     await act(async () =>
-      finishParent({ ...listing, items: [{ ...listing.items[0], write_ready: true }] }),
+      finishParent({ ...rootListing, items: [{ ...rootListing.items[0], write_ready: true }] }),
     );
     expect(screen.getByRole('button', { name: /A Read only/ })).toBeTruthy();
   });
@@ -601,46 +405,21 @@ describe('SolidWorksPdmFolderBrowser', () => {
       "Rights for this folder aren't checked. Choose Reload folders to try again.",
     ],
     ['Bad:name', [], true, "Can't approve", 'Folder paths cannot contain'],
-    [
-      'Readonly',
-      [],
-      false,
-      'Read only',
-      "The PDM user can read this folder but can't add and check out files here.",
-    ],
+    ['Readonly', [], false, 'Read only', READ_ONLY_REASON],
   ])('explains why %s cannot be approved', async (name, folders, writable, badge, reason) => {
     const folder = `\\${name}`;
-    vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) => ({
-      items:
-        request.path === '\\'
-          ? [
-              {
-                name,
-                vault_path: folder,
-                rights:
-                  writable === null
-                    ? null
-                    : { read: true, add_files: writable, check_out: writable, add_folders: false },
-                write_ready: Boolean(writable),
-              },
-            ]
-          : [],
-      offset: 0,
-      next_offset: null,
-      total: request.path === '\\' ? 1 : 0,
-      snapshot: null,
-      error: null,
-    }));
-    render(
-      <SolidWorksPdmFolderBrowser
-        toolId="s"
-        pdmToolId="p"
-        vaultName="Vault"
-        folders={folders}
-        vaultRoot={null}
-        onChange={vi.fn()}
-      />,
-    );
+    mockRootListing([
+      {
+        name,
+        vault_path: folder,
+        rights:
+          writable === null
+            ? null
+            : { read: true, add_files: writable, check_out: writable, add_folders: false },
+        write_ready: Boolean(writable),
+      },
+    ]);
+    render(browserElement({ folders }));
     fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
     expect(
       screen.getByText("Open a folder to approve it. The whole vault can't be approved."),
@@ -655,8 +434,6 @@ describe('SolidWorksPdmFolderBrowser', () => {
         (text, element) => element?.className === 'field-help' && text.includes(reason),
       ),
     ).toBeTruthy();
-    expect(
-      (screen.getByRole('button', { name: 'Approve this folder' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect(approveButton().disabled).toBe(true);
   });
 });
