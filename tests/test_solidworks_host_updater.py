@@ -105,6 +105,20 @@ class UpdaterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.gates, [0])
         self.assertEqual(self.state()["state"], "current")
 
+    async def test_status_read_keeps_pending_reason(self):
+        self.observe()
+        self.activity.value = HostActivitySnapshot(0, 10, False)
+        await self.updater.run_once()
+        self.observe()
+        self.assertEqual(self.state()["reason"], "in_use")
+        self.activity.value = HostActivitySnapshot(0, None, False)
+        self.result = {"error": {"code": "host_busy"}}
+        await self.updater.run_once()
+        self.observe()
+        self.assertEqual(self.state()["reason"], "busy")
+        self.observe("1.1.0")
+        self.assertIsNone(self.state()["reason"])
+
     async def test_status_rules(self):
         cases = [
             ({"running": False}, "not_running"),

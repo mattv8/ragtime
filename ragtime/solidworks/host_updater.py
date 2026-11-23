@@ -99,6 +99,7 @@ class SolidworksHostUpdater:
         self._tool_keys[tool_id] = key
         state = self._states.setdefault(key, _HostState())
         state.tool_ids.add(tool_id)
+        versions_unchanged = (state.installed_version, state.target_version) == (host_version, packaged.host_version)
         state.installed_version, state.target_version = host_version, packaged.host_version
         if state.failed_version is not None and state.failed_version != packaged.host_version:
             state.failures = 0
@@ -112,7 +113,10 @@ class SolidworksHostUpdater:
         elif installed > target:
             state.state, state.reason = "newer", None
         elif state.state != "updating" and not (state.state == "failed" and state.next_attempt is not None and self.clock() < state.next_attempt):
-            state.state, state.reason = "pending", None
+            # A status read must not erase why a pending update is waiting; the loop refreshes the reason.
+            if state.state != "pending" or not versions_unchanged:
+                state.reason = None
+            state.state = "pending"
 
     def request_now(self, config: dict[str, Any]) -> None:
         key = host_key(config)
