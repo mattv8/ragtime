@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelViewer from './ModelViewer';
 import type { ModelArtifact } from '@/utils/modelArtifact';
@@ -41,6 +41,16 @@ vi.mock('online-3d-viewer', () => ({
     SetBackgroundColor() {}
     SetEdgeSettings() {}
     Render() {}
+    SetMainObject() {}
+    GetBoundingSphere() {
+      return {};
+    }
+    AdjustClippingPlanesToSphere() {}
+    SetUpVector() {}
+    FitSphereToWindow() {}
+    GetCamera() {
+      return { Clone: () => ({}) };
+    }
     Destroy() {}
   },
 }));
@@ -128,6 +138,38 @@ describe('ModelViewer', () => {
     await waitFor(() => expect(onError).toHaveBeenCalledOnce());
     expect(onError.mock.calls[0][0]).toBeInstanceOf(ArtifactRequestError);
     expect(onError.mock.calls[0][0].status).toBe(403);
+  });
+
+  it('shows the poster while loading and removes it when the model is ready', async () => {
+    const { container } = render(<ModelViewer artifact={artifact} poster="/poster.png" />);
+    const poster = container.querySelector('.model-artifact-viewer-poster');
+    expect(poster?.getAttribute('src')).toBe('/poster.png');
+    expect(poster?.getAttribute('aria-hidden')).toBe('true');
+    await waitFor(() => expect(mocks.load).toHaveBeenCalledOnce());
+    act(() => mocks.callbacks!.onModelFinished({}, {}));
+    expect(container.querySelector('.model-artifact-viewer-poster')).toBeNull();
+  });
+
+  it('removes the poster when loading fails', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 403 } as Response);
+    const { container } = render(<ModelViewer artifact={artifact} poster="/poster.png" />);
+    expect(container.querySelector('.model-artifact-viewer-poster')).not.toBeNull();
+    await screen.findByRole('alert');
+    expect(container.querySelector('.model-artifact-viewer-poster')).toBeNull();
+  });
+
+  it('opens the large view instead of fullscreen when expansion is provided', () => {
+    const onExpand = vi.fn();
+    render(<ModelViewer artifact={artifact} onExpand={onExpand} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open large view' }));
+    expect(onExpand).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: 'Fullscreen' })).toBeNull();
+  });
+
+  it('omits fullscreen in the modal viewer', () => {
+    render(<ModelViewer artifact={artifact} allowFullscreen={false} showCloseButton={false} />);
+    expect(screen.queryByRole('button', { name: 'Fullscreen' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open large view' })).toBeNull();
   });
 
   it('updates navigation after keyboard orbit and zoom in both directions', async () => {

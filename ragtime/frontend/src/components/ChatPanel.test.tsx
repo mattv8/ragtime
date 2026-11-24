@@ -32,6 +32,8 @@ import {
   type ActiveToolCall,
 } from './ChatPanel';
 import type { ChatMessageNavigationEntry } from './ChatMessageNavigator';
+import { closeModelArtifactModal, useModelArtifactModal } from './modelArtifactModalStore';
+import { clearArtifactAccessCache } from '@/hooks/useArtifactAccess';
 import { invalidateDenialNoticeSeen } from '@/utils/denialNotices';
 import * as FileAttachmentModule from './FileAttachment';
 
@@ -4251,42 +4253,131 @@ describe('ChatPanel standalone first-paint loading', () => {
   });
 });
 
-describe('ToolCallDisplay model artifact rendering', () => {
-  it.each([false, true])('shows a card outside the collapsed row (truncated: %s)', (truncated) => {
-    const id = 'a'.repeat(32);
+describe('ToolCallDisplay SolidWorks results', () => {
+  it('renders a stored list result with its config name and no raw JSON', () => {
     const output = JSON.stringify({
       ok: true,
-      operation: 'model.export',
-      result: {
-        artifact: {
-          id,
-          kind: 'model',
-          format: 'step',
-          file_name: 'bracket.step',
-          size_bytes: 123,
-          expires_at: '2099-01-01T00:00:00Z',
-          content_url: `/indexes/solidworks/artifacts/${id}/content`,
-          preview_image_url: `/indexes/solidworks/artifacts/${id}/content`,
-          page_url: `/?artifact=${id}`,
-        },
-        extra: 'more',
-      },
+      operation: 'documents.list',
+      result: { items: [{ title: 'Bracket' }] },
     });
     const { container } = render(
       <ToolCallDisplay
+        messageId="message-1"
+        eventIndex={2}
         toolCall={{
           tool: 'solidworks_host',
           status: 'complete',
-          output: truncated ? output.slice(0, -5) : output,
+          input: { operation: 'documents.list' },
+          output,
+          connection: {
+            tool_config_id: 'config-1',
+            tool_config_name: 'Design workstation',
+            tool_type: 'solidworks',
+          },
         }}
       />,
     );
-    expect(container.querySelector('[data-model-artifact-card]')).not.toBeNull();
-    expect(screen.getByRole('link', { name: 'Download bracket.step' })).toBeDefined();
-    expect(container.querySelector('.tool-call-section')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Zoom preview of bracket.step' }));
-    expect(screen.getByAltText('bracket.step preview, full view')).toBeDefined();
+    expect(container.querySelector('.tool-call-name')?.textContent).toBe('List documents');
+    expect(container.querySelector('.tool-call-tool-pill')?.textContent).toBe('Design workstation');
+    expect(container.querySelector('.tool-call-tool-pill-wide')).not.toBeNull();
+    fireEvent.click(container.querySelector('.tool-call-header')!);
+    expect(
+      container.querySelector('#solidworks-result-message-1-2[data-solidworks-result]'),
+    ).not.toBeNull();
+    expect(container.querySelector('pre')).toBeNull();
+    expect(container.textContent).not.toContain(output);
+    expect(container.textContent).not.toContain('Query:');
   });
+
+  it('keeps terminal tool pills at the standard width', () => {
+    const { container } = render(
+      <ToolCallDisplay toolCall={{ tool: 'run_terminal_command', status: 'complete' }} />,
+    );
+    const pill = container.querySelector('.tool-call-tool-pill');
+    expect(pill?.textContent).toBe('Workspace terminal');
+    expect(pill?.querySelector('.tool-call-tool-pill-label')?.textContent).toBe(
+      'Workspace terminal',
+    );
+    expect(pill?.classList.contains('tool-call-tool-pill-wide')).toBe(false);
+    expect(container.querySelector('.tool-call-tool-pill-wide')).toBeNull();
+  });
+
+  it('shows failed status and the error block for ok:false', () => {
+    const { container } = render(
+      <ToolCallDisplay
+        defaultExpanded
+        toolCall={{
+          tool: 'solidworks_host',
+          status: 'complete',
+          input: { operation: 'documents.list' },
+          output: JSON.stringify({
+            ok: false,
+            operation: 'documents.list',
+            error: { code: 'invalid_arguments', message: 'Invalid request' },
+          }),
+        }}
+      />,
+    );
+    expect(container.querySelector('.tool-call-failed')).not.toBeNull();
+    expect(container.querySelector('[data-solidworks-result][data-state="error"]')).not.toBeNull();
+    expect(screen.getByRole('group', { name: 'Error' }).textContent).toContain('Invalid request');
+    expect(container.querySelector('pre')).toBeNull();
+  });
+});
+
+function ModelArtifactModalProbe() {
+  const modal = useModelArtifactModal();
+  return <div data-testid="model-artifact-modal-probe">{modal?.artifact.id ?? ''}</div>;
+}
+
+describe('ToolCallDisplay model artifact rendering', () => {
+  it.each([false, true])(
+    'shows a card outside the collapsed row (truncated: %s)',
+    async (truncated) => {
+      const id = 'a'.repeat(32);
+      clearArtifactAccessCache();
+      Object.assign(apiMock, {
+        getModelArtifact: vi.fn().mockResolvedValue({ id, expired: false }),
+      });
+      const output = JSON.stringify({
+        ok: true,
+        operation: 'model.export',
+        result: {
+          artifact: {
+            id,
+            kind: 'model',
+            format: 'step',
+            file_name: 'bracket.step',
+            size_bytes: 123,
+            expires_at: '2099-01-01T00:00:00Z',
+            content_url: `/indexes/solidworks/artifacts/${id}/content`,
+            preview_image_url: `/indexes/solidworks/artifacts/${id}/content`,
+            page_url: `/?artifact=${id}`,
+          },
+          extra: 'more',
+        },
+      });
+      const { container } = render(
+        <>
+          <ToolCallDisplay
+            toolCall={{
+              tool: 'solidworks_host',
+              status: 'complete',
+              output: truncated ? output.slice(0, -5) : output,
+            }}
+          />
+          <ModelArtifactModalProbe />
+        </>,
+      );
+      expect(container.querySelector('[data-model-artifact-card]')).not.toBeNull();
+      expect(container.querySelector('[data-model-artifact-actions-fallback]')).not.toBeNull();
+      expect(await screen.findByRole('link', { name: 'Download bracket.step' })).toBeDefined();
+      expect(container.querySelector('.tool-call-section')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'View larger: bracket.step' }));
+      expect(screen.getByTestId('model-artifact-modal-probe').textContent).toBe(id);
+      act(() => closeModelArtifactModal());
+    },
+  );
 
   it('shows an artifact outside collapsed shared-chat reasoning', () => {
     const id = 'b'.repeat(32);

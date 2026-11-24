@@ -1,21 +1,28 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelArtifactCard } from './ModelArtifactCard';
 import { ArtifactRequestError, type ModelArtifact } from '@/utils/modelArtifact';
 import { api } from '@/api';
 import { ApiError } from '@/api/client';
+import { openModelArtifactModal } from './modelArtifactModalStore';
+import { clearArtifactAccessCache } from '@/hooks/useArtifactAccess';
+import { ModelArtifactActionsHost } from './ModelArtifactActions';
+
+vi.mock('./modelArtifactModalStore', () => ({ openModelArtifactModal: vi.fn() }));
 
 vi.mock('./ModelViewer', () => ({
   default: ({
     artifact,
     onError,
     onClose,
+    poster,
   }: {
     artifact: ModelArtifact;
     onError: (error: unknown) => void;
     onClose: () => void;
+    poster?: string;
   }) => (
-    <div data-testid="mock-model-viewer">
+    <div data-testid="mock-model-viewer" data-poster={poster}>
       <span>{artifact.file_name} viewer</span>
       <button onClick={() => onError('Parsing failed')}>Fail viewer</button>
       <button onClick={() => onError(new ArtifactRequestError(410))}>Expire viewer</button>
@@ -37,41 +44,62 @@ const artifact: ModelArtifact = {
   page_url: `/?artifact=${id}`,
 };
 
+beforeEach(() => {
+  vi.spyOn(api, 'getModelArtifact').mockResolvedValue({
+    ...artifact,
+    expired: false,
+    tool_config_name: null,
+  });
+});
+
 afterEach(() => {
   cleanup();
+  clearArtifactAccessCache();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe('ModelArtifactCard', () => {
-  it('shows actions and zooms the preview', () => {
-    const zoom = vi.fn();
-    render(<ModelArtifactCard artifact={artifact} onZoomImage={zoom} />);
-    expect(screen.getByRole('link', { name: 'Download bracket.step' }).getAttribute('href')).toBe(
-      artifact.content_url,
+  it('renders fallback actions only without a message host', () => {
+    const { container, rerender } = render(<ModelArtifactCard artifact={artifact} />);
+    expect(container.querySelector('[data-model-artifact-actions-fallback]')).not.toBeNull();
+    rerender(
+      <ModelArtifactActionsHost.Provider value>
+        <ModelArtifactCard artifact={artifact} />
+      </ModelArtifactActionsHost.Provider>,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Zoom preview of bracket.step' }));
-    expect(zoom).toHaveBeenCalledWith(
-      artifact.preview_image_url,
-      'bracket.step preview, full view',
-    );
+    expect(container.querySelector('[data-model-artifact-actions-fallback]')).toBeNull();
+  });
+  it('opens the preview in the artifact modal', () => {
+    render(<ModelArtifactCard artifact={artifact} />);
+    const button = screen.getByRole('button', { name: 'View larger: bracket.step' });
+    fireEvent.click(button);
+    expect(openModelArtifactModal).toHaveBeenCalledWith(artifact, button);
   });
   it('shows a placeholder without a preview', () => {
-    render(
-      <ModelArtifactCard
-        artifact={{ ...artifact, preview_image_url: undefined }}
-        onZoomImage={vi.fn()}
-      />,
+    const { container } = render(
+      <ModelArtifactCard artifact={{ ...artifact, preview_image_url: undefined }} />,
     );
     expect(screen.getByRole('img', { name: 'No preview image for bracket.step' })).toBeDefined();
+    const media = container.querySelector('[data-model-artifact-media]');
+    expect(media?.classList.contains('model-artifact-media-has-preview')).toBe(false);
+    expect(
+      media?.contains(screen.getByRole('button', { name: 'Load 3D view of bracket.step' })),
+    ).toBe(true);
+  });
+  it('anchors the load button to the preview media', () => {
+    const { container } = render(<ModelArtifactCard artifact={artifact} />);
+    const media = container.querySelector('[data-model-artifact-media]');
+    expect(media?.classList.contains('model-artifact-media-has-preview')).toBe(true);
+    expect(media?.contains(screen.getByRole('button', { name: 'View larger: bracket.step' }))).toBe(
+      true,
+    );
+    expect(
+      media?.contains(screen.getByRole('button', { name: 'Load 3D view of bracket.step' })),
+    ).toBe(true);
   });
   it('shows expiry and removes actions', () => {
-    render(
-      <ModelArtifactCard
-        artifact={{ ...artifact, expires_at: '2000-01-01T00:00:00Z' }}
-        onZoomImage={vi.fn()}
-      />,
-    );
+    render(<ModelArtifactCard artifact={{ ...artifact, expires_at: '2000-01-01T00:00:00Z' }} />);
     expect(screen.getByRole('status').textContent).toContain('This export expired');
     expect(screen.queryByRole('link')).toBeNull();
   });
@@ -79,7 +107,6 @@ describe('ModelArtifactCard', () => {
     render(
       <ModelArtifactCard
         artifact={{ ...artifact, kind: 'native', preview_image_url: undefined }}
-        onZoomImage={vi.fn()}
       />,
     );
     expect(screen.getByText(/Native SolidWorks file/)).toBeDefined();
@@ -89,8 +116,8 @@ describe('ModelArtifactCard', () => {
     const other = { ...artifact, id: otherId, file_name: 'other.step' };
     render(
       <>
-        <ModelArtifactCard artifact={artifact} onZoomImage={vi.fn()} />
-        <ModelArtifactCard artifact={other} onZoomImage={vi.fn()} />
+        <ModelArtifactCard artifact={artifact} />
+        <ModelArtifactCard artifact={other} />
       </>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Load 3D view of bracket.step' }));
@@ -102,8 +129,8 @@ describe('ModelArtifactCard', () => {
   it('keeps only one viewer when the same artifact is shown twice', async () => {
     const { container } = render(
       <>
-        <ModelArtifactCard artifact={artifact} onZoomImage={vi.fn()} />
-        <ModelArtifactCard artifact={artifact} onZoomImage={vi.fn()} />
+        <ModelArtifactCard artifact={artifact} />
+        <ModelArtifactCard artifact={artifact} />
       </>,
     );
     fireEvent.click(screen.getAllByRole('button', { name: 'Load 3D view of bracket.step' })[0]);
@@ -117,11 +144,11 @@ describe('ModelArtifactCard', () => {
     expect(cards[0].querySelector('[data-testid="mock-model-viewer"]')).toBeNull();
   });
   it('does not offer a viewer for native or preview artifacts', () => {
-    render(<ModelArtifactCard artifact={{ ...artifact, kind: 'preview' }} onZoomImage={vi.fn()} />);
+    render(<ModelArtifactCard artifact={{ ...artifact, kind: 'preview' }} />);
     expect(screen.queryByRole('button', { name: /Load 3D view/ })).toBeNull();
   });
   it('falls back to the preview and allows retry after a viewer error', async () => {
-    render(<ModelArtifactCard artifact={artifact} onZoomImage={vi.fn()} />);
+    render(<ModelArtifactCard artifact={artifact} />);
     fireEvent.click(screen.getByRole('button', { name: 'Load 3D view of bracket.step' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Fail viewer' }));
     expect(screen.getByRole('alert').textContent).toContain("Couldn't load the 3D view.");
@@ -133,14 +160,31 @@ describe('ModelArtifactCard', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
   it('returns to the preview when the viewer is closed', async () => {
-    render(<ModelArtifactCard artifact={artifact} onZoomImage={vi.fn()} />);
+    render(<ModelArtifactCard artifact={artifact} />);
     fireEvent.click(screen.getByRole('button', { name: 'Load 3D view of bracket.step' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Close viewer' }));
     expect(screen.getByAltText('bracket.step preview')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Load 3D view of bracket.step' })).toBeDefined();
   });
+  it('passes the preview poster to the viewer', async () => {
+    render(<ModelArtifactCard artifact={artifact} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load 3D view of bracket.step' }));
+    expect((await screen.findByTestId('mock-model-viewer')).getAttribute('data-poster')).toBe(
+      artifact.preview_image_url,
+    );
+  });
+  it('retries transient access errors without navigating', async () => {
+    const request = vi
+      .spyOn(api, 'getModelArtifact')
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValueOnce({ ...artifact, expired: false, tool_config_name: null });
+    render(<ModelArtifactCard artifact={artifact} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.getByAltText('bracket.step preview')).toBeDefined());
+    expect(request).toHaveBeenCalledTimes(2);
+  });
   it('switches to expired when the model download returns 410', async () => {
-    render(<ModelArtifactCard artifact={artifact} onZoomImage={vi.fn()} />);
+    render(<ModelArtifactCard artifact={artifact} />);
     fireEvent.click(screen.getByRole('button', { name: 'Load 3D view of bracket.step' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Expire viewer' }));
     expect(screen.getByRole('status').textContent).toContain('This export expired');
@@ -156,13 +200,10 @@ describe('ModelArtifactCard', () => {
     if (status === 200)
       mock.mockResolvedValue({ ...artifact, expired: true, tool_config_name: null });
     else mock.mockRejectedValue(new ApiError('failed', status));
-    render(<ModelArtifactCard artifact={artifact} onZoomImage={vi.fn()} />);
+    render(<ModelArtifactCard artifact={artifact} />);
     fireEvent.error(screen.getByAltText('bracket.step preview'));
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain(message));
-    if (status === 401)
-      expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe(
-        artifact.page_url,
-      );
+    if (status === 401) expect(screen.getByRole('button', { name: 'Sign in' })).toBeDefined();
     vi.unstubAllGlobals();
   });
 });

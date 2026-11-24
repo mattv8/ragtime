@@ -7,8 +7,6 @@ import {
   Download,
   FileArchive,
   FileBox,
-  FileX,
-  Lock,
   type LucideIcon,
 } from 'lucide-react';
 import { api } from '@/api';
@@ -20,6 +18,7 @@ import {
   formatArtifactSize,
 } from '@/utils/modelArtifact';
 import { isViewableModelArtifact, ModelViewerFallback } from './modelViewerSupport';
+import { ArtifactNotice } from './ArtifactNotice';
 
 const LazyModelViewer = lazy(() => import('./ModelViewer'));
 
@@ -107,7 +106,7 @@ function PreviewStage({ artifact }: { artifact: ModelArtifactMetadata }) {
     >
       {!loaded && <div className="model-artifact-skeleton" aria-hidden="true" />}
       <img
-        className="tool-call-screenshot-image model-artifact-image"
+        className="model-artifact-image"
         src={src}
         alt={`${artifact.file_name} preview`}
         onLoad={() => setLoaded(true)}
@@ -176,69 +175,6 @@ function ArtifactBody({ artifact, onViewerError }: ArtifactBodyProps) {
         <PreviewStage artifact={artifact} />
       )}
     </>
-  );
-}
-
-function blockedCopy(reason: BlockedReason, expiresAt?: string, message?: string) {
-  switch (reason) {
-    case 'expired': {
-      const date = expiresAt ? ` on ${new Date(expiresAt).toLocaleDateString()}` : '';
-      return {
-        Icon: Clock,
-        title: 'Export expired',
-        body: `This export expired${date}. Ask for a new export.`,
-        action: 'Back to chat',
-      };
-    }
-    case 'forbidden':
-      return {
-        Icon: Lock,
-        title: 'Access denied',
-        body: "You don't have access to this export.",
-        action: 'Back to chat',
-      };
-    case 'notfound':
-      return {
-        Icon: FileX,
-        title: 'Export not available',
-        body: 'This export is no longer available.',
-        action: 'Back to chat',
-      };
-    case 'signin':
-      return {
-        Icon: Lock,
-        title: 'Sign in to continue',
-        body: 'Sign in to view or download this model.',
-        action: 'Sign in',
-      };
-    case 'error':
-      return {
-        Icon: AlertCircle,
-        title: "Couldn't load this export.",
-        body: message ?? 'Request failed.',
-        action: 'Try again',
-      };
-  }
-}
-
-function BlockedNotice({ reason, expiresAt, message }: Extract<PageState, { status: 'blocked' }>) {
-  const { Icon, title, body, action } = blockedCopy(reason, expiresAt, message);
-  const reloads = reason === 'signin' || reason === 'error';
-  return (
-    <div className="model-artifact-page-state" role={reason === 'error' ? 'alert' : 'status'}>
-      <Icon size={40} aria-hidden="true" />
-      <h1>{title}</h1>
-      <p>{body}</p>
-      {reloads ? (
-        <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>
-          {action}
-        </button>
-      ) : (
-        <a className="btn btn-secondary" href="/">
-          {action}
-        </a>
-      )}
-    </div>
   );
 }
 
@@ -338,7 +274,16 @@ export function ModelArtifactPage({ artifactId }: { artifactId: string }) {
           <p>Loading export…</p>
         </div>
       )}
-      {state.status === 'blocked' && <BlockedNotice {...state} />}
+      {state.status === 'blocked' && (
+        <>
+          <ArtifactNotice state={state} titleAs="h1" onRetry={() => window.location.reload()} />
+          {state.reason !== 'signin' && state.reason !== 'error' && (
+            <a className="btn btn-secondary" href="/">
+              Back to chat
+            </a>
+          )}
+        </>
+      )}
       {state.status === 'ready' && (
         <>
           <ArtifactHeader artifact={state.artifact} />

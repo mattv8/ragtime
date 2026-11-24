@@ -11,6 +11,10 @@ export interface ModelViewerProps {
   onError?: (error: unknown) => void;
   height?: number | string;
   showCloseButton?: boolean;
+  onExpand?: () => void;
+  allowFullscreen?: boolean;
+  /** Image shown while the model loads (like a video poster); removed once it is ready or fails. */
+  poster?: string;
 }
 
 export default function ModelViewer({
@@ -19,6 +23,9 @@ export default function ModelViewer({
   onError,
   height,
   showCloseButton = true,
+  onExpand,
+  allowFullscreen = true,
+  poster,
 }: ModelViewerProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -31,7 +38,7 @@ export default function ModelViewer({
   const [fullscreen, setFullscreen] = useState(false);
   const [interactive, setInteractive] = useState(false);
   const [slow, setSlow] = useState(false);
-  const [toolbarIndex, setToolbarIndex] = useState(2);
+  const [toolbarIndex, setToolbarIndex] = useState(onExpand || allowFullscreen ? 2 : 0);
 
   useEffect(() => {
     const canvasElement = canvasRef.current;
@@ -263,12 +270,8 @@ export default function ModelViewer({
         onFocus={() => setInteractive(true)}
         onBlur={() => setInteractive(false)}
       />
-      {loading && artifact.preview_image_url && (
-        <img
-          className="model-artifact-viewer-loading-preview"
-          src={artifact.preview_image_url}
-          alt=""
-        />
+      {loading && !error && poster && (
+        <img className="model-artifact-viewer-poster" src={poster} alt="" aria-hidden="true" />
       )}
       {loading && (
         <div className="model-artifact-status" role="status">
@@ -316,18 +319,20 @@ export default function ModelViewer({
         >
           <Scan size={16} />
         </button>
-        <button
-          type="button"
-          className="model-artifact-tool-btn"
-          data-action="fullscreen"
-          aria-label="Fullscreen"
-          aria-pressed={fullscreen}
-          tabIndex={toolbarIndex === 2 ? 0 : -1}
-          onFocus={() => setToolbarIndex(2)}
-          onClick={() => void toggleFullscreen()}
-        >
-          {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-        </button>
+        {(onExpand || allowFullscreen) && (
+          <button
+            type="button"
+            className="model-artifact-tool-btn"
+            data-action={onExpand ? 'expand' : 'fullscreen'}
+            aria-label={onExpand ? 'Open large view' : 'Fullscreen'}
+            aria-pressed={onExpand ? undefined : fullscreen}
+            tabIndex={toolbarIndex === 2 ? 0 : -1}
+            onFocus={() => setToolbarIndex(2)}
+            onClick={() => (onExpand ? onExpand() : void toggleFullscreen())}
+          >
+            {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
+        )}
         {showCloseButton && onClose && (
           <button
             type="button"
