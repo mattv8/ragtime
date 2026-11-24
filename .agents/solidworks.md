@@ -1,8 +1,8 @@
 # SolidWorks tool domain notes
 
-Scope: the `solidworks` tool type, its Windows SolidWorks agent, the PDM link and
-`script.run`. PDM index behavior is in `.agents/pdm.md`; user-facing setup is
-in the README's SolidWorks section.
+Scope: the `solidworks` tool type, its Windows SolidWorks agent, the PDM link,
+`script.run`, and model exports and previews. PDM index behavior is in
+`.agents/pdm.md`; user-facing setup is in the README's SolidWorks section.
 
 Naming: the Windows program is the SolidWorks agent in the UI, docs and messages. Code, files, folders, JSON fields,
 error codes and CI job names keep "host" (`Ragtime.SolidWorks.Host`, `host_version`, `host_updating`, **SolidWorks Host
@@ -18,6 +18,9 @@ Tests**); do not rename them. "Chat agent" means the LLM that calls the tool.
   wizard's SolidWorks agent panel; `pdm_link.py` resolves the PDM link; `pdm_rights.py`
   serves the rights check and folder picker; `routes.py` is the admin-only
   `/indexes/solidworks` API; `guidance/*.md` is the guide the chat agent reads.
+  `artifacts.py` stores exported files and previews and `artifact_routes.py`
+  serves them (see "Model exports and previews"); `host_artifact.py` is the
+  agent package, not an export.
 - Agent updates: `host_updater.py` updates outdated agents, and
   `host_activity.py` gates Ragtime's calls while an update runs (see
   "Agent updates" below).
@@ -34,7 +37,13 @@ Tests**); do not rename them. "Chat agent" means the LLM that calls the tool.
   SolidWorks API, Pdm wraps the PDM client, Scripting is `ScriptContext`.
 - UI: `ragtime/frontend/src/components/SolidWorks*.tsx`,
   `src/api/solidworks.ts`, `src/utils/solidworksPdm*.ts`,
-  `src/hooks/usePdm*.ts`, `src/styles/solidworks.css`.
+  `src/hooks/usePdm*.ts`, `src/styles/solidworks.css`. Exports and previews in
+  chat: `src/components/ModelArtifact*.tsx`, `ModelViewer.tsx`,
+  `modelViewerSupport.ts`, `ArtifactNotice.tsx`, `SolidWorksToolResult.tsx`,
+  `src/utils/modelArtifact.ts`, `src/utils/solidworksToolResult.ts`,
+  `src/hooks/useArtifactAccess.ts`, and the `model-artifact-*`,
+  `chat-message-artifact-*` and `solidworks-result-*` sections of
+  `src/styles/chat.css`.
 
 ## Request path and contract
 
@@ -50,10 +59,12 @@ Tests**); do not rename them. "Chat agent" means the LLM that calls the tool.
   operation is missing.
 - Adding an agent operation: a catalog entry (`SpecShapeSerializationTests`
   asserts the order of the `pdm.*` entries), dispatch, DTOs, `Fakes.cs` and
-  tests, an agent version bump in `dotnet/Directory.Build.props` so Ragtime
-  updates installed agents when they are idle, or the wizard offers
-  **Update agent**, and the guidance topic with
-  `tests/test_solidworks_guidance.py`. A write operation also goes in
+  tests, an agent version bump, and the guidance topic with
+  `tests/test_solidworks_guidance.py`. Bump `Version` and
+  `InformationalVersion` in `dotnet/Directory.Build.props`, the only place the
+  agent version is written; Ragtime then updates installed agents when they
+  are idle, or the wizard offers **Update agent**. Do not copy the version
+  number into docs or guidance. A write operation also goes in
   `PDM_WRITE_OPERATIONS`, an admin-only one in `PDM_ADMIN_OPERATIONS`.
 - Error codes in `Wire/ErrorCodes.cs` are wire contract; guidance tables and
   tests name them. Never rename one.
@@ -67,6 +78,72 @@ Tests**); do not rename them. "Chat agent" means the LLM that calls the tool.
   the agent shares one deadline across all steps of a request. A COM call that
   outlives its deadline leaves its instance or the PDM worker busy until it
   returns.
+
+## Model exports and previews
+
+- `model.export` writes a model file and `model.preview` renders a PNG. Both
+  are read-only and take `document`, a `doc-N` id or the full path of an open
+  document, optional when exactly one document is open; `path` is rejected.
+  Agent code: `Processing/ModelFiles.cs`, `ModelFileCleanup.cs` and
+  `Wire/NativeFiles.cs` in Core, `SolidWorksSession.Export.cs` in Readers.
+- Formats: parts take every format in `ModelFiles`. Assemblies take all but
+  `stl`: SolidWorks writes one STL per component, and forcing one file throws
+  `RPC_E_SERVERFAULT`. Drawings export only as native; `model.preview` covers
+  pictures of a sheet. A native assembly comes as a zip with every referenced
+  file, nested sub-assemblies included.
+- The agent saves with `SaveAs3` Silent|Copy and writes only generated names
+  (`export-<guid>`, `preview-<guid>`) in the agent work folder, so the source
+  document is never saved or renamed. `ModelFileCleanup.DeleteStrays` removes
+  extra files SolidWorks writes next to a generated name, and a failed request
+  removes the files it wrote.
+- SolidWorks behavior the code depends on: the GLB exporter writes the active
+  document, so only GLB activates the target and then restores the previous
+  document; SolidWorks holds component files open for writing, so native files
+  are read with shared access; a sheet needs an explicit zoom to fit. File
+  names come from the document path's stem, not the window title.
+- Fetch: for these two operations `SolidworksService._fetch_artifacts` runs
+  inside the `host_activity` call gate. It accepts only generated files in the
+  agent work folder (`_ARTIFACT_PATH`), pulls each over SFTP within
+  `MAX_ARTIFACT_BYTES` and the remaining deadline, checks its SHA-256, stores
+  it and removes the remote copy. The tool result carries artifact ids and
+  URLs, never paths, and stays short enough that chat truncation does not cut
+  it. Agent errors pass through, capped by `AGENT_MESSAGE_MAX_CHARS` and
+  `AGENT_DETAILS_MAX_CHARS`.
+- Store and routes: `artifacts.py` keeps files under `ARTIFACT_DIR` for
+  `ARTIFACT_TTL`, tagged with the requesting user; `cleanup_expired_artifacts`
+  runs at startup and in `ragtime/indexer/background_tasks.py`.
+  `artifact_routes.py` serves `ARTIFACT_URL_PREFIX` + `/{id}` (metadata,
+  `expired: true` once expired) and `/{id}/content` (410 once expired;
+  `inline=1` for the viewer). `authorize_artifact` allows an admin, the owner,
+  or a user whose chat tool access includes the artifact's tool.
+- Chat model: `_build_solidworks_reference_content` (`ragtime/rag/components.py`)
+  attaches the latest preview image, loaded from the store by validated id,
+  unless `_request_supports_reference_images` says the model takes no images
+  (always the case for `openai_compatible` endpoints).
+- MCP: after the outbound content check, `build_artifact_content`
+  (`ragtime/mcp/artifact_content.py`) adds the preview PNG as `ImageContent`
+  and a `ResourceLink` built only from `settings.external_base_url`; without
+  that setting the link is left out. A failure keeps the plain text result.
+- Chat UI: `parseModelArtifact` (`utils/modelArtifact.ts`) accepts only
+  artifact objects whose id and URLs match the routes, including from
+  truncated output. `ModelArtifactCard` renders under the tool row, and
+  `SolidWorksToolResult` renders every SolidWorks result; never show raw JSON
+  for these rows.
+- `ModelArtifactActions` puts View and Download first in the assistant
+  message's action bar, or under the card when the message has none (the
+  `ModelArtifactActionsHost` context). View opens `ModelArtifactModal` through
+  `modelArtifactModalStore.ts`; `ChatPanel` and `PublicSharedChatView` each
+  mount one `ModelArtifactModalHost`. `modelViewerSupport.ts` keeps one live
+  3D viewer at a time. `useArtifactAccess` checks access once per artifact id
+  and clears on sign-out or a user change. `/?artifact=<id>`
+  (`ModelArtifactPage`) stays for MCP links.
+- Viewer libraries: `online-3d-viewer`, `occt-import-js` and `draco3d` are
+  pinned in `ragtime/frontend/package.json`. The `selfHostModelLibraries`
+  plugin in `vite.config.ts` rewrites the viewer's CDN URLs for the other two
+  to `/assets/vendor/` and fails the build when an expected URL is missing.
+  When you bump any of the three, update the plugin's URL map to the URLs the
+  new viewer build references.
+- The chat agent's guide topic is `ragtime/solidworks/guidance/previews.md`.
 
 ## Agent updates
 
@@ -139,6 +216,16 @@ Tests**); do not rename them. "Chat agent" means the LLM that calls the tool.
   mutex must be owned by that user, `install` runs only from
   `%LOCALAPPDATA%\RagtimeSolidWorks\host`, and the agent log never records
   request bodies.
+- Exports and previews never save, rename or change the source document, and
+  Ragtime fetches only generated files from the agent work folder. Tool
+  results, stored metadata and links carry artifact ids and URLs, never file
+  paths; the chat model's preview image comes from the store by validated id,
+  never from a path in tool output.
+- Artifact content always needs Ragtime sign-in and `authorize_artifact`;
+  there are no signed or public URLs, including links handed to MCP clients.
+  Anyone who can use the tool can export the full geometry of any file the
+  Windows account can open. That was accepted, so there is no separate
+  setting for it.
 
 ## PDM link
 
@@ -162,14 +249,19 @@ Tests**); do not rename them. "Chat agent" means the LLM that calls the tool.
   (`SOLIDWORKS_HOST_ARTIFACT_DIR`). The dev stack mounts `dotnet/artifacts`
   there read-only; build it with the command in `dotnet/README.md` and
   recreate the `ragtime` service, or the wizard shows **Installer missing**.
-- Tests: `tests/test_solidworks_*.py`; the `SolidWorks*`, `solidworksPdm*` and
-  `usePdm*` Vitest files; agent tests with
+- Tests: `tests/test_solidworks_*.py` and `tests/test_mcp_solidworks_artifacts.py`;
+  the `SolidWorks*`, `solidworksPdm*`, `usePdm*`, `ModelArtifact*`,
+  `ModelViewer*`, `ArtifactNotice*`, `modelArtifact*`, `solidworksToolResult*`
+  and `useArtifactAccess*` Vitest files. CI runs pyright over the whole
+  project, not only changed files: when `SolidworksTransport` gains a method,
+  add it to every transport fake under `tests/`, because pyright checks each
+  fake against the Protocol. Agent tests run with
   `docker build --target solidworks-host-test -f docker/Dockerfile .`, also run
   by `tests/run_all_tests.sh` and the required **SolidWorks Host Tests** CI
   job.
 - Agent tests run against fakes; no CI job runs Windows, SolidWorks or the PDM
-  client. Verify COM, PDM and Windows behavior on a real machine and report
-  what was not verified live.
+  client. Verify COM, PDM and Windows behavior on a real machine, including
+  each export format and preview, and report what was not verified live.
 - Restore with `--locked-mode` against `packages.lock.json`. SolidWorks interop
   DLLs ship with SHA-256 hashes pinned in `dotnet/third-party-hashes.txt`. PDM
   interop types are embedded; `build-host-zip.sh` fails if an `EPDM*.dll`
