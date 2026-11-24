@@ -2389,6 +2389,10 @@ export interface UpdateToolGroupRequest {
   sort_order?: number;
 }
 
+export interface ReorderToolGroupsRequest {
+  group_ids: string[];
+}
+
 export interface CreateToolConfigRequest {
   name: string;
   tool_type: ToolType;

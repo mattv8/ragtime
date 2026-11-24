@@ -17,6 +17,8 @@
 @import './workbench-userspace.css';
 @import './workbench-admin.css';
 @import './solidworks.css';
+@import './tool-cards.css';
+@import './tool-sections.css';
 @import './responsive.css';
 
 @import './user-management.css';
