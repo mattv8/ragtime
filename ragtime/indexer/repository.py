@@ -2995,6 +2995,31 @@ class IndexerRepository:
         except Exception:
             return False
 
+    async def reorder_tool_groups(self, group_ids: list[str]) -> None:
+        """Assign sort_order to every group in the given order."""
+        if len(set(group_ids)) != len(group_ids):
+            raise ValueError("Tool group IDs must be unique")
+
+        db = await self._get_db()
+        existing = await db.toolgroup.find_many()
+        existing_ids = {group.id for group in existing}
+        unknown_ids = [group_id for group_id in group_ids if group_id not in existing_ids]
+        if unknown_ids:
+            raise ValueError(f"Unknown tool group IDs: {', '.join(unknown_ids)}")
+        missing_ids = sorted(existing_ids - set(group_ids))
+        if missing_ids:
+            raise ValueError(f"Missing tool group IDs: {', '.join(missing_ids)}")
+        if not group_ids:
+            return
+
+        updates_json = json.dumps([{"id": group_id, "sort_order": idx * 100} for idx, group_id in enumerate(group_ids)]).replace("'", "''")
+        await db.execute_raw(f"""
+            UPDATE tool_groups AS t
+            SET sort_order = v.sort_order
+            FROM jsonb_to_recordset('{updates_json}'::jsonb) AS v(id text, sort_order int)
+            WHERE t.id = v.id
+            """)
+
     async def get_tool_ids_for_groups(self, group_ids: list[str]) -> list[str]:
         """Return enabled tool config IDs that belong to any of the given groups."""
         if not group_ids:

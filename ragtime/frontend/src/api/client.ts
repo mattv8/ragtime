@@ -51,6 +51,7 @@ import type {
   ToolGroup,
   CreateToolGroupRequest,
   UpdateToolGroupRequest,
+  ReorderToolGroupsRequest,
   PostgresDiscoverRequest,
   PostgresDiscoverResponse,
   MssqlDiscoverRequest,
@@ -2544,6 +2545,15 @@ export const api = {
       body: JSON.stringify(request),
     });
     return handleResponse<ToolGroup>(response);
+  },
+
+  async reorderToolGroups(request: ReorderToolGroupsRequest): Promise<void> {
+    const response = await apiFetch(`${API_BASE}/tool-groups/reorder`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    await handleResponse<{ message: string }>(response);
   },
 
   async updateToolGroup(groupId: string, request: UpdateToolGroupRequest): Promise<ToolGroup> {

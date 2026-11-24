@@ -352,6 +352,7 @@ from ragtime.indexer.models import (
     ReceivedConversationShare,
     RefreshLiveVisualizationRequest,
     RefreshLiveVisualizationResponse,
+    ReorderToolGroupsRequest,
     ReorderToolsRequest,
     RepoVisibilityResponse,
     RetryVisualizationRequest,
@@ -2652,6 +2653,16 @@ async def create_tool_group(request: CreateToolGroupRequest, _user: User = Depen
         description=request.description,
         sort_order=request.sort_order,
     )
+
+
+@router.post("/tool-groups/reorder", tags=["Tool Groups"])
+async def reorder_tool_groups(request: ReorderToolGroupsRequest, _user: User = Depends(require_admin)):
+    """Bulk-update the display order of all tool groups. Admin only."""
+    try:
+        await repository.reorder_tool_groups(request.group_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": "Tool groups reordered"}
 
 
 @router.put("/tool-groups/{group_id}", response_model=ToolGroup, tags=["Tool Groups"])

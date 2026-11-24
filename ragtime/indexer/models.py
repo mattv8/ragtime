@@ -2719,6 +2719,12 @@ class ReorderToolsRequest(BaseModel):
     tool_ids: list[str] = Field(description="Tool IDs in the desired display order; sort_order is assigned as index * 100")
 
 
+class ReorderToolGroupsRequest(BaseModel):
+    """Request to bulk-reorder tool groups."""
+
+    group_ids: list[str] = Field(description="Every tool group ID exactly once, in display order; sort_order = index * 100")
+
+
 class CreateToolGroupRequest(BaseModel):
     """Request to create a tool group."""
 
