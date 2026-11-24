@@ -42,8 +42,15 @@ describe('ToolCard', () => {
 
   it('formats PDM document counts in its facts', () => {
     const stats = { document_count: 44595 } as NonNullable<ToolCardProps['pdmStats']>;
-    render(<ToolCard {...props({ tool: pdmTool, pdmStats: stats })} />);
+    const { container } = render(<ToolCard {...props({ tool: pdmTool, pdmStats: stats })} />);
     expect(screen.getByText(`${new Intl.NumberFormat().format(44595)} documents`)).toBeTruthy();
+    const rows = container.querySelectorAll('.tool-card-facts > div');
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.matches('.tool-card-schema-stats')).toBe(true);
+      expect(row.querySelector('dt.schema-stats-label')).toBeTruthy();
+      expect(row.querySelector('dd.schema-stats-value')).toBeTruthy();
+    }
   });
 
   it('omits heartbeat errors while disabled or testing', () => {

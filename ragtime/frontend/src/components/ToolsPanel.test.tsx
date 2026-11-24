@@ -196,7 +196,7 @@ describe('ToolsPanel', () => {
     render(<ToolsPanel />);
     await screen.findByText('PDM Tool');
     const row = screen.queryByTestId(`pdm-linked-from-${pdmTool.id}`);
-    if (linked) expect(row?.textContent).toBe('Used byCAD workstation');
+    if (linked) expect(row?.textContent).toBe('Used by:CAD workstation');
     else expect(row).toBeNull();
   });
 
@@ -242,7 +242,7 @@ describe('ToolsPanel', () => {
     render(<ToolsPanel />);
     fireEvent.contextMenu(await screen.findByRole('heading', { name: 'PDM Tool' }));
     expect(screen.getByTestId(`pdm-linked-from-${pdmTool.id}`).textContent).toBe(
-      'Used byCAD workstation, Second workstation',
+      'Used by:CAD workstation, Second workstation',
     );
     fireEvent.click(
       within(document.querySelector('.userspace-tool-context-menu') as HTMLElement).getByRole(

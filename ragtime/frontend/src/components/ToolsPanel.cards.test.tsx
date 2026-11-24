@@ -529,7 +529,7 @@ describe('ToolsPanel', () => {
     await screen.findByText('PDM Tool');
 
     expect(apiMock.getPdmIndexStats).toHaveBeenCalledWith('tool-pdm');
-    expect(await screen.findByText('PDM index')).toBeTruthy();
+    expect(await screen.findByText('PDM Index:')).toBeTruthy();
     expect(screen.getByText(`${new Intl.NumberFormat().format(1160)} documents`)).toBeTruthy();
   });
 

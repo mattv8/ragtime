@@ -153,34 +153,17 @@
 #tools-connections .tool-card-facts {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
-  margin: 0;
-  padding-top: var(--space-sm);
-  border-top: 1px solid var(--color-border);
-  font-size: var(--text-xs);
-}
-
-#tools-connections .tool-card-facts > div {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
   gap: var(--space-sm);
-}
-
-#tools-connections .tool-card-facts dt {
-  color: var(--color-text-secondary);
-}
-
-#tools-connections .tool-card-facts dd {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-xs);
-  min-width: 0;
   margin: 0;
-  overflow-wrap: anywhere;
 }
 
-#tools-connections .tool-card-fact-detail {
-  color: var(--color-text-secondary);
+/* The stack's gap spaces the boxes; the shared rule's margin-bottom would add to it. */
+#tools-connections .tool-card-facts .tool-card-schema-stats {
+  margin-bottom: 0;
+}
+
+#tools-connections .tool-card-facts :is(dt, dd) {
+  margin: 0;
 }
 
 #tools-connections .tool-card-footer {

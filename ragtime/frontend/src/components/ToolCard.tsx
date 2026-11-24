@@ -757,13 +757,13 @@ export function ToolCard({
         linkedFrom.length > 0) && (
         <dl className="tool-card-facts">
           {hasSchemaIndexing && schemaStats && schemaStats.embedding_count > 0 && (
-            <div>
-              <dt>Schema index</dt>
-              <dd>
-                <span>{formatToolCount(schemaStats.embedding_count)} tables</span>
+            <div className="tool-card-schema-stats">
+              <dt className="schema-stats-label">Schema Index:</dt>
+              <dd className="schema-stats-value">
+                {formatToolCount(schemaStats.embedding_count)} tables
                 {schemaStats.estimated_memory_mb != null && (
-                  <span className="tool-card-fact-detail" title="Estimated pgvector storage size">
-                    {formatMemory(schemaStats.estimated_memory_mb)}
+                  <span className="schema-stats-memory" title="Estimated pgvector storage size">
+                    ({formatMemory(schemaStats.estimated_memory_mb)})
                   </span>
                 )}
               </dd>
@@ -771,30 +771,32 @@ export function ToolCard({
           )}
 
           {tool.tool_type === 'solidworks_pdm' && pdmStats && pdmStats.document_count > 0 && (
-            <div>
-              <dt>PDM index</dt>
-              <dd>{formatToolCount(pdmStats.document_count)} documents</dd>
-            </div>
-          )}
-
-          {tool.tool_type === 'solidworks_pdm' && (
-            <div data-testid={`pdm-tool-summary-${tool.id}`}>
-              <dt>Schedule</dt>
-              <dd>
-                <span>{pdmSchedule}</span>
-                {pdmStats?.last_indexed_at && (
-                  <span className="tool-card-fact-detail" title={pdmStats.last_indexed_at}>
-                    last success {formatToolFactDate(pdmStats.last_indexed_at)}
-                  </span>
-                )}
+            <div className="tool-card-schema-stats">
+              <dt className="schema-stats-label">PDM Index:</dt>
+              <dd className="schema-stats-value">
+                {formatToolCount(pdmStats.document_count)} documents
               </dd>
             </div>
           )}
 
+          {tool.tool_type === 'solidworks_pdm' && (
+            <div className="tool-card-schema-stats" data-testid={`pdm-tool-summary-${tool.id}`}>
+              <dt className="schema-stats-label">PDM schedule:</dt>
+              <dd className="schema-stats-value">{pdmSchedule}</dd>
+              {pdmStats?.last_indexed_at && (
+                <dd className="schema-stats-memory" title={pdmStats.last_indexed_at}>
+                  Last success: {formatToolFactDate(pdmStats.last_indexed_at)}
+                </dd>
+              )}
+            </div>
+          )}
+
           {linkedFrom.length > 0 && (
-            <div data-testid={`pdm-linked-from-${tool.id}`}>
-              <dt>Used by</dt>
-              <dd>{linkedFrom.map((relation) => relation.solidworksToolName).join(', ')}</dd>
+            <div className="tool-card-schema-stats" data-testid={`pdm-linked-from-${tool.id}`}>
+              <dt className="schema-stats-label">Used by:</dt>
+              <dd className="schema-stats-value">
+                {linkedFrom.map((relation) => relation.solidworksToolName).join(', ')}
+              </dd>
             </div>
           )}
         </dl>

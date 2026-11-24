@@ -1383,6 +1383,21 @@ legend {
   border-radius: var(--radius-sm);
 }
 
+.schema-stats-label {
+  color: var(--color-text-secondary);
+}
+
+.schema-stats-value {
+  color: var(--color-primary);
+  font-weight: 500;
+}
+
+.schema-stats-memory {
+  color: var(--color-text-muted);
+  font-weight: normal;
+  margin-left: var(--space-xs);
+}
+
 .tool-card-footer {
   display: flex;
   flex-direction: column;
