@@ -164,6 +164,12 @@
     display: flex;
   }
 
+  .chat-workbench-topnav .topnav-links {
+    display: flex;
+    order: initial;
+    width: auto;
+  }
+
   .topnav-link {
     padding: var(--space-sm) var(--space-sm);
     font-size: var(--text-sm);
