@@ -108,6 +108,8 @@ ragtime/indexer/static/dist/
 # Agent session scratch files
 .swarm/
 .opencode/
+.openchamber/**
+!.openchamber/project.json
 .omo/
 .ruff_cache/
 .superpowers/
