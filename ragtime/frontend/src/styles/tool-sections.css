@@ -1,0 +1,238 @@
+/* Tools page group sections, toolbar and group dialogs (#tools-connections). */
+.tools-section + .tools-section {
+  margin-top: var(--space-md);
+}
+.tools-section-header {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  gap: var(--space-sm);
+  border-bottom: 1px solid var(--color-border);
+}
+.tools-section-heading {
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.tools-section-heading button {
+  display: flex;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-sm);
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--text-base);
+  font-weight: 600;
+  cursor: pointer;
+}
+.tools-section-title {
+  min-width: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tools-section-count {
+  flex: none;
+  font-weight: normal;
+}
+.tools-section-heading svg {
+  color: var(--color-text-muted);
+  width: 16px;
+  height: 16px;
+}
+.tools-section-count,
+.tools-section-description,
+.tools-group-dialog-count,
+.tools-group-dialog-description {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+.tools-section-health {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+.tools-section-health[data-tone='error'] {
+  color: var(--color-error);
+}
+.tools-section-health[data-tone='success'] {
+  color: var(--color-success);
+}
+.tools-section-health svg {
+  width: 14px;
+  height: 14px;
+}
+.tools-section-actions {
+  flex: none;
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.tools-section-actions:hover {
+  background: var(--color-surface-hover);
+}
+.tools-section-actions svg {
+  width: 18px;
+  height: 18px;
+}
+.tools-section-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: var(--space-xs) 0 0;
+}
+.tools-section-body {
+  margin-top: var(--space-sm);
+}
+.tools-section-empty {
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+.tools-section-header.is-drop-target,
+.tools-section-body.is-drop-target {
+  outline: 2px dashed var(--color-primary);
+}
+.tools-section-drop-label {
+  color: var(--color-primary);
+  font-size: var(--text-sm);
+}
+.tools-section button:focus-visible,
+.tools-group-dialog-option input:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+.tools-group-dialog-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  min-height: 32px;
+  padding: var(--space-xs) var(--space-sm);
+}
+.tools-group-dialog-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.tools-group-dialog-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tools-group-dialog-error {
+  color: var(--color-error);
+  font-size: var(--text-sm);
+  margin-top: var(--space-xs);
+}
+.tools-group-dialog-option[data-selected='true'] {
+  background: var(--color-surface-active);
+}
+.tools-group-dialog-option-details {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tools-group-dialog-option-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+.tools-group-dialog-option-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tools-group-dialog-count,
+.tools-group-dialog-option-summary .tool-badge {
+  flex: none;
+}
+.tools-group-dialog-description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (pointer: coarse) {
+  .tools-section-header {
+    min-height: 44px;
+  }
+  .tools-section-header button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .tools-group-dialog-option,
+  .tools-group-dialog-new-name input {
+    min-height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tools-section *,
+  .tools-group-dialog-option {
+    transition: none;
+  }
+}
+
+/* Keeps health aligned in sections without a menu (e.g. Ungrouped). */
+.tools-section-actions-spacer {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+
+/* Move dialog radios: theme accent, aligned with the first text line. */
+.tools-group-dialog-option input[type='radio'] {
+  accent-color: var(--color-primary);
+  flex: none;
+  margin: 2px 0 0;
+}
+
+/* Dialog text inputs: plain inputs are not covered by the shared text-input rule, so match it here. */
+#tools-group-dialog .form-group :is(input, textarea),
+#tools-move-to-group-dialog .tools-group-dialog-new-name input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: var(--text-base);
+  color: var(--color-text-primary);
+  background: var(--color-input-bg);
+  border: 1px solid var(--color-input-border);
+  border-radius: var(--radius-md);
+}
+#tools-group-dialog .form-group :is(input, textarea):focus-visible,
+#tools-move-to-group-dialog .tools-group-dialog-new-name input:focus-visible {
+  outline: none;
+  border-color: var(--color-input-focus);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+/* Modern forces .btn-danger to the primary colour; keep the destructive confirm in error colour. */
+[data-theme-pack='modern'] #tools-delete-group-dialog .btn-danger {
+  background: var(--color-error);
+  border-color: var(--color-error);
+  color: var(--color-text-inverse);
+}
+[data-theme-pack='modern'] #tools-delete-group-dialog .btn-danger:hover:not(:disabled) {
+  background: var(--color-error);
+  border-color: var(--color-error);
+  color: var(--color-text-inverse);
+}
