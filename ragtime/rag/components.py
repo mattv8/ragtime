@@ -7948,6 +7948,13 @@ class RAGComponents:
         )
         return await self._ocr_images_in_content(content)
 
+    async def _request_supports_reference_images(self, model_id: Optional[str], provider: Optional[str]) -> bool:
+        if not model_id:
+            return True
+        if normalize_provider_name(provider or "") == "openai_compatible":
+            return False
+        return await supports_image_input(model_id)
+
     async def _ocr_images_after_no_image_support_error(
         self, content: Any, model_id: Optional[str], *, context: str, provider: Optional[str] = None
     ) -> Any | None:
@@ -7963,7 +7970,7 @@ class RAGComponents:
         )
         return await self._ocr_images_in_content(content)
 
-    def _build_local_image_data_url(self, file_path: str) -> str | None:
+    def _build_local_image_data_url(self, file_path: str, *, content_type: str | None = None, validate_png: bool = False) -> str | None:
         """Load a local image file and convert it to a downsampled data URL."""
         raw_path = (file_path or "").strip()
         if not raw_path:
@@ -7989,7 +7996,7 @@ class RAGComponents:
             return None
 
         suffix = resolved_path.suffix.lower()
-        content_type = {
+        content_type = content_type or {
             ".png": "image/png",
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
@@ -8000,7 +8007,15 @@ class RAGComponents:
             return None
 
         try:
-            encoded = base64.b64encode(resolved_path.read_bytes()).decode("ascii")
+            image_bytes = resolved_path.read_bytes()
+            if validate_png:
+                if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                    return None
+                with Image.open(io.BytesIO(image_bytes)) as image:
+                    if image.format != "PNG":
+                        return None
+                    image.load()
+            encoded = base64.b64encode(image_bytes).decode("ascii")
         except Exception:
             logger.exception(
                 "Failed reading local image for tool context: %s",
@@ -8010,6 +8025,45 @@ class RAGComponents:
 
         data_url = f"data:{content_type};base64,{encoded}"
         return self._downsample_image_data_url(data_url)
+
+    def _build_solidworks_reference_content(self, observation: Any) -> list[dict[str, Any]] | None:
+        from ragtime.solidworks.artifacts import ARTIFACT_URL_PREFIX, ArtifactNotFound, load_artifact_sync
+
+        try:
+            payload = json.loads(observation)
+            if not isinstance(payload, dict) or payload.get("ok") is not True or payload.get("operation") not in {"model.preview", "model.export"}:
+                return None
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                return None
+            artifact = result.get("artifact")
+            artifact = artifact if isinstance(artifact, dict) else {}
+            preview = (
+                artifact
+                if artifact.get("kind") == "preview"
+                else next((item for item in result.get("artifacts", []) if isinstance(item, dict) and item.get("kind") == "preview"), {})
+            )
+            artifact_id = preview.get("id")
+            if not artifact_id:
+                match = re.fullmatch(re.escape(ARTIFACT_URL_PREFIX) + r"/([0-9a-f]{32})/content", str(artifact.get("preview_image_url") or ""))
+                artifact_id = match.group(1) if match else None
+            if not isinstance(artifact_id, str) or not re.fullmatch(r"[0-9a-f]{32}", artifact_id):
+                return None
+            meta, path = load_artifact_sync(artifact_id)
+            if meta.get("expired") or meta.get("kind") != "preview" or meta.get("format") != "png":
+                return None
+            image_data_url = self._build_local_image_data_url(str(path), content_type="image/png", validate_png=True)
+        except (ArtifactNotFound, OSError, ValueError, TypeError, KeyError, AttributeError):
+            return None
+        if not image_data_url:
+            return None
+        return [
+            {
+                "type": "text",
+                "text": f"Reference image from the latest SolidWorks preview ({meta.get('file_name', 'preview.png')}). Use this image when describing the model.",
+            },
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+        ]
 
     def _build_screenshot_reference_content(self, observation: Any) -> list[dict[str, Any]] | None:
         """Attach the latest userspace screenshot as multimodal tool context."""
@@ -8060,13 +8114,23 @@ class RAGComponents:
             return []
 
         latest_screenshot_tool_call_id: str | None = None
-        latest_screenshot_observation: Any = None
+        reference_content: list[dict[str, Any]] | None = None
         if include_latest_screenshot_image:
-            for step in intermediate_steps:
+            for step in reversed(intermediate_steps):
                 action = step[0] if isinstance(step, tuple) and step else None
-                if getattr(action, "tool", "") == "capture_userspace_screenshot":
-                    latest_screenshot_tool_call_id = str(getattr(action, "tool_call_id", "") or "") or None
-                    latest_screenshot_observation = step[1] if isinstance(step, tuple) and len(step) > 1 else None
+                tool_name = getattr(action, "tool", "")
+                observation = step[1] if isinstance(step, tuple) and len(step) > 1 else None
+                if tool_name == "capture_userspace_screenshot":
+                    candidate = self._build_screenshot_reference_content(observation)
+                elif isinstance(tool_name, str) and tool_name.startswith("solidworks_"):
+                    candidate = self._build_solidworks_reference_content(observation)
+                else:
+                    continue
+                tool_call_id = str(getattr(action, "tool_call_id", "") or "")
+                if candidate is not None and tool_call_id:
+                    latest_screenshot_tool_call_id = tool_call_id
+                    reference_content = candidate
+                    break
 
         formatted_messages: list[BaseMessage] = []
         for msg in format_to_tool_messages(intermediate_steps):
@@ -8075,13 +8139,12 @@ class RAGComponents:
                     ToolMessage(
                         content=strip_table_metadata(msg.content),
                         tool_call_id=msg.tool_call_id,
-                        additional_kwargs=(dict(msg.additional_kwargs) if getattr(msg, "additional_kwargs", None) else None),
+                        additional_kwargs=dict(msg.additional_kwargs or {}),
                     )
                 )
                 continue
             formatted_messages.append(msg)
 
-        reference_content = self._build_screenshot_reference_content(latest_screenshot_observation)
         if latest_screenshot_tool_call_id and reference_content is not None:
             augmented_messages: list[BaseMessage] = []
             for msg in formatted_messages:
@@ -8095,7 +8158,7 @@ class RAGComponents:
                         ToolMessage(
                             content=cast(str | list[str | dict[str, Any]], content),
                             tool_call_id=msg.tool_call_id,
-                            additional_kwargs=(dict(msg.additional_kwargs) if getattr(msg, "additional_kwargs", None) else None),
+                            additional_kwargs=dict(msg.additional_kwargs or {}),
                         )
                     )
                 else:
@@ -9425,6 +9488,7 @@ class RAGComponents:
             llm=llm_resolution.llm,
             turn_system_content=turn_system_content,
             max_iterations=max(1, remaining_iterations),
+            include_reference_images=request_tool_state.get("include_reference_images", True),
         )
         return (
             rebuilt_executor,
@@ -16145,6 +16209,7 @@ class RAGComponents:
         llm: Optional[Any] = None,
         turn_system_content: Optional[str] = None,
         max_iterations: int | None = None,
+        include_reference_images: bool = True,
     ) -> Optional[AgentExecutor]:
         """Build a lightweight executor for request-scoped tool filtering."""
         # This is the executor boundary, before LangChain invokes a tool and
@@ -16183,7 +16248,7 @@ class RAGComponents:
             runtime_llm,
             tools,
             prompt,
-            message_formatter=self._format_intermediate_steps_for_agent,
+            message_formatter=lambda steps: self._format_intermediate_steps_for_agent(steps, include_latest_screenshot_image=include_reference_images),
         )
 
         resolved_max_iterations = max_iterations if max_iterations is not None else 15
@@ -17828,6 +17893,7 @@ class RAGComponents:
                 )
             )
             request_llm = llm_resolution.llm
+            request_tool_state["include_reference_images"] = await self._request_supports_reference_images(llm_resolution.model, llm_resolution.provider)
 
             if runtime_tools:
                 scoped_prompt = system_prompt + tool_scope_prompt
@@ -17836,6 +17902,7 @@ class RAGComponents:
                     scoped_prompt,
                     llm=request_llm,
                     turn_system_content=turn_system_content,
+                    include_reference_images=request_tool_state["include_reference_images"],
                 )
             elif executor:
                 # Default executor exists but needs turn system content injected
@@ -17845,6 +17912,7 @@ class RAGComponents:
                     scoped_prompt,
                     llm=request_llm,
                     turn_system_content=turn_system_content,
+                    include_reference_images=request_tool_state["include_reference_images"],
                 )
 
             ctx_ms = (time.monotonic() - t_ctx) * 1000
@@ -18335,6 +18403,7 @@ class RAGComponents:
             yield self._chat_runtime_error_message(e, llm_resolution)
             return
         request_llm = llm_resolution.llm
+        request_tool_state["include_reference_images"] = await self._request_supports_reference_images(llm_resolution.model, llm_resolution.provider)
 
         if runtime_tools:
             scoped_prompt = system_prompt + tool_scope_prompt
@@ -18343,6 +18412,7 @@ class RAGComponents:
                 scoped_prompt,
                 llm=request_llm,
                 turn_system_content=turn_system_content,
+                include_reference_images=request_tool_state["include_reference_images"],
             )
         elif executor:
             # Default executor exists but needs turn system content injected
@@ -18352,6 +18422,7 @@ class RAGComponents:
                 scoped_prompt,
                 llm=request_llm,
                 turn_system_content=turn_system_content,
+                include_reference_images=request_tool_state["include_reference_images"],
             )
 
         ctx_ms = (time.monotonic() - t_ctx) * 1000
@@ -19175,7 +19246,11 @@ class RAGComponents:
                             attempt_chat_history.append(HumanMessage(content=attempt_original_input))
                             attempt_history_has_original_input = True
                         if attempt_intermediate_steps:
-                            attempt_chat_history.extend(self._format_intermediate_steps_for_agent(attempt_intermediate_steps))
+                            attempt_chat_history.extend(
+                                self._format_intermediate_steps_for_agent(
+                                    attempt_intermediate_steps, include_latest_screenshot_image=request_tool_state["include_reference_images"]
+                                )
+                            )
                         else:
                             attempt_chat_history.extend(attempt_replayed_tool_messages)
                         attempt_input = INTERNAL_AGENT_CONTINUATION_PROMPT
