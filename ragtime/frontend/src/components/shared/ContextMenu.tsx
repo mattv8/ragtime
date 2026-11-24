@@ -1,5 +1,5 @@
-import { forwardRef, useCallback, useMemo } from 'react';
-import type { MutableRefObject, ReactNode } from 'react';
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { KeyboardEvent, MutableRefObject, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '../Icon';
 import type { IconType } from '../Icon';
@@ -18,12 +18,45 @@ export interface ContextMenuProps {
   items: ContextMenuItem[];
   x: number;
   y: number;
+  autoFocus?: boolean;
+  onClose?: () => void;
+  ariaLabel?: string;
+}
+
+const MENU_PADDING = 8;
+const ESTIMATED_MENU_WIDTH = 200;
+const ESTIMATED_ITEM_HEIGHT = 52;
+
+/** Anchor-relative position, flipped left and lifted up when the menu would leave the viewport. */
+function getMenuPosition(x: number, y: number, menuHeight: number): { x: number; y: number } {
+  let nextX = x + MENU_PADDING;
+  let nextY = y + MENU_PADDING;
+  if (typeof window !== 'undefined') {
+    if (nextX + ESTIMATED_MENU_WIDTH > window.innerWidth - MENU_PADDING) {
+      nextX = Math.max(MENU_PADDING, x - MENU_PADDING);
+    }
+    if (nextY + menuHeight > window.innerHeight - MENU_PADDING) {
+      nextY = Math.max(MENU_PADDING, window.innerHeight - menuHeight - MENU_PADDING);
+    }
+  }
+  return { x: nextX, y: nextY };
+}
+
+/** Items with a tab stop; disabled items use tabIndex -1 and are skipped. */
+function getEnabledItems(container: HTMLElement | null): HTMLElement[] {
+  if (!container) return [];
+  return Array.from(container.children).filter(
+    (child): child is HTMLElement => child instanceof HTMLElement && child.tabIndex >= 0,
+  );
 }
 
 export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(
-  ({ items, x, y }, forwardedRef) => {
+  ({ items, x, y, autoFocus = false, onClose, ariaLabel }, forwardedRef) => {
+    const containerRef = useRef<HTMLDivElement | null>(null);
+
     const setRefs = useCallback(
       (node: HTMLDivElement | null) => {
+        containerRef.current = node;
         if (typeof forwardedRef === 'function') {
           forwardedRef(node);
         } else if (forwardedRef) {
@@ -33,20 +66,55 @@ export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(
       [forwardedRef],
     );
 
-    const position = useMemo(() => {
-      const PADDING = 8;
-      let nextX = x + PADDING;
-      let nextY = y + PADDING;
-      if (typeof window !== 'undefined') {
-        if (nextX + 200 > window.innerWidth - PADDING) {
-          nextX = Math.max(PADDING, x - PADDING);
-        }
-        if (nextY + items.length * 52 > window.innerHeight - PADDING) {
-          nextY = Math.max(PADDING, window.innerHeight - items.length * 52 - PADDING);
-        }
+    useEffect(() => {
+      if (!autoFocus) return;
+      getEnabledItems(containerRef.current)[0]?.focus();
+    }, [autoFocus]);
+
+    const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+      const enabled = getEnabledItems(containerRef.current);
+      if (enabled.length === 0) return;
+      const currentIndex = enabled.findIndex((element) => element.contains(event.target as Node));
+      const lastIndex = enabled.length - 1;
+
+      const focusAt = (index: number) => {
+        event.preventDefault();
+        enabled[index]?.focus();
+      };
+
+      switch (event.key) {
+        case 'ArrowDown':
+          focusAt(currentIndex < 0 || currentIndex === lastIndex ? 0 : currentIndex + 1);
+          break;
+        case 'ArrowUp':
+          focusAt(currentIndex <= 0 ? lastIndex : currentIndex - 1);
+          break;
+        case 'Home':
+          focusAt(0);
+          break;
+        case 'End':
+          focusAt(lastIndex);
+          break;
+        case 'Escape':
+          onClose?.();
+          break;
+        case 'Tab':
+          if (event.shiftKey ? currentIndex === 0 : currentIndex === lastIndex) {
+            onClose?.();
+          }
+          break;
       }
-      return { x: nextX, y: nextY };
-    }, [items.length, x, y]);
+    };
+
+    // First paint uses an estimate; the measured height then keeps the bottom edge on screen.
+    const [position, setPosition] = useState(() =>
+      getMenuPosition(x, y, items.length * ESTIMATED_ITEM_HEIGHT),
+    );
+    useLayoutEffect(() => {
+      const menu = containerRef.current;
+      if (!menu) return;
+      setPosition(getMenuPosition(x, y, menu.getBoundingClientRect().height));
+    }, [x, y, items.length]);
 
     if (items.length === 0) {
       return null;
@@ -56,6 +124,9 @@ export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(
       <div
         ref={setRefs}
         className="userspace-tool-context-menu"
+        role={ariaLabel ? 'group' : undefined}
+        aria-label={ariaLabel}
+        onKeyDown={handleKeyDown}
         style={{
           position: 'fixed',
           top: position.y,
@@ -93,20 +164,22 @@ export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(
                   className="toggle-switch"
                   style={{ pointerEvents: 'none', margin: '2px 0 0 0', flexShrink: 0 }}
                 >
-                  <input type="checkbox" checked={item.checked} disabled={item.disabled} readOnly />
+                  <input
+                    type="checkbox"
+                    tabIndex={-1}
+                    checked={item.checked}
+                    disabled={item.disabled}
+                    readOnly
+                  />
                   <span className="toggle-slider"></span>
                 </label>
               ) : isCheckbox ? (
                 <input
                   type="checkbox"
+                  tabIndex={-1}
                   checked={item.checked}
                   disabled={item.disabled}
-                  onChange={(event) => {
-                    event.stopPropagation();
-                    if (!item.disabled) {
-                      item.onSelect();
-                    }
-                  }}
+                  readOnly
                 />
               ) : null}
               {item.icon && <Icon name={item.icon} size={16} />}
