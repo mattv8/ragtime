@@ -28,7 +28,11 @@ import { ToolGroupDeleteDialog } from './ToolGroupDeleteDialog';
 import { MoveToGroupDialog, type MoveToGroupTarget } from './MoveToGroupDialog';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
 import { useToast, ToastContainer } from './shared/Toast';
-import { ContextMenu } from './shared/ContextMenu';
+import {
+  ContextMenu,
+  type ContextMenuAnchorRect,
+  type ContextMenuPlacement,
+} from './shared/ContextMenu';
 import {
   SearchFilterBar,
   searchFilterTextMatchesQuery,
@@ -143,6 +147,11 @@ interface PendingFocus {
   elementId: string;
   /** The group whose element is requested; when it no longer exists the request is dropped. */
   groupId: string | null;
+}
+
+/** Copies the rect's edges; DOMRect itself is not a plain placement value. */
+function toAnchorRect(rect: DOMRect): ContextMenuAnchorRect {
+  return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
 }
 
 function sectionToggleId(sectionId: string): string {
@@ -376,10 +385,14 @@ export function ToolsPanel({
   const [groupDialog, setGroupDialog] = useState<GroupDialogState | null>(null);
   const [deleteGroupTarget, setDeleteGroupTarget] = useState<ToolGroup | null>(null);
   const [moveDialogToolId, setMoveDialogToolId] = useState<string | null>(null);
-  const [toolMenu, setToolMenu] = useState<{ toolId: string; x: number; y: number } | null>(null);
-  const [groupMenu, setGroupMenu] = useState<{ sectionId: string; x: number; y: number } | null>(
-    null,
-  );
+  const [toolMenu, setToolMenu] = useState<{
+    toolId: string;
+    placement: ContextMenuPlacement;
+  } | null>(null);
+  const [groupMenu, setGroupMenu] = useState<{
+    sectionId: string;
+    placement: ContextMenuPlacement;
+  } | null>(null);
   const [highlightRequest, setHighlightRequest] = useState<{ elementId: string } | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const toolMenuRef = useRef<HTMLDivElement>(null);
@@ -1212,13 +1225,13 @@ export function ToolsPanel({
     }
     const rect = anchor.getBoundingClientRect();
     toolMenuTriggerRef.current = anchor;
-    setToolMenu({ toolId: tool.id, x: rect.left, y: rect.bottom });
+    setToolMenu({ toolId: tool.id, placement: { anchorRect: toAnchorRect(rect) } });
   };
 
   const openToolMenuAtPointer = (tool: ToolConfig, event: React.MouseEvent) => {
     event.preventDefault();
     toolMenuTriggerRef.current = null;
-    setToolMenu({ toolId: tool.id, x: event.clientX, y: event.clientY });
+    setToolMenu({ toolId: tool.id, placement: { x: event.clientX, y: event.clientY } });
   };
 
   const openGroupMenuFromButton = (sectionId: string, anchor: HTMLElement) => {
@@ -1228,13 +1241,13 @@ export function ToolsPanel({
     }
     const rect = anchor.getBoundingClientRect();
     groupMenuTriggerRef.current = anchor;
-    setGroupMenu({ sectionId, x: rect.left, y: rect.bottom });
+    setGroupMenu({ sectionId, placement: { anchorRect: toAnchorRect(rect) } });
   };
 
   const openGroupMenuAtPointer = (sectionId: string, event: React.MouseEvent) => {
     event.preventDefault();
     groupMenuTriggerRef.current = null;
-    setGroupMenu({ sectionId, x: event.clientX, y: event.clientY });
+    setGroupMenu({ sectionId, placement: { x: event.clientX, y: event.clientY } });
   };
 
   // Focus the element requested by the last state change. The request waits across renders until
@@ -2271,8 +2284,7 @@ export function ToolsPanel({
                           }),
                       },
                     ]}
-                    x={toolMenu.x}
-                    y={toolMenu.y}
+                    {...toolMenu.placement}
                   />
                 );
               })()}
@@ -2318,8 +2330,7 @@ export function ToolsPanel({
                         onSelect: () => closeAnd(() => setDeleteGroupTarget(group)),
                       },
                     ]}
-                    x={groupMenu.x}
-                    y={groupMenu.y}
+                    {...groupMenu.placement}
                   />
                 );
               })()}

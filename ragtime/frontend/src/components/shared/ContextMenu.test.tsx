@@ -1,8 +1,8 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ContextMenu, type ContextMenuItem } from './ContextMenu';
+import { ContextMenu, type ContextMenuItem, type ContextMenuPlacement } from './ContextMenu';
 
 afterEach(() => {
   cleanup();
@@ -27,43 +27,110 @@ function makeItems(
 }
 
 describe('measured placement', () => {
-  it('moves a tall menu up so its bottom stays inside the viewport', () => {
-    const originalInnerHeight = window.innerHeight;
-    window.innerHeight = 500;
-    const rectSpy = vi
-      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-      .mockImplementation(
-        () => ({ top: 0, left: 0, right: 200, bottom: 200, width: 200, height: 200 }) as DOMRect,
-      );
-    try {
-      const { items } = makeItems();
-      render(<ContextMenu items={items} x={20} y={400} />);
-      const menu = document.querySelector('.userspace-tool-context-menu') as HTMLElement;
-      // 400 + 8 + 200 > 500 - 8, so the menu moves up to 500 - 200 - 8.
-      expect(menu.style.top).toBe('292px');
-    } finally {
-      rectSpy.mockRestore();
-      window.innerHeight = originalInnerHeight;
-    }
+  const VIEWPORT_WIDTH = 1000;
+  const VIEWPORT_HEIGHT = 800;
+  const MENU_SIZE = { width: 272, height: 140 };
+  let restore: Array<() => void> = [];
+
+  beforeEach(() => {
+    const originalWidth = window.innerWidth;
+    const originalHeight = window.innerHeight;
+    window.innerWidth = VIEWPORT_WIDTH;
+    window.innerHeight = VIEWPORT_HEIGHT;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      () =>
+        ({
+          top: 0,
+          left: 0,
+          right: MENU_SIZE.width,
+          bottom: MENU_SIZE.height,
+          ...MENU_SIZE,
+        }) as DOMRect,
+    );
+    restore = [
+      () => rectSpy.mockRestore(),
+      () => {
+        window.innerWidth = originalWidth;
+        window.innerHeight = originalHeight;
+      },
+    ];
   });
 
-  it('keeps the anchor position when the menu already fits', () => {
-    const originalInnerHeight = window.innerHeight;
-    window.innerHeight = 800;
-    const rectSpy = vi
-      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
-      .mockImplementation(
-        () => ({ top: 0, left: 0, right: 200, bottom: 100, width: 200, height: 100 }) as DOMRect,
-      );
-    try {
-      const { items } = makeItems();
-      render(<ContextMenu items={items} x={20} y={100} />);
-      const menu = document.querySelector('.userspace-tool-context-menu') as HTMLElement;
-      expect(menu.style.top).toBe('108px');
-    } finally {
-      rectSpy.mockRestore();
-      window.innerHeight = originalInnerHeight;
-    }
+  afterEach(() => {
+    restore.forEach((fn) => fn());
+  });
+
+  function renderPlaced(placement: ContextMenuPlacement) {
+    const { items } = makeItems();
+    render(<ContextMenu {...placement} items={items} />);
+    return document.querySelector('.userspace-tool-context-menu') as HTMLElement;
+  }
+
+  it.each([
+    ['pointer with room', { x: 100, y: 100 }, '108px', '108px'],
+    ['pointer near the right edge', { x: 990, y: 100 }, '710px', '108px'],
+    ['pointer near the bottom', { x: 100, y: 780 }, '108px', '632px'],
+  ])('places a menu at a %s', (_label, placement, left, top) => {
+    const menu = renderPlaced(placement);
+    expect(menu.style.left).toBe(left);
+    expect(menu.style.top).toBe(top);
+  });
+
+  it.each([
+    [
+      'anchor near the right edge aligns right edges',
+      { left: 960, right: 984, top: 100, bottom: 124 },
+      '712px',
+      '124px',
+    ],
+    [
+      'anchor with room opens below and aligns left edges',
+      { left: 100, right: 124, top: 100, bottom: 124 },
+      '100px',
+      '124px',
+    ],
+    [
+      'anchor near the bottom opens above',
+      { left: 100, right: 124, top: 700, bottom: 724 },
+      '100px',
+      '560px',
+    ],
+  ])('places a menu by anchor rect: %s', (_label, anchorRect, left, top) => {
+    const menu = renderPlaced({ anchorRect });
+    expect(menu.style.left).toBe(left);
+    expect(menu.style.top).toBe(top);
+  });
+
+  it.each([
+    [
+      'anchor near the bottom opens above with the space above it',
+      { anchorRect: { left: 100, right: 124, top: 700, bottom: 724 } },
+      '692px',
+    ],
+    ['pointer with room caps height at the space below', { x: 100, y: 100 }, '684px'],
+  ])('caps the menu height to the free space: %s', (_label, placement, maxHeight) => {
+    const menu = renderPlaced(placement as ContextMenuPlacement);
+    expect(menu.style.maxHeight).toBe(maxHeight);
+  });
+
+  it('restores the placed position after measuring when the menu re-renders with the same size', () => {
+    const { items } = makeItems();
+    const anchorRect = { left: 100, right: 124, top: 100, bottom: 124 };
+    const { rerender } = render(<ContextMenu items={items.slice(0, 3)} anchorRect={anchorRect} />);
+    const menu = document.querySelector('.userspace-tool-context-menu') as HTMLElement;
+    const maxHeightBefore = menu.style.maxHeight;
+
+    // Same stubbed size, so the computed placement is identical and React will not rewrite the style.
+    rerender(<ContextMenu items={items} anchorRect={anchorRect} />);
+
+    expect(menu.style.left).toBe('100px');
+    expect(menu.style.top).toBe('124px');
+    expect(menu.style.maxHeight).toBe(maxHeightBefore);
+  });
+
+  it('keeps the anchor position when the menu already fits (regression)', () => {
+    const menu = renderPlaced({ x: 20, y: 100 });
+    expect(menu.style.top).toBe('108px');
   });
 });
 

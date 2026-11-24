@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, MutableRefObject, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { computeAnchoredMenuPosition } from '@/utils/anchoredMenuPosition';
 import { Icon } from '../Icon';
 import type { IconType } from '../Icon';
 
@@ -14,32 +15,43 @@ export interface ContextMenuItem {
   onSelect: () => void;
 }
 
-export interface ContextMenuProps {
+/** The element a menu belongs to, in viewport coordinates. */
+export interface ContextMenuAnchorRect {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
+/** Where the menu opens: a pointer position, or the element it belongs to. */
+export type ContextMenuPlacement =
+  | { x: number; y: number; anchorRect?: never }
+  | { anchorRect: ContextMenuAnchorRect; x?: never; y?: never };
+
+interface ContextMenuCommonProps {
   items: ContextMenuItem[];
-  x: number;
-  y: number;
   autoFocus?: boolean;
   onClose?: () => void;
   ariaLabel?: string;
 }
 
-const MENU_PADDING = 8;
+export type ContextMenuProps = ContextMenuCommonProps & ContextMenuPlacement;
+
 const ESTIMATED_MENU_WIDTH = 200;
 const ESTIMATED_ITEM_HEIGHT = 52;
+const POINTER_GAP = 8;
 
-/** Anchor-relative position, flipped left and lifted up when the menu would leave the viewport. */
-function getMenuPosition(x: number, y: number, menuHeight: number): { x: number; y: number } {
-  let nextX = x + MENU_PADDING;
-  let nextY = y + MENU_PADDING;
-  if (typeof window !== 'undefined') {
-    if (nextX + ESTIMATED_MENU_WIDTH > window.innerWidth - MENU_PADDING) {
-      nextX = Math.max(MENU_PADDING, x - MENU_PADDING);
-    }
-    if (nextY + menuHeight > window.innerHeight - MENU_PADDING) {
-      nextY = Math.max(MENU_PADDING, window.innerHeight - menuHeight - MENU_PADDING);
-    }
-  }
-  return { x: nextX, y: nextY };
+/**
+ * A pointer becomes a box with inverted edges: a bottom-start menu then opens 8px right of and
+ * below the pointer, and when flipped it ends 8px left of and above it.
+ */
+function getPointerAnchorRect(x: number, y: number): ContextMenuAnchorRect {
+  return {
+    left: x + POINTER_GAP,
+    right: x - POINTER_GAP,
+    top: y - POINTER_GAP,
+    bottom: y + POINTER_GAP,
+  };
 }
 
 /** Items with a tab stop; disabled items use tabIndex -1 and are skipped. */
@@ -51,7 +63,13 @@ function getEnabledItems(container: HTMLElement | null): HTMLElement[] {
 }
 
 export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(
-  ({ items, x, y, autoFocus = false, onClose, ariaLabel }, forwardedRef) => {
+  ({ items, x, y, anchorRect, autoFocus = false, onClose, ariaLabel }, forwardedRef) => {
+    const anchor = anchorRect ?? getPointerAnchorRect(x ?? 0, y ?? 0);
+    const anchorLeft = anchor.left;
+    const anchorRight = anchor.right;
+    const anchorTop = anchor.top;
+    const anchorBottom = anchor.bottom;
+
     const containerRef = useRef<HTMLDivElement | null>(null);
 
     const setRefs = useCallback(
@@ -106,15 +124,31 @@ export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(
       }
     };
 
-    // First paint uses an estimate; the measured height then keeps the bottom edge on screen.
-    const [position, setPosition] = useState(() =>
-      getMenuPosition(x, y, items.length * ESTIMATED_ITEM_HEIGHT),
+    // First paint uses an estimate so the menu is never hidden; the measured size then places it.
+    const [placement, setPlacement] = useState(() =>
+      computeAnchoredMenuPosition(
+        { left: anchorLeft, right: anchorRight, top: anchorTop, bottom: anchorBottom },
+        { width: ESTIMATED_MENU_WIDTH, height: items.length * ESTIMATED_ITEM_HEIGHT },
+        'bottom-start',
+      ),
     );
     useLayoutEffect(() => {
       const menu = containerRef.current;
       if (!menu) return;
-      setPosition(getMenuPosition(x, y, menu.getBoundingClientRect().height));
-    }, [x, y, items.length]);
+      // Measure at the viewport origin without the previous height cap, so neither shrink-to-fit
+      // near the right edge nor an earlier placement can understate the menu's size.
+      const { left, top, maxHeight } = menu.style;
+      Object.assign(menu.style, { left: '0px', top: '0px', maxHeight: '' });
+      const { width, height } = menu.getBoundingClientRect();
+      Object.assign(menu.style, { left, top, maxHeight });
+      setPlacement(
+        computeAnchoredMenuPosition(
+          { left: anchorLeft, right: anchorRight, top: anchorTop, bottom: anchorBottom },
+          { width, height },
+          'bottom-start',
+        ),
+      );
+    }, [anchorLeft, anchorRight, anchorTop, anchorBottom, items.length]);
 
     if (items.length === 0) {
       return null;
@@ -129,8 +163,9 @@ export const ContextMenu = forwardRef<HTMLDivElement, ContextMenuProps>(
         onKeyDown={handleKeyDown}
         style={{
           position: 'fixed',
-          top: position.y,
-          left: position.x,
+          top: placement.top,
+          left: placement.left,
+          maxHeight: placement.maxHeight,
           zIndex: 9001,
         }}
       >
