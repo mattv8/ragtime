@@ -2,8 +2,9 @@
 
 This tool reads structured data from SolidWorks desktop on a Windows machine: feature tree,
 sketch geometry and constraints, dimensions, mates, components, custom properties and mass
-properties. Results are JSON, with no screenshots. Read operations never write SolidWorks documents;
-`script.run` can build or edit models when the tool allows scripts (see `scripts`).
+properties. Results are JSON. Read operations never write SolidWorks documents;
+`script.run` can build or edit models when the tool allows scripts (see `scripts`). `model.preview`
+and `model.export` make a picture or a file of a model for the user (see `previews`).
 
 The **SolidWorks agent** is the Ragtime program on the Windows machine that does the SolidWorks work for this
 tool. In this guide the term always means that program, never you.
@@ -98,9 +99,10 @@ with the message rather than guessing.
 - `pdm`: PDM vault search, live file state, get latest, check-out and check-in.
 - `studying-models`: learn the house conventions from existing models.
 - `scripts`: build or change models with C# scripts, when the tool allows scripts.
+- `previews`: preview images after build steps, file exports, and the links the user opens.
 
 Read `pdm` when the tool is linked to a PDM vault and you need to find or change vault files.
 Read `studying-models` before you propose or change a model, to see how similar models are built.
-Read `scripts` for the build-and-save flow.
+Read `scripts` for the build-and-save flow. Read `previews` after a build step, to show the user the result.
 
 Call `guide` with `topic` set to one of these ids.
