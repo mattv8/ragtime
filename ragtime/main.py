@@ -124,6 +124,8 @@ from ragtime.remote_client import router as remote_client_router
 from ragtime.remote_client.relay import relay_manager
 from ragtime.remote_client.repository import remote_pairing_repository
 from ragtime.skills.routes import router as instruction_skills_router
+from ragtime.solidworks.artifact_routes import router as solidworks_artifact_router
+from ragtime.solidworks.artifacts import cleanup_expired_artifacts
 from ragtime.solidworks.host_activity import host_activity
 from ragtime.solidworks.host_updater import host_updater
 from ragtime.solidworks.routes import router as solidworks_router
@@ -341,6 +343,10 @@ async def lifespan(app: FastAPI):
 
     # Remove expired chat attachment uploads left from previous sessions
     await cleanup_expired_chat_attachments()
+    try:
+        await cleanup_expired_artifacts()
+    except Exception:
+        logger.exception("Failed to clean up SolidWorks artifacts")
 
     await server_backup_service.startup()
 
@@ -590,6 +596,7 @@ app.include_router(pdm_automation_router)
 
 # Include indexer routes
 app.include_router(instruction_skills_router)
+app.include_router(solidworks_artifact_router)
 app.include_router(indexer_router)
 app.include_router(solidworks_router)
 app.include_router(remote_client_router)

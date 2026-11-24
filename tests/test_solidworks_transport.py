@@ -1,5 +1,7 @@
 import asyncio
+import io
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -131,6 +133,30 @@ class SolidworksTransportTests(unittest.IsolatedAsyncioTestCase):
                     await self.transport.upload_file(Path("a"), "C:/a", timeout_seconds=0.02)
             finally:
                 finished.set()
+
+    async def test_download_and_remove(self):
+        client = mock.MagicMock()
+        sftp = client.open_sftp.return_value
+        sftp.stat.return_value.st_size = 3
+        sftp.open.return_value.__enter__.return_value = io.BytesIO(b"abc")
+        with tempfile.TemporaryDirectory() as directory, mock.patch("ragtime.solidworks.transport._create_ssh_client", return_value=client):
+            path = Path(directory) / "file"
+            self.assertEqual(await self.transport.download_file("C:/file", path, max_bytes=3, timeout_seconds=2), 3)
+            self.assertEqual(path.read_bytes(), b"abc")
+            await self.transport.remove_file("C:/file", timeout_seconds=2)
+            sftp.remove.assert_called_once_with("C:/file")
+
+    async def test_download_rejects_stat_and_stream_over_limit(self):
+        from ragtime.solidworks.artifacts import ArtifactTooLarge
+
+        for stat_size in (4, 3):
+            client = mock.MagicMock()
+            sftp = client.open_sftp.return_value
+            sftp.stat.return_value.st_size = stat_size
+            sftp.open.return_value.__enter__.return_value = io.BytesIO(b"abcd")
+            with tempfile.TemporaryDirectory() as directory, mock.patch("ragtime.solidworks.transport._create_ssh_client", return_value=client):
+                with self.assertRaises(ArtifactTooLarge):
+                    await self.transport.download_file("C:/file", Path(directory) / "file", max_bytes=3, timeout_seconds=2)
 
 
 if __name__ == "__main__":

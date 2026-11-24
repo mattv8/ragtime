@@ -33,6 +33,10 @@ class SolidworksTransport(Protocol):
 
     async def upload_file(self, local_path: Path, remote_path: str, *, timeout_seconds: float) -> None: ...
 
+    async def download_file(self, remote_path: str, local_path: Path, *, max_bytes: int, timeout_seconds: float) -> int: ...
+
+    async def remove_file(self, remote_path: str, *, timeout_seconds: float) -> None: ...
+
 
 def build_ssh_config(connection_config: dict, *, timeout: float) -> SSHConfig:
     """Map the Windows shell connection fields to a PowerShell SSH config with a total deadline."""
@@ -98,9 +102,32 @@ class SshSolidworksTransport:
     async def upload_file(self, local_path: Path, remote_path: str, *, timeout_seconds: float) -> None:
         if "\\" in remote_path:
             raise ValueError("SFTP destination must use forward slashes")
+        await self._sftp(lambda sftp: sftp.put(str(local_path), remote_path), timeout_seconds)
+
+    async def download_file(self, remote_path: str, local_path: Path, *, max_bytes: int, timeout_seconds: float) -> int:
+        from ragtime.solidworks.artifacts import ArtifactTooLarge
+
+        def download(sftp):
+            if sftp.stat(remote_path).st_size > max_bytes:
+                raise ArtifactTooLarge()
+            total = 0
+            with sftp.open(remote_path, "rb") as source, local_path.open("wb") as destination:
+                while chunk := source.read(65536):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ArtifactTooLarge()
+                    destination.write(chunk)
+            return total
+
+        return await self._sftp(download, timeout_seconds)
+
+    async def remove_file(self, remote_path: str, *, timeout_seconds: float) -> None:
+        await self._sftp(lambda sftp: sftp.remove(remote_path), timeout_seconds)
+
+    async def _sftp(self, action, timeout_seconds):
         config = build_ssh_config(self.connection_config, timeout=timeout_seconds)
 
-        def upload() -> None:
+        def run():
             started = time.monotonic()
             client = _create_ssh_client(config)
             timer = None
@@ -108,7 +135,7 @@ class SshSolidworksTransport:
                 if timeout_seconds > 0:
                     remaining = timeout_seconds - (time.monotonic() - started)
                     if remaining <= 0:
-                        raise TimeoutError("SFTP upload timed out")
+                        raise TimeoutError("SFTP operation timed out")
                     timer = threading.Timer(remaining, client.close)
                     timer.daemon = True
                     timer.start()
@@ -117,12 +144,12 @@ class SshSolidworksTransport:
                     if timeout_seconds > 0:
                         remaining = timeout_seconds - (time.monotonic() - started)
                         if remaining <= 0:
-                            raise TimeoutError("SFTP upload timed out")
+                            raise TimeoutError("SFTP operation timed out")
                         channel = sftp.get_channel()
                         if channel is None:
                             raise OSError("SFTP channel is not open")
                         channel.settimeout(remaining)
-                    sftp.put(str(local_path), remote_path)
+                    return action(sftp)
                 finally:
                     sftp.close()
             finally:
@@ -130,8 +157,8 @@ class SshSolidworksTransport:
                     timer.cancel()
                 client.close()
 
-        work = run_blocking(upload)
+        work = run_blocking(run)
         if timeout_seconds > 0:
-            await asyncio.wait_for(work, timeout_seconds)
+            return await asyncio.wait_for(work, timeout_seconds)
         else:
-            await work
+            return await work

@@ -58,6 +58,12 @@ class FakeTransport:
     async def upload_file(self, local_path: Path, remote_path: str, *, timeout_seconds: float) -> None:
         raise AssertionError("upload_file is not used by the service tests")
 
+    async def download_file(self, remote_path, local_path, *, max_bytes, timeout_seconds):
+        raise AssertionError("download_file is not used by the service tests")
+
+    async def remove_file(self, remote_path, *, timeout_seconds):
+        raise AssertionError("remove_file is not used by the service tests")
+
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
