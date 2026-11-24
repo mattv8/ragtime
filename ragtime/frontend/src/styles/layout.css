@@ -2431,6 +2431,11 @@ legend {
   margin-top: var(--space-sm);
 }
 
+.login-recovery-pass-link {
+  display: block;
+  margin: var(--space-sm) auto 0;
+}
+
 .login-footer {
   margin-top: var(--space-lg);
   text-align: center;
@@ -3659,11 +3664,18 @@ legend {
 .shared-login-modal-card {
   width: 100%;
   max-width: 420px;
+  max-height: calc(100dvh - 2 * var(--space-lg));
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-xl);
   box-shadow: 0 16px 32px rgba(0, 0, 0, 0.35);
   padding: var(--space-lg);
+}
+
+.shared-login-modal-card:has(.totp-enrollment-form) {
+  max-width: 560px;
 }
 
 .shared-login-modal-card .login-card {

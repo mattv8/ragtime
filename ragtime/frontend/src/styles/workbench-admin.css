@@ -918,6 +918,22 @@
   box-shadow: var(--login-card-shadow);
 }
 
+/* The shared-chat sign-in dialog is the overlay surface; its login card stays flat. */
+[data-theme-pack='modern'] .shared-login-modal-card {
+  background: var(--color-widget);
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-surface-radius);
+  box-shadow: var(--shadow-lg);
+}
+
+[data-theme-pack='modern'] .shared-login-modal-card .login-card {
+  max-width: none;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
 [data-theme-pack='modern'] .login-title {
   font-size: clamp(var(--text-xl), 3vw, var(--text-2xl));
   color: var(--color-text-strong);
@@ -1129,7 +1145,7 @@
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] :is(.btn:not(.btn-secondary, .btn-danger, .btn-success), .btn-danger, .btn-success, .active, .is-selected, [aria-pressed='true']:not(.appearance-theme-card), [aria-selected='true'], [data-active='true'], .selected) {
+[data-theme-pack='modern'] :is(.btn:not(.btn-secondary, .btn-danger, .btn-success, .btn-link), .btn-danger, .btn-success, .active, .is-selected, [aria-pressed='true']:not(.appearance-theme-card), [aria-selected='true'], [data-active='true'], .selected) {
   background: var(--color-primary);
   border-color: transparent;
   color: var(--color-primary-text);
@@ -1172,7 +1188,7 @@
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] :is(.btn:not(.btn-secondary, .btn-danger, .btn-success), .btn-danger, .btn-success):hover:not(:disabled) {
+[data-theme-pack='modern'] :is(.btn:not(.btn-secondary, .btn-danger, .btn-success, .btn-link), .btn-danger, .btn-success):hover:not(:disabled) {
   background: var(--color-primary-hover);
 }
 

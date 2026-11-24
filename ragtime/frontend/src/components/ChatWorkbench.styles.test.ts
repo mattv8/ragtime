@@ -318,4 +318,101 @@ describe('Chat workbench surface contract', () => {
     expect(chatCss).toMatch(/\.html-component-with-anchor\s*\{[\s\S]*?max-width:\s*730px;/);
     expect(chatCss).toMatch(/\.html-component-with-anchor-expanded\s*\{[\s\S]*?max-width:\s*none;/);
   });
+
+  it('gives the Modern shared chat the signed-in gutters, titlebar, and phone topnav', () => {
+    const css = read(cssPath);
+    const responsiveCss = read(responsiveCssPath);
+    const modernMax768 = getRuleBody(css, '@media (max-width: 768px)');
+    const modernMax480 = getRuleBody(css, '@media (max-width: 480px)');
+    const responsiveMax768 = getRuleBody(responsiveCss, '@media (max-width: 768px)');
+
+    const sharedHostRule = getRuleBody(
+      css,
+      "[data-theme-pack='modern'] .chat-workbench-shell > .shared-blur-host",
+    );
+    expect(sharedHostRule).toMatch(/gap:\s*var\(--workbench-gap\);/);
+    expect(sharedHostRule).toMatch(/padding-inline:\s*var\(--workbench-padding\);/);
+    const sharedHostChildRule = getRuleBody(
+      css,
+      "[data-theme-pack='modern'] .chat-workbench-shell > .shared-blur-host > .container",
+    );
+    expect(sharedHostChildRule).toMatch(/width:\s*100%;/);
+    expect(sharedHostChildRule).toMatch(/max-width:\s*none;/);
+    expect(sharedHostChildRule).toMatch(/margin:\s*0;/);
+
+    const sharedPanelRule = getRuleBody(css, "[data-theme-pack='modern'] .chat-panel-shared");
+    expect(sharedPanelRule).toMatch(/width:\s*100%;/);
+    expect(sharedPanelRule).not.toMatch(/background/);
+    expect(sharedPanelRule).not.toMatch(/border/);
+
+    const ownerColRule = getRuleBody(css, "[data-theme-pack='modern'] .chat-shared-owner-col");
+    expect(ownerColRule).toMatch(/flex-direction:\s*row;/);
+    expect(ownerColRule).toMatch(/align-items:\s*baseline;/);
+    expect(ownerColRule).toMatch(/justify-content:\s*flex-end;/);
+    expect(ownerColRule).toMatch(/gap:\s*var\(--space-xs\);/);
+    expect(ownerColRule).toMatch(/min-width:\s*0;/);
+    expect(ownerColRule).toMatch(/max-width:\s*100%;/);
+    const headerRightRule = getRuleBody(
+      css,
+      "[data-theme-pack='modern'] .chat-shared-header-right",
+    );
+    expect(headerRightRule).toMatch(/flex-shrink:\s*1;/);
+    expect(headerRightRule).toMatch(/min-width:\s*0;/);
+    expect(headerRightRule).toMatch(/max-width:\s*45%;/);
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-shared-owner-label\s*\{[^}]*flex:\s*none;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-shared-owner-value\s*\{[^}]*min-width:\s*0;/,
+    );
+
+    const topnavLinksRule = getRuleBody(
+      css,
+      "[data-theme-pack='modern'] .chat-workbench-topnav .topnav-links",
+    );
+    expect(topnavLinksRule).toMatch(/grid-column:\s*-2\s*\/\s*-1;/);
+    expect(topnavLinksRule).toMatch(/justify-self:\s*end;/);
+
+    const sharedHostPhoneRule = getRuleBody(
+      modernMax768,
+      "[data-theme-pack='modern'] .chat-workbench-shell > .shared-blur-host",
+    );
+    expect(sharedHostPhoneRule).toMatch(/padding-inline:\s*var\(--space-xs\);/);
+    const sharedInfoPhoneRule = getRuleBody(
+      modernMax768,
+      "[data-theme-pack='modern'] .chat-header-shared .chat-header-info",
+    );
+    expect(sharedInfoPhoneRule).toMatch(/padding-inline-start:\s*0;/);
+    const modernLinksPhoneRule = getRuleBody(
+      modernMax768,
+      "[data-theme-pack='modern'] .chat-workbench-topnav .topnav-links",
+    );
+    expect(modernLinksPhoneRule).toMatch(/display:\s*flex;/);
+    expect(modernLinksPhoneRule).toMatch(/padding-top:\s*0;/);
+    expect(modernLinksPhoneRule).toMatch(/border-top:\s*0;/);
+
+    const sharedHeaderTinyRule = getRuleBody(
+      modernMax480,
+      "[data-theme-pack='modern'] .chat-header.chat-header-shared",
+    );
+    expect(sharedHeaderTinyRule).toMatch(/padding-block:\s*var\(--space-xs\);/);
+    const ownerColTinyRule = getRuleBody(
+      modernMax480,
+      "[data-theme-pack='modern'] .chat-shared-owner-col",
+    );
+    expect(ownerColTinyRule).toMatch(/justify-content:\s*flex-start;/);
+    const headerRightTinyRule = getRuleBody(
+      modernMax480,
+      "[data-theme-pack='modern'] .chat-shared-header-right",
+    );
+    expect(headerRightTinyRule).toMatch(/max-width:\s*none;/);
+
+    const allPackLinksPhoneRule = getRuleBody(
+      responsiveMax768,
+      '.chat-workbench-topnav .topnav-links',
+    );
+    expect(allPackLinksPhoneRule).toMatch(/display:\s*flex;/);
+    expect(allPackLinksPhoneRule).toMatch(/order:\s*initial;/);
+    expect(allPackLinksPhoneRule).toMatch(/width:\s*auto;/);
+  });
 });
