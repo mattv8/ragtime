@@ -4,7 +4,14 @@ import type { HTMLAttributes, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ToolsPanel } from './ToolsPanel';
-import type { InstructionSkill, InstructionSkillOwner, ToolConfig, ToolGroup } from '@/types';
+import { hostUpdateFailureText } from '@/utils/solidworksHostUpdate';
+import type {
+  InstructionSkill,
+  InstructionSkillOwner,
+  SolidworksHostAutoUpdate,
+  ToolConfig,
+  ToolGroup,
+} from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   listToolConfigs: vi.fn(),
@@ -720,6 +727,209 @@ describe('ToolsPanel', () => {
     expect(badges[0].parentElement?.getAttribute('data-popover-content')).toBe(
       'Can run C# scripts on the SolidWorks computer as its Windows user. Not sandboxed.',
     );
+  });
+
+  describe('agent update and tunnel client badges', () => {
+    const hostUpdate = (
+      overrides: Partial<SolidworksHostAutoUpdate> = {},
+    ): SolidworksHostAutoUpdate => ({
+      enabled: true,
+      state: 'pending',
+      installed_version: '0.3.0',
+      target_version: '0.4.0',
+      reason: 'in_use',
+      last_attempt_at: null,
+      next_attempt_at: null,
+      message: null,
+      ...overrides,
+    });
+
+    const solidworksTool = (
+      id: string,
+      name: string,
+      extra: Partial<ToolConfig> = {},
+    ): ToolConfig => ({
+      ...ungroupedTool,
+      id,
+      name,
+      tool_type: 'solidworks',
+      connection_config: { host: 'cad.example.org', user: 'cad', port: 22 },
+      ...extra,
+    });
+
+    const cardFor = async (name: string): Promise<HTMLElement> => {
+      const heading = await screen.findByRole('heading', { name });
+      return heading.closest('[data-tool-type]') as HTMLElement;
+    };
+
+    const badgeLabel = (badge: HTMLElement): string | null =>
+      badge.querySelector('.path-text')?.textContent ?? null;
+    const badgeDetail = (badge: HTMLElement): string | null =>
+      badge.querySelector('.rc-visually-hidden')?.textContent ?? null;
+
+    const hostBadgesIn = (card: HTMLElement): Element[] =>
+      Array.from(
+        card.querySelectorAll(
+          '[data-tool-badge^="host-update"], [data-tool-badge="host-updating"]',
+        ),
+      );
+
+    it('shows a pending agent update badge with the installed and target versions and reason', async () => {
+      apiMock.listToolConfigs.mockResolvedValue([
+        solidworksTool('sw-pending', 'SW pending', {
+          solidworks_host_update: hostUpdate({ reason: 'documents_open' }),
+        }),
+      ]);
+      render(<ToolsPanel />);
+
+      const card = await cardFor('SW pending');
+      const badge = card.querySelector('[data-tool-badge="host-update-pending"]') as HTMLElement;
+      expect(badgeLabel(badge)).toBe('Agent update pending');
+      expect(badge.className).toBe('tool-badge');
+      expect(badge.tabIndex).toBe(0);
+      const detail =
+        'Version 0.3.0 is running; 0.4.0 will be installed automatically. A document is open in a SolidWorks instance the agent started. Ragtime updates the agent after that instance closes.';
+      expect(badge.parentElement?.getAttribute('data-popover-content')).toBe(detail);
+      expect(badgeDetail(badge)).toBe(detail);
+    });
+
+    it('shows an updating badge with a decorative spinner and the target version in its popover', async () => {
+      apiMock.listToolConfigs.mockResolvedValue([
+        solidworksTool('sw-updating', 'SW updating', {
+          solidworks_host_update: hostUpdate({ state: 'updating', reason: null }),
+        }),
+      ]);
+      render(<ToolsPanel />);
+
+      const card = await cardFor('SW updating');
+      const badge = card.querySelector('[data-tool-badge="host-updating"]') as HTMLElement;
+      expect(badgeLabel(badge)).toBe('Updating agent…');
+      expect(badge.className).toBe('tool-badge');
+      expect(badge.tabIndex).toBe(0);
+      expect(badge.querySelector('.rc-polling-indicator')?.getAttribute('aria-hidden')).toBe(
+        'true',
+      );
+      const detail =
+        'Ragtime is updating the agent to version 0.4.0. Requests wait until it finishes.';
+      expect(badge.parentElement?.getAttribute('data-popover-content')).toBe(detail);
+      expect(badgeDetail(badge)).toBe(detail);
+    });
+
+    it('shows a warning failed badge whose popover gives the message and next try', async () => {
+      const failedUpdate = hostUpdate({
+        state: 'failed',
+        reason: null,
+        message: 'The installer could not replace the agent.',
+        last_attempt_at: null,
+        next_attempt_at: null,
+      });
+      apiMock.listToolConfigs.mockResolvedValue([
+        solidworksTool('sw-failed', 'SW failed', { solidworks_host_update: failedUpdate }),
+      ]);
+      render(<ToolsPanel />);
+
+      const card = await cardFor('SW failed');
+      const badge = card.querySelector('[data-tool-badge="host-update-failed"]') as HTMLElement;
+      expect(badgeLabel(badge)).toBe('Agent update failed');
+      expect(badge.className).toBe('tool-badge badge-warning');
+      expect(badge.tabIndex).toBe(0);
+      const detail = `${hostUpdateFailureText(failedUpdate)} Open the tool to update the agent yourself.`;
+      expect(detail).toContain('The installer could not replace the agent.');
+      expect(badge.parentElement?.getAttribute('data-popover-content')).toBe(detail);
+      expect(badgeDetail(badge)).toBe(detail);
+    });
+
+    it('shows at most one agent update badge per SolidWorks tool', async () => {
+      apiMock.listToolConfigs.mockResolvedValue([
+        solidworksTool('sw-one', 'SW one', {
+          solidworks_host_update: hostUpdate({ state: 'failed', reason: null }),
+          tunnel_client: { connected: true, version: 1, current_version: 2, outdated: true },
+        }),
+      ]);
+      render(<ToolsPanel />);
+
+      const card = await cardFor('SW one');
+      expect(hostBadgesIn(card)).toHaveLength(1);
+      expect(card.querySelector('[data-tool-badge="tunnel-client-outdated"]')).not.toBeNull();
+    });
+
+    it.each([
+      ['off', hostUpdate({ state: 'off', reason: null })],
+      ['current', hostUpdate({ state: 'current', reason: null })],
+      ['newer', hostUpdate({ state: 'newer', reason: null })],
+      ['absent', null],
+    ])('shows no agent update badge when the agent state is %s', async (label, update) => {
+      const name = `SW ${label}`;
+      apiMock.listToolConfigs.mockResolvedValue([
+        solidworksTool('sw-quiet', name, { solidworks_host_update: update }),
+      ]);
+      render(<ToolsPanel />);
+
+      const card = await cardFor(name);
+      expect(hostBadgesIn(card)).toHaveLength(0);
+    });
+
+    it('never shows an agent update badge for a tool that is not SolidWorks', async () => {
+      apiMock.listToolConfigs.mockResolvedValue([
+        { ...ungroupedTool, name: 'Plain shell', solidworks_host_update: hostUpdate() },
+      ]);
+      render(<ToolsPanel />);
+
+      const card = await cardFor('Plain shell');
+      expect(hostBadgesIn(card)).toHaveLength(0);
+    });
+
+    it('shows a tunnel client outdated badge with the version and newest version in its popover', async () => {
+      apiMock.listToolConfigs.mockResolvedValue([
+        {
+          ...pairedWindowsTool,
+          name: 'Tunnel old',
+          tunnel_client: { connected: false, version: 1, current_version: 2, outdated: true },
+        },
+      ]);
+      render(<ToolsPanel />);
+
+      const card = await cardFor('Tunnel old');
+      const badge = card.querySelector('[data-tool-badge="tunnel-client-outdated"]') as HTMLElement;
+      expect(badgeLabel(badge)).toBe('Tunnel client outdated');
+      expect(badge.className).toBe('tool-badge');
+      expect(badge.tabIndex).toBe(0);
+      const detail =
+        "The tunnel keeps working. This machine's tunnel client is version 1; the newest is version 2. Ragtime cannot update tunnel clients yet.";
+      expect(badge.parentElement?.getAttribute('data-popover-content')).toBe(detail);
+      expect(badgeDetail(badge)).toBe(detail);
+    });
+
+    it('explains an unreported tunnel client version as older than the newest version', async () => {
+      apiMock.listToolConfigs.mockResolvedValue([
+        {
+          ...pairedWindowsTool,
+          name: 'Tunnel unknown',
+          tunnel_client: { connected: true, version: null, current_version: 2, outdated: true },
+        },
+      ]);
+      render(<ToolsPanel />);
+
+      const card = await cardFor('Tunnel unknown');
+      const badge = card.querySelector('[data-tool-badge="tunnel-client-outdated"]') as HTMLElement;
+      expect(badgeDetail(badge)).toBe(
+        "The tunnel keeps working. This machine's tunnel client did not report a version, so it is older than version 2. Ragtime cannot update tunnel clients yet.",
+      );
+    });
+
+    it.each([
+      ['false', { connected: true, version: 2, current_version: 2, outdated: false }],
+      ['undefined', undefined],
+    ])('shows no tunnel client badge when outdated is %s', async (label, tunnelClient) => {
+      const name = `Tunnel ${label}`;
+      apiMock.listToolConfigs.mockResolvedValue([
+        { ...pairedWindowsTool, name, tunnel_client: tunnelClient },
+      ]);
+      render(<ToolsPanel />);
+
+      const card = await cardFor(name);
+      expect(card.querySelector('[data-tool-badge="tunnel-client-outdated"]')).toBeNull();
+    });
   });
 
   it('keeps the selected group open when the write confirmation modal is dismissed', async () => {

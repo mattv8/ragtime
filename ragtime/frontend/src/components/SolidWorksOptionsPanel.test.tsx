@@ -43,6 +43,15 @@ function renderPanel(props: Partial<SolidWorksOptionsPanelProps> = {}) {
 const input = (id: string) => document.getElementById(id) as HTMLInputElement;
 
 describe('SolidWorksOptionsPanel', () => {
+  it('defaults agent updates on and emits the disabled choice', () => {
+    const { onChange } = renderPanel();
+    expect(screen.getByRole('switch', { name: 'Keep the agent up to date' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'About agent updates' })).toBeTruthy();
+    expect(input('solidworks-auto-update').checked).toBe(true);
+    fireEvent.click(input('solidworks-auto-update'));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ auto_update_host: false }));
+  });
+
   it('shows the defaults for background mode without the obsolete read-only note or write control', () => {
     renderPanel();
     expect(input('solidworks-max-instances').value).toBe('1');
@@ -105,14 +114,14 @@ describe('SolidWorksOptionsPanel', () => {
     );
   });
 
-  it('lists only Any installed version while the host status is unknown', () => {
+  it('lists only Any installed version while the agent status is unknown', () => {
     renderPanel({ hostStatus: null });
     const select = screen.getByLabelText('Version') as HTMLSelectElement;
     expect([...select.options].map((option) => option.textContent)).toEqual([
       'Any installed version',
     ]);
     expect(document.getElementById('solidworks-version-warning')?.textContent).toContain(
-      'Start the host to choose from installed versions.',
+      'Start the agent to choose from installed versions.',
     );
     expect(document.getElementById('solidworks-version-warning')?.getAttribute('data-tone')).toBe(
       'info',
@@ -128,7 +137,7 @@ describe('SolidWorksOptionsPanel', () => {
     ).toBeTruthy();
   });
 
-  it('lists the installed versions newest first when the host is running', () => {
+  it('lists the installed versions newest first when the agent is running', () => {
     renderPanel({ hostStatus: hostStatus({ versions: [2022, 2024] }) });
     const select = screen.getByLabelText('Version') as HTMLSelectElement;
     expect([...select.options].map((option) => option.textContent)).toEqual([
@@ -201,7 +210,7 @@ describe('SolidWorksOptionsPanel', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'About version' }));
     expect(document.getElementById('solidworks-version-help-content')?.textContent).toBe(
-      'The host only starts SolidWorks 2024. Calls fail if it is not installed.',
+      'The agent only starts SolidWorks 2024. Calls fail if it is not installed.',
     );
     rerender(
       <SolidWorksOptionsPanel
@@ -358,6 +367,7 @@ describe('SolidWorksOptionsPanel', () => {
     expect(onChange).toHaveBeenCalledWith({
       solidworks_version: null,
       allow_scripts: false,
+      auto_update_host: true,
       instance_mode: 'attach',
       max_instances: 1,
       idle_shutdown_seconds: 900,

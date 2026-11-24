@@ -7,10 +7,10 @@ The tool can be linked to one PDM vault. Two kinds of data are then available:
 - **Live** (`pdm.status`, `pdm.folder.list`, `pdm.file.info`, `pdm.variables.get`, `pdm.file.get_latest`):
   asked from the PDM client now. Use it to confirm state before you act or report it.
 
-`describe` lists the host's `pdm.*` operations whenever the installed host supports them, linked or
-not. Every one except `pdm.status` answers `pdm_not_linked` without a link. `pdm.search` and
-`pdm.lookup` appear only when a link resolves. On an older host, the host operations answer
-`unknown_operation`; see the errors below.
+`describe` lists the `pdm.*` operations whenever the installed SolidWorks agent (the Ragtime
+program on the Windows machine) supports them, linked or not. Every one except `pdm.status`
+answers `pdm_not_linked` without a link. `pdm.search` and `pdm.lookup` appear only when a link resolves.
+On an older SolidWorks agent its `pdm.*` operations answer `unknown_operation`; see the errors below.
 
 ## Vault paths
 
@@ -106,9 +106,9 @@ Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
   way: leave it alone and tell the user who has it (`checked_out_by`).
 - One remaining limit: a person on this machine who undoes and re-checks-out the same file at the same
   path within 24 hours, with no tool call between, cannot be told apart from the tool's own check-out.
-- The tool cannot delete, rename, move, roll back or change workflow state. Review and approval
-  happen in PDM, by engineers. Do not promise any of these.
-- The tool does not create models; a new file must already exist on disk, made in SolidWorks by the user.
+- The `pdm.*` operations cannot delete, rename, move, roll back or change workflow state, and scripts
+  must not call PDM. Review and approval happen in PDM, by engineers. Do not promise any of these.
+- A new file must already exist on disk: made in SolidWorks, or by `script.run` when scripts are enabled.
 - A file checked out by someone else is theirs. Report who and when (`checked_out_by`,
   `checked_out_on`). Do not undo or take over their check-out.
 - `pdm.file.undo_checkout` discards local changes. Use it only to abandon your own work on a file the
@@ -161,10 +161,10 @@ Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
 | `pdm_conflict` `not_checked_out_by_tool` | The tool does not hold this check-out: it was made outside the tool, the 24-hour claim expired, or the file changed by hand. Leave it alone; the person who has it must finish the check-in (`checked_out_by`). |
 | `pdm_conflict` `not_checked_out_here` | The operation needs the file checked out here. Check `pdm.file.info`; `pdm.file.checkout` first if you must edit. |
 | `pdm_conflict` `never_checked_in` | A file added but never checked in cannot be undone. Check it in with a comment. |
-| `pdm_error` | The PDM API reported a failure (`hresult`, `pdm_error`). Report both. Retry only if the user asks. |
+| `pdm_error` | The PDM API reported a failure (`hresult`, `pdm_error`). Report both. A write refused with `E_EDM_PERMISSION_DENIED` is a PDM rights problem; report it and do not retry. Otherwise retry only if the user asks. |
 | `invalid_arguments` on `source` | The source is outside an approved folder's view and outside `work_folder`: "Add files from an approved vault folder or from the tool's work folder <work folder>." Save the file there first. |
 | `invalid_arguments` on `comment` or on a path or name | The comment has control characters or is empty; or a path or name uses non-ASCII characters ("Vault changes are limited to paths with plain ASCII characters."), is malformed, or goes through a symbolic link or junction. Fix it or report it; do not repeat the call. |
 | `operation_timeout` on a vault change | The outcome is unknown: the change may or may not have happened. Read the state with `pdm.file.info` or `pdm.folder.list` first, and retry only if the change is missing. |
-| `unknown_operation` on `pdm.*` | The SolidWorks host predates PDM support. Tell the user: "Update the SolidWorks host to use PDM operations." Do not retry. |
+| `unknown_operation` on `pdm.*` | The SolidWorks agent predates PDM support and is not updated automatically (the tool's **Keep the agent up to date** is off). Tell the user: "Open the SolidWorks agent panel in the tool's settings and choose Update agent to use PDM operations." Do not retry. While Ragtime is updating the SolidWorks agent, the answer is `host_updating` instead. |
 | `write_not_allowed` | Changes are not enabled for this tool. Do not retry; tell the user. |
 | `result_too_large` on `pdm.file.get_latest` | More than 500 files. Set `include_references` to false or fetch fewer files. |

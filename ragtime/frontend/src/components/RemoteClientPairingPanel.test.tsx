@@ -2,7 +2,11 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RemoteClientPairingPanel } from './RemoteClientPairingPanel';
-import type { RemotePairingCreatedResponse, RemotePairingFacts } from '@/types';
+import type {
+  RemotePairingCreatedResponse,
+  RemotePairingFacts,
+  RemotePairingResponse,
+} from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   createRemotePairing: vi.fn(),
@@ -365,5 +369,98 @@ describe('RemoteClientPairingPanel', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
     expect(document.activeElement).toBe(trigger);
     expect(screen.getByText('run-ps')).toBeTruthy();
+  });
+
+  describe('tunnel client line', () => {
+    const pairedTunnel = (
+      tunnelClient: RemotePairingResponse['tunnel_client'],
+      overrides: Partial<RemotePairingResponse> = {},
+    ): RemotePairingResponse => ({
+      ...createdPairing,
+      status: 'paired',
+      transport: 'tunnel',
+      facts: targetFacts({ hostname: 'server-1' }),
+      tunnel_client: tunnelClient,
+      ...overrides,
+    });
+
+    const tunnelLine = (): HTMLElement | null => document.getElementById('rc-tunnel-client');
+
+    it('shows a current tunnel client version without an icon', async () => {
+      apiMock.getRemotePairing.mockResolvedValue(
+        pairedTunnel({ connected: true, version: 2, current_version: 2, outdated: false }),
+      );
+
+      renderPanel();
+
+      await screen.findByText('Connected — server-1');
+      const line = tunnelLine();
+      expect(line?.tagName).toBe('P');
+      expect(line?.dataset.rcTunnelClient).toBe('current');
+      expect(line?.textContent).toBe('Tunnel client: version 2, up to date.');
+      expect(line?.querySelector('svg')).toBeNull();
+      expect(line?.parentElement?.classList.contains('rc-command-footer')).toBe(true);
+      expect(line?.parentElement?.lastElementChild).toBe(line);
+    });
+
+    it('shows an outdated tunnel client version with a decorative warning icon', async () => {
+      apiMock.getRemotePairing.mockResolvedValue(
+        pairedTunnel({ connected: true, version: 1, current_version: 2, outdated: true }),
+      );
+
+      renderPanel();
+
+      await screen.findByText('Connected — server-1');
+      const line = tunnelLine();
+      expect(line?.dataset.rcTunnelClient).toBe('outdated');
+      expect(line?.textContent).toBe(
+        'Tunnel client: version 1; version 2 is available. The tunnel keeps working. Ragtime cannot update tunnel clients yet.',
+      );
+      expect(line?.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('shows an unreported tunnel client version as unknown with a warning icon', async () => {
+      apiMock.getRemotePairing.mockResolvedValue(
+        pairedTunnel({ connected: true, version: null, current_version: 2, outdated: true }),
+      );
+
+      renderPanel();
+
+      await screen.findByText('Connected — server-1');
+      const line = tunnelLine();
+      expect(line?.dataset.rcTunnelClient).toBe('unknown');
+      expect(line?.textContent).toBe(
+        'Tunnel client: version not reported, so it is older than version 2. The tunnel keeps working. Ragtime cannot update tunnel clients yet.',
+      );
+      expect(line?.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('is absent for direct transport pairings', async () => {
+      apiMock.getRemotePairing.mockResolvedValue(
+        pairedTunnel(
+          { connected: true, version: 1, current_version: 2, outdated: true },
+          { transport: 'direct' },
+        ),
+      );
+
+      renderPanel();
+
+      await screen.findByText('Connected — server-1');
+      expect(tunnelLine()).toBeNull();
+    });
+
+    it('is absent while the pairing is not paired yet', async () => {
+      apiMock.getRemotePairing.mockResolvedValue(
+        pairedTunnel(
+          { connected: false, version: 1, current_version: 2, outdated: true },
+          { status: 'pending' },
+        ),
+      );
+
+      renderPanel();
+
+      await screen.findByText('Waiting for installer to run…');
+      expect(tunnelLine()).toBeNull();
+    });
   });
 });

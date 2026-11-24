@@ -14,7 +14,7 @@ namespace Ragtime.SolidWorks.Host
     internal sealed class PipeOwnerMismatchException : Exception
     {
         public PipeOwnerMismatchException()
-            : base("The host pipe is owned by another account.")
+            : base("The SolidWorks agent pipe is owned by another account.")
         {
         }
     }

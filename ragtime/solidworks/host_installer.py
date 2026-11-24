@@ -15,6 +15,8 @@ RESOLVE_TIMEOUT_SECONDS = 30
 STAGING_TIMEOUT_SECONDS = 30
 UPLOAD_TIMEOUT_SECONDS = 60
 INSTALL_TIMEOUT_SECONDS = 90
+GATED_INSTALL_TIMEOUT_SECONDS = 240
+MAX_IDLE_GATE_SECONDS = 86400
 UNINSTALL_TIMEOUT_SECONDS = 90
 
 RESOLVE_SCRIPT = "$env:LOCALAPPDATA | ConvertTo-Json -Compress; exit 0"
@@ -36,6 +38,7 @@ $exitWaitSeconds = 20
 $pollMs = 250
 $retryTries = 20
 $retryDelayMs = 500
+$idleGate = '__IDLE_GATE__'
 $root = Join-Path $env:LOCALAPPDATA 'RagtimeSolidWorks'
 $hostDir = Join-Path $root 'host'
 $new = Join-Path $root 'host.new'
@@ -78,6 +81,15 @@ try {
 }
 try {
   if ($hadOld) {
+    if ($idleGate -ne '') {
+      & $exe stop --if-idle ([int]$idleGate) | Out-Null
+      if ($LASTEXITCODE -eq 3) {
+        Remove-Item -LiteralPath $new -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Output 'RAGTIME_INSTALL:busy'
+        exit 1
+      }
+      if ($LASTEXITCODE -ne 0) { throw 'idle stop failed' }
+    }
     & $exe uninstall | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'uninstall failed' }
     $end = (Get-Date).AddSeconds($exitWaitSeconds)
@@ -169,21 +181,24 @@ try {
 }
 """
 
-LOCKED_UNINSTALL_WARNING = "The SolidWorks host was stopped and its logon task removed, but some files could not be deleted."
+LOCKED_UNINSTALL_WARNING = "The SolidWorks agent was stopped and its logon task removed, but some files could not be deleted."
 
 MESSAGES = {
-    "ssh_unreachable": "SSH connection failed; check the host and connection.",
+    "ssh_unreachable": "SSH connection failed; check the SSH host and connection.",
     "ssh_auth_failed": "SSH authentication failed; check the configured credentials.",
-    "upload_failed": "The SolidWorks host upload failed.",
-    "artifact_mismatch": "The packaged SolidWorks host zip does not match its manifest; rebuild the host artifact.",
-    "hash_mismatch": "The uploaded SolidWorks host failed its integrity check.",
-    "install_failed": "The SolidWorks host installation failed.",
-    "install_rolled_back": "The SolidWorks host installation failed; the previous version was restored.",
-    "locked": "The SolidWorks host files are locked; close the host and retry.",
-    "uninstall_failed": "The SolidWorks host could not be stopped or uninstalled.",
+    "upload_failed": "The SolidWorks agent upload failed.",
+    "artifact_mismatch": "The packaged SolidWorks agent zip does not match its manifest; rebuild the agent package.",
+    "hash_mismatch": "The uploaded SolidWorks agent failed its integrity check.",
+    "install_failed": "The SolidWorks agent installation failed.",
+    "install_rolled_back": "The SolidWorks agent installation failed; the previous version was restored.",
+    "locked": "The SolidWorks agent files are locked; close the SolidWorks agent and try again.",
+    "uninstall_failed": "The SolidWorks agent could not be stopped or uninstalled.",
+    "host_busy": "The SolidWorks agent is in use. The update will run when it is idle.",
+    "host_busy_retry": "The SolidWorks agent is busy with another request or update. Try again in a minute.",
 }
-_ERROR_CODES = {"artifact_mismatch": "install_failed", "install_rolled_back": "install_failed", "locked": "install_failed"}
+_ERROR_CODES = {"artifact_mismatch": "install_failed", "install_rolled_back": "install_failed", "locked": "install_failed", "host_busy_retry": "host_busy"}
 _INSTALL_SENTINELS = {
+    "busy": "host_busy",
     "hash_mismatch": "hash_mismatch",
     "locked": "locked",
     "install_failed": "install_failed",
@@ -260,10 +275,15 @@ class SolidworksHostInstaller:
         status["warning"] = warning
         return status
 
-    async def install_host(self, config: dict) -> dict:
+    async def busy_status(self, config: dict) -> dict:
+        return await self._status(config, "host_busy_retry")
+
+    async def install_host(self, config: dict, *, idle_gate_seconds: int | None = None) -> dict:
+        if idle_gate_seconds is not None and (type(idle_gate_seconds) is not int or not 0 <= idle_gate_seconds <= MAX_IDLE_GATE_SECONDS):
+            raise ValueError("idle_gate_seconds must be an integer between 0 and 86400")
         artifact = get_host_artifact()
         if artifact is None:
-            raise HostArtifactUnavailableError("SolidWorks host artifact is unavailable.")
+            raise HostArtifactUnavailableError("SolidWorks agent package is unavailable.")
         if not isinstance(artifact.sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact.sha256):
             return await self._status(config, "install_failed")
         if not verify_host_artifact(artifact):
@@ -281,9 +301,14 @@ class SolidworksHostInstaller:
             await transport.upload_file(artifact.path, remote, timeout_seconds=UPLOAD_TIMEOUT_SECONDS)
         except Exception:
             return await self._status(config, "upload_failed")
-        script = INSTALL_SCRIPT.replace("__SHA__", artifact.sha256).replace("__PREFIX__", artifact.sha256[:16])
+        script = (
+            INSTALL_SCRIPT.replace("__SHA__", artifact.sha256)
+            .replace("__PREFIX__", artifact.sha256[:16])
+            .replace("__IDLE_GATE__", str(idle_gate_seconds) if idle_gate_seconds is not None else "")
+        )
+        timeout = GATED_INSTALL_TIMEOUT_SECONDS if idle_gate_seconds is not None else INSTALL_TIMEOUT_SECONDS
         try:
-            result = await transport.run_powershell(script, timeout_seconds=INSTALL_TIMEOUT_SECONDS)
+            result = await transport.run_powershell(script, timeout_seconds=timeout)
         except Exception as exc:
             return await self._status(config, _transport_code(exc, "install_failed"))
         sentinel = _sentinel(result.stdout, "RAGTIME_INSTALL:")

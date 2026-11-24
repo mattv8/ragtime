@@ -46,7 +46,9 @@ namespace Ragtime.SolidWorks.Host
                 case CommandNames.Install:
                     return InstallCommand.Run(HostEnvironment.Create(HostLog.ForCurrentUser()));
                 case CommandNames.Stop:
-                    return StopCommand.Run(HostEnvironment.Create(HostLog.ForCurrentUser()));
+                    return command.IfIdleSeconds is int ifIdle
+                        ? StopCommand.RunIfIdle(HostEnvironment.Create(HostLog.ForCurrentUser()), ifIdle)
+                        : StopCommand.Run(HostEnvironment.Create(HostLog.ForCurrentUser()));
                 case CommandNames.Uninstall:
                     return UninstallCommand.Run(HostEnvironment.Create(HostLog.ForCurrentUser()));
                 default:
@@ -64,7 +66,7 @@ namespace Ragtime.SolidWorks.Host
                     null,
                     HostEnvironment.ReadHostVersion(),
                     ErrorCodes.InternalError,
-                    "The host tool failed unexpectedly. See host.log for details.",
+                    "The SolidWorks agent failed unexpectedly. See host.log for details.",
                     0)));
             }
 

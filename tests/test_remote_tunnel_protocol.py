@@ -2,7 +2,36 @@ from __future__ import annotations
 
 import pytest
 
-from ragtime.remote_client.tunnel_protocol import MAX_DATA_PAYLOAD, TunnelMessageType, TunnelProtocolError, decode_frame, encode_frame
+from ragtime.remote_client.tunnel_protocol import (
+    MAX_DATA_PAYLOAD,
+    TunnelMessageType,
+    TunnelProtocolError,
+    decode_frame,
+    encode_frame,
+    parse_tunnel_client_version,
+)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("0", 0),
+        ("000002", 2),
+        ("999999", 999999),
+        ("1234567", None),
+        (" 2", None),
+        ("2 ", None),
+        ("+2", None),
+        ("-1", None),
+        ("٢", None),
+        ("2\n", None),
+        ("a", None),
+    ],
+)
+def test_parse_tunnel_client_version(value: str | None, expected: int | None) -> None:
+    assert parse_tunnel_client_version(value) == expected
 
 
 def test_tunnel_frame_round_trip_and_payload_limit() -> None:

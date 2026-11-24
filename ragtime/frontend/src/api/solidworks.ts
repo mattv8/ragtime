@@ -1,4 +1,4 @@
-import type { SSHShellConnectionConfig } from '../types/api';
+import type { SolidworksHostAutoUpdate, SSHShellConnectionConfig } from '../types/api';
 
 export type SolidworksInstanceMode = 'background' | 'attach';
 export interface SolidworksOptions {
@@ -7,6 +7,7 @@ export interface SolidworksOptions {
   max_instances?: number;
   idle_shutdown_seconds?: number;
   allow_scripts?: boolean;
+  auto_update_host?: boolean;
 }
 export type SolidworksConnectionConfig = SSHShellConnectionConfig &
   SolidworksOptions & {
@@ -19,6 +20,11 @@ export interface SolidworksHostArtifact {
   protocol: number | null;
   sha256: string | null;
   size_bytes: number | null;
+}
+export interface SolidworksHostActivity {
+  in_flight: number;
+  idle_seconds: number;
+  pdm_busy: boolean;
 }
 export interface SolidworksHostStatus {
   reachable: boolean;
@@ -38,6 +44,10 @@ export interface SolidworksHostStatus {
   error: { code: string; message: string } | null;
   /** Non-blocking note, e.g. an uninstall that could not delete locked files. */
   warning?: string | null;
+  host_features?: string[];
+  activity?: SolidworksHostActivity | null;
+  /** Computed by Ragtime from the host update state; never stored. */
+  auto_update?: SolidworksHostAutoUpdate | null;
 }
 export const SOLIDWORKS_DEFAULT_OPTIONS: Required<SolidworksOptions> = {
   solidworks_version: null,
@@ -45,8 +55,48 @@ export const SOLIDWORKS_DEFAULT_OPTIONS: Required<SolidworksOptions> = {
   max_instances: 1,
   idle_shutdown_seconds: 900,
   allow_scripts: false,
+  auto_update_host: true,
 };
 export const SOLIDWORKS_DEFAULT_TIMEOUT_SECONDS = 100;
+
+export interface PdmRights {
+  read: boolean;
+  add_files: boolean;
+  check_out: boolean;
+  add_folders: boolean;
+}
+
+export interface PdmRightsItem {
+  path: string;
+  checked: boolean;
+  exists: boolean | null;
+  rights: PdmRights | null;
+  write_ready: boolean;
+}
+
+export interface PdmRightsResponse {
+  checked: boolean;
+  user: string | null;
+  root: PdmRightsItem | null;
+  folders: PdmRightsItem[];
+  error: { code: string; message: string } | null;
+}
+
+export interface PdmFolderChild {
+  name: string;
+  vault_path: string;
+  rights: PdmRights | null;
+  write_ready: boolean;
+}
+
+export interface PdmFoldersResponse {
+  items: PdmFolderChild[];
+  offset: number;
+  next_offset: number | null;
+  total: number;
+  snapshot: string | null;
+  error: { code: string; message: string } | null;
+}
 
 /** An HTTP error from the SolidWorks API. `status` lets callers tell e.g. the artifact 503 apart. */
 export class SolidworksApiError extends Error {
@@ -92,6 +142,26 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 const hostPath = (toolId: string) => `/tools/${encodeURIComponent(toolId)}/host`;
 export const solidworksApi = {
+  checkPdmRights: (
+    toolId: string,
+    body: { pdm_tool_id: string; folders: string[] },
+    signal?: AbortSignal,
+  ) =>
+    request<PdmRightsResponse>(`/tools/${encodeURIComponent(toolId)}/pdm/rights`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
+  listPdmFolders: (
+    toolId: string,
+    body: { pdm_tool_id: string; path: string; offset: number; snapshot?: string | null },
+    signal?: AbortSignal,
+  ) =>
+    request<PdmFoldersResponse>(`/tools/${encodeURIComponent(toolId)}/pdm/folders`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
   getHostArtifact: (signal?: AbortSignal) =>
     request<SolidworksHostArtifact>('/host/artifact', { signal }),
   getHostStatus: (toolId: string, signal?: AbortSignal) =>
@@ -109,12 +179,12 @@ const guidance: Record<string, { title: string; hint: string }> = {
     hint: 'Check that the machine is on, OpenSSH Server is running, and the credentials from the connection step are still valid.',
   },
   host_not_running: {
-    title: 'The host did not answer.',
-    hint: 'Install the host in the panel above and make sure this account is logged in to the machine.',
+    title: 'The agent did not answer.',
+    hint: 'Install the agent in the panel above and make sure this account is logged in to the machine.',
   },
   protocol_mismatch: {
-    title: 'The host and Ragtime do not match.',
-    hint: 'Update the host in the panel above.',
+    title: 'The agent and Ragtime do not match.',
+    hint: 'Update the agent in the panel above.',
   },
   no_interactive_session: {
     title: 'No desktop session.',
@@ -134,7 +204,7 @@ const guidance: Record<string, { title: string; hint: string }> = {
   },
   solidworks_start_failed: {
     title: 'SolidWorks did not start.',
-    hint: 'Check that SolidWorks and its licence server work for this account. The host log is %LOCALAPPDATA%\\RagtimeSolidWorks\\logs\\host.log.',
+    hint: 'Check that SolidWorks and its licence server work for this account. The agent log is %LOCALAPPDATA%\\RagtimeSolidWorks\\logs\\host.log.',
   },
   instance_timeout: {
     title: 'The call timed out.',

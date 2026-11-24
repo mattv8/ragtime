@@ -2,7 +2,7 @@
 
 Do not use `$"…"` string interpolation, `?.`, `nameof`, expression-bodied members,
 `out var`, auto-property initializers, `using static`, tuples, or pattern matching.
-Scripts compile as C# 5 against the assemblies shipped with the host.
+Scripts compile as C# 5 against the assemblies shipped with the SolidWorks agent (the Ragtime program on the Windows machine).
 Source is limited to 16 KB UTF-8; keep scripts small; split big jobs into several runs.
 
 Use `public static class RagtimeScript` with `public static object Run(ScriptContext ctx)`.
@@ -13,7 +13,7 @@ Activate the target document with `ActivateDoc3` before sketch or feature calls.
 Use silent options and never show dialogs. Return plain JSON values, never SolidWorks
 objects. Prefer bulk APIs for heavy work to avoid excessive COM calls.
 
-Scripts are not sandboxed; they run with the host user's permissions. Content protection
+Scripts are not sandboxed; they run with the permissions of the Windows account the SolidWorks agent runs as. Content protection
 reviews each script when enabled; surface-level protection may review the call as well.
 If a script times out, it may have partly changed open documents: re-read with
 `documents.list` before retrying. Compile errors include line, column and code; common

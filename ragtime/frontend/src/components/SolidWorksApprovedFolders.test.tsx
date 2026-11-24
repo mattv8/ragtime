@@ -50,6 +50,22 @@ function typeFolder(value: string) {
 }
 
 describe('SolidWorksApprovedFolders', () => {
+  it('shows folder rights badges and defaults unchecked folders', () => {
+    render(
+      <SolidWorksApprovedFolders
+        folders={['\\Ready', '\\Missing', '\\Hidden', '\\Unknown']}
+        vaultRoot={null}
+        onChange={vi.fn()}
+        rights={{ '\\ready': 'write_ready', '\\missing': 'missing_write', '\\hidden': 'not_found' }}
+      />,
+    );
+    expect(rowFor('\\ready')?.getAttribute('data-sw-rights')).toBe('write_ready');
+    expect(rowFor('\\ready')?.textContent).toContain('Can add and check out');
+    expect(rowFor('\\missing')?.textContent).toContain('Missing add or check-out rights');
+    expect(rowFor('\\hidden')?.textContent).toContain('Not found in the vault');
+    expect(rowFor('\\unknown')?.getAttribute('data-sw-rights')).toBe('not_checked');
+  });
+
   it('names the group and exposes folder help', () => {
     render(<Harness />);
     expect(screen.getByRole('group', { name: 'Approved folders' })).toBeTruthy();

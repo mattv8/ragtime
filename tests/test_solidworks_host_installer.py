@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 from ragtime.solidworks import host_installer as installer
@@ -91,7 +92,10 @@ class HostInstallerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transport.calls[2][1:], (self.artifact.path, self.remote_path()))
         self.assertTrue(all(LOCAL_APP_DATA not in call[1] for call in transport.calls if call[0] == "script"))
         script = transport.calls[-1][1]
-        self.assertEqual(script, installer.INSTALL_SCRIPT.replace("__SHA__", self.artifact.sha256).replace("__PREFIX__", self.artifact.sha256[:16]))
+        self.assertEqual(
+            script,
+            installer.INSTALL_SCRIPT.replace("__SHA__", self.artifact.sha256).replace("__PREFIX__", self.artifact.sha256[:16]).replace("__IDLE_GATE__", ""),
+        )
         self.assertNotIn("__SHA__", script)
         self.assertNotIn("__PREFIX__", script)
         # Length guard: the payload travels over stdin (ragtime/core/ssh.py _encode_powershell_payload), not on the command line.
@@ -113,6 +117,7 @@ class HostInstallerTests(unittest.IsolatedAsyncioTestCase):
             ("hash_mismatch", "hash_mismatch"),
             ("locked", "install_failed"),
             ("install_failed", "install_failed"),
+            ("busy", "host_busy"),
         ]
         for sentinel, code in cases:
             with self.subTest(sentinel=sentinel):
@@ -121,6 +126,23 @@ class HostInstallerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(status["error"]["code"], code)
         locked = Transport([result(json.dumps(r"C:\local")), result(STAGED), result("RAGTIME_INSTALL:locked", 1)])
         self.assertIn("locked", (await self.service(locked).install_host({}))["error"]["message"])
+
+    async def test_idle_gate_values_and_timeout(self):
+        for value in (0, 300, 86400):
+            with self.subTest(value=value):
+                transport = Transport([result(json.dumps(r"C:\local")), result(STAGED), result("RAGTIME_INSTALL:busy", 1)])
+                status = await self.service(transport).install_host({}, idle_gate_seconds=value)
+                self.assertIn(f"$idleGate = '{value}'", transport.calls[-1][1])
+                self.assertNotIn("__IDLE_GATE__", transport.calls[-1][1])
+                self.assertEqual(transport.timeouts[-1], 240)
+                self.assertEqual(status["error"], {"code": "host_busy", "message": installer.MESSAGES["host_busy"]})
+        for value in (-1, 86401, True, 1.5, "1"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                await self.service(Transport([])).install_host({}, idle_gate_seconds=cast(Any, value))
+
+    async def test_busy_status(self):
+        status = await self.service(Transport([])).busy_status({})
+        self.assertEqual(status["error"], {"code": "host_busy", "message": installer.MESSAGES["host_busy_retry"]})
 
     async def test_recovery_locked_sentinel_maps_to_install_failed_with_locked_message(self):
         transport = Transport([result(json.dumps(r"C:\local")), result(STAGED), result("RAGTIME_INSTALL:locked", 1)])
@@ -244,6 +266,9 @@ class HostInstallerTests(unittest.IsolatedAsyncioTestCase):
         for status in outcomes:
             with self.subTest(status=status["error"]):
                 self.assertIn("warning", status)
+                self.assertEqual(status["host_features"], [])
+                self.assertIsNone(status["activity"])
+                self.assertIsNone(status["auto_update"])
 
     async def test_missing_artifact(self):
         with mock.patch.object(installer, "get_host_artifact", return_value=None):
@@ -252,6 +277,20 @@ class HostInstallerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class InstallScriptTemplateTests(unittest.TestCase):
+    def test_idle_gate_order_and_failure_cleanup(self):
+        script = installer.INSTALL_SCRIPT
+        self.assert_in_order(script, (r"Get-FileHash", r"Expand-Archive", r"if \(\$hadOld\)", r"& \$exe stop --if-idle", r"& \$exe uninstall"))
+        gate = script[script.index("if ($idleGate -ne '')") : script.index("& $exe uninstall")]
+        busy = gate[gate.index("if ($LASTEXITCODE -eq 3)") : gate.index("if ($LASTEXITCODE -ne 0)")]
+        self.assertIn("Remove-Item -LiteralPath $new", busy)
+        self.assertNotIn("$zip", busy)
+        self.assertIn("Write-Output 'RAGTIME_INSTALL:busy'", busy)
+        self.assertIn("exit 1", busy)
+        self.assertIn("throw 'idle stop failed'", gate)
+        failure = script[script.index("& $exe uninstall") : script.index("$hadDir =")]
+        self.assertIn("Remove-Item -LiteralPath $new", failure)
+        self.assertIn("RAGTIME_INSTALL:install_failed", failure)
+
     def test_uninstall_script_ends_every_success_path_with_exit_zero(self):
         self.assertIn("RAGTIME_UNINSTALL:ok'\n  exit 0", installer.UNINSTALL_SCRIPT)
         self.assertIn("RAGTIME_UNINSTALL:locked'\n      exit 0", installer.UNINSTALL_SCRIPT)

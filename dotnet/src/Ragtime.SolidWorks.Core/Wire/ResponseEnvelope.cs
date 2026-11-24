@@ -112,7 +112,7 @@ namespace Ragtime.SolidWorks.Core
                 id,
                 operation,
                 ErrorCodes.HostNotRunning,
-                "The SolidWorks host is not answering. Check that the account has a desktop session and run install again.",
+                "The SolidWorks agent is not answering. Check that the account has a desktop session and run install again.",
                 details,
                 HostInfo.ForHost(hostVersion),
                 elapsedMs);

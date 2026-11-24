@@ -10,6 +10,9 @@
   gap: var(--space-sm);
   min-width: 0;
 }
+#solidworks-host-auto-update-live:empty {
+  margin-top: calc(-1 * var(--space-sm));
+}
 .sw-panel[data-tone='error'] {
   border-color: var(--color-error-border);
   background: var(--color-error-light);
@@ -100,6 +103,16 @@
 .sw-pill[data-tone='danger'] > svg {
   color: var(--color-error);
 }
+.sw-chip-rights {
+  display: inline-flex;
+  align-items: center;
+}
+.sw-chip-rights[data-tone='success'] {
+  color: var(--color-success);
+}
+.sw-chip-rights[data-tone='warning'] {
+  color: var(--color-warning);
+}
 /*
  * Options fieldset as a panel. A float legend keeps the title inside the box instead of on the
  * border; flow-root (not grid) keeps the float honoured, so the legend is not the fieldset's
@@ -145,6 +158,12 @@
 .sw-message-icon {
   flex: none;
   margin-top: 0.125em;
+}
+.sw-message > .rc-polling-indicator {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0.125em 0 0;
 }
 /* Boxed callout for the administrator warning (ux-spec mockup a). */
 .sw-message[data-boxed='true'] {
@@ -233,6 +252,37 @@
   .sw-manual .btn,
   .sw-switch-row label,
   #solidworks-test-button {
+    min-height: 44px;
+  }
+}
+
+#solidworks-pdm-folder-browser {
+  display: grid;
+  gap: var(--space-sm);
+}
+#solidworks-pdm-folder-browser-label {
+  margin-bottom: 0;
+}
+#solidworks-pdm-folder-browser-help,
+#solidworks-pdm-folder-browser [data-browser-select-reason] {
+  color: var(--color-text-secondary);
+}
+#solidworks-pdm-folder-browser [data-browser-select-reason] {
+  padding: var(--space-xs) var(--space-sm);
+}
+#solidworks-pdm-folder-browser-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+#solidworks-pdm-folder-browser :is(.browser-entry, .breadcrumb-btn, .mount-header, .browser-filter-input):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+@media (pointer: coarse) {
+  #solidworks-pdm-folder-browser :is(.browser-entry, .breadcrumb-btn, .mount-header, .browser-filter-input) {
     min-height: 44px;
   }
 }

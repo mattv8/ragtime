@@ -93,6 +93,10 @@ namespace Ragtime.SolidWorks.Core
                     return await FileInfoAsync(link, arguments).ConfigureAwait(false);
                 case "pdm.variables.get":
                     return await VariablesGetAsync(link, arguments).ConfigureAwait(false);
+                case "pdm.folder.rights":
+                    return await FolderRightsAsync(link, arguments).ConfigureAwait(false);
+                case "pdm.folder.children":
+                    return await FolderChildrenAsync(link, arguments).ConfigureAwait(false);
                 case "pdm.file.get_latest":
                     return await GetLatestAsync(link, arguments).ConfigureAwait(false);
                 case "pdm.folder.create":
@@ -163,6 +167,77 @@ namespace Ragtime.SolidWorks.Core
             }
 
             return linked;
+        }
+
+        private async Task<JToken> FolderRightsAsync(PdmContext link, JObject arguments)
+        {
+            var input = (JArray)arguments["paths"]!;
+            if (input.Count == 0) throw HostError.InvalidArguments("paths", "At least one path is required.");
+            var paths = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < input.Count; i++)
+            {
+                var path = VaultPaths.Normalize((string?)input[i], ViewRootOf(link), $"paths[{i}]");
+                if (seen.Add(path)) paths.Add(path);
+            }
+            var result = await RunVaultAsync(link.Vault, vault =>
+            {
+                var output = new PdmFolderRightsResult { User = vault.User };
+                foreach (var path in paths)
+                {
+                    var item = new PdmFolderRightsItem { VaultPath = path };
+                    if (!_deadline.Expired)
+                    {
+                        try
+                        {
+                            item.Rights = vault.GetFolderRights(path);
+                            item.Checked = true;
+                            item.Exists = true;
+                        }
+                        catch (PdmGatewayException ex)
+                        {
+                            if (ex.Kind == PdmFailureKind.NotFound) { item.Checked = true; item.Exists = false; }
+                        }
+                    }
+                    output.Items.Add(item);
+                }
+                return output;
+            }).ConfigureAwait(false);
+            return Fits(result);
+        }
+
+        private async Task<JToken> FolderChildrenAsync(PdmContext link, JObject arguments)
+        {
+            var folder = NormalizeArgument(link, arguments, "path");
+            var offset = (int?)arguments["offset"] ?? 0;
+            var limit = (int?)arguments["limit"] ?? 50;
+            var requestedSnapshot = (string?)arguments["snapshot"];
+            var page = await RunVaultAsync(link.Vault, vault =>
+            {
+                var names = vault.ListSubFolderNames(folder).OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(name => name, StringComparer.Ordinal).ToList();
+                var paths = names.Select(name => VaultPaths.Combine(folder, name)).ToList();
+                var snapshot = Pager.ComputeSnapshot(paths.Select(path => Newtonsoft.Json.JsonConvert.ToString(path)).ToList());
+                if (requestedSnapshot != null && !string.Equals(requestedSnapshot, snapshot, StringComparison.Ordinal))
+                    throw HostError.Coded(ErrorCodes.StaleSnapshot,
+                        "The list changed since the snapshot was taken. Request the page again without snapshot.",
+                        new JObject { ["snapshot"] = WireJson.Value(snapshot) });
+                var items = new List<PdmFolderChildItem>();
+                for (var i = Math.Min(offset, names.Count); i < names.Count && items.Count < limit; i++)
+                {
+                    if (_deadline.Expired)
+                    {
+                        if (items.Count == 0) throw HostError.Coded(ErrorCodes.OperationTimeout, "The request deadline passed before the folder rights could be read.");
+                        break;
+                    }
+                    var item = new PdmFolderChildItem { Name = names[i], VaultPath = paths[i] };
+                    try { item.Rights = vault.GetFolderRights(paths[i]); }
+                    catch (PdmGatewayException) { }
+                    items.Add(item);
+                }
+                return (items, total: names.Count, snapshot);
+            }).ConfigureAwait(false);
+            return Pager.FitPage(page.items, offset, page.total, page.snapshot, ProtocolInfo.SiUnits, _context.MaxResultBytes);
         }
 
         private async Task<JToken> FolderListAsync(PdmContext link, JObject arguments)

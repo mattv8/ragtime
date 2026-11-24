@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { Info, X, XCircle, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Info, X, XCircle, type LucideIcon } from 'lucide-react';
 import {
   addApprovedFolder,
   removeApprovedFolder,
   vaultFolderKey,
 } from '../utils/solidworksPdmLink';
+import type { FolderRightsState } from '../utils/solidworksPdmRights';
 import { InfoPopover } from './shared/InfoPopover';
 
 export interface SolidWorksApprovedFoldersProps {
@@ -12,6 +13,7 @@ export interface SolidWorksApprovedFoldersProps {
   onChange: (next: string[]) => void;
   vaultRoot: string | null;
   disabled?: boolean;
+  rights?: Record<string, FolderRightsState>;
 }
 
 type Tone = 'info' | 'error';
@@ -37,7 +39,7 @@ function Message({ id, tone, children }: { id: string; tone: Tone; children: Rea
   );
 }
 
-function approvedCountLabel(count: number): string {
+export function approvedCountLabel(count: number): string {
   return `${count} ${count === 1 ? 'folder' : 'folders'} approved.`;
 }
 
@@ -46,6 +48,7 @@ export function SolidWorksApprovedFolders({
   onChange,
   vaultRoot,
   disabled,
+  rights,
 }: SolidWorksApprovedFoldersProps) {
   const [draft, setDraft] = useState('');
   const [feedback, setFeedback] = useState<FolderFeedback | null>(null);
@@ -126,9 +129,32 @@ export function SolidWorksApprovedFolders({
           >
             {folders.map((folder, index) => {
               const key = vaultFolderKey(folder);
+              const right = rights?.[key] ?? 'not_checked';
+              const label =
+                right === 'write_ready'
+                  ? 'Can add and check out'
+                  : right === 'missing_write'
+                    ? 'Missing add or check-out rights'
+                    : right === 'not_found'
+                      ? 'Not found in the vault, or hidden from this PDM user'
+                      : null;
               return (
-                <li key={key} className="sw-chip" data-sw-folder={key}>
+                <li key={key} className="sw-chip" data-sw-folder={key} data-sw-rights={right}>
                   <code>{folder}</code>
+                  {label && (
+                    <span
+                      className="sw-chip-rights"
+                      data-tone={right === 'write_ready' ? 'success' : 'warning'}
+                      title={right === 'write_ready' ? undefined : label}
+                    >
+                      {right === 'write_ready' ? (
+                        <CheckCircle size={12} aria-hidden="true" />
+                      ) : (
+                        <AlertTriangle size={12} aria-hidden="true" />
+                      )}
+                      <span className="sw-visually-hidden">{label}</span>
+                    </span>
+                  )}
                   <button
                     type="button"
                     className="sw-chip-remove"

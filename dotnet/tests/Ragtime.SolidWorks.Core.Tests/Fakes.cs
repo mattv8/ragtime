@@ -41,6 +41,8 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         public List<SessionDocumentInfo> Open { get; } = new List<SessionDocumentInfo>();
 
+        public Action? BeforeListOpenDocuments { get; set; }
+
         public List<string> Closed { get; } = new List<string>();
 
         public List<string> Calls { get; } = new List<string>();
@@ -64,6 +66,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         public IReadOnlyList<SessionDocumentInfo> ListOpenDocuments()
         {
+            BeforeListOpenDocuments?.Invoke();
             Calls.Add(nameof(ListOpenDocuments));
             return Open.ToList();
         }
@@ -477,6 +480,28 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         public void SeedFolder(string vaultPath) => _folders.Add(vaultPath);
 
+        public Dictionary<string, PdmFolderRights> FolderRights { get; } = new Dictionary<string, PdmFolderRights>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, PdmGatewayException> FolderRightsFailures { get; } = new Dictionary<string, PdmGatewayException>(StringComparer.OrdinalIgnoreCase);
+        public IReadOnlyList<string>? SubFolderNames { get; set; }
+
+        public PdmFolderRights GetFolderRights(string vaultPath)
+        {
+            Enter(nameof(GetFolderRights), vaultPath);
+            if (FolderRightsFailures.TryGetValue(vaultPath, out var failure)) throw failure;
+            if (!_folders.Contains(vaultPath)) throw NotFoundAt(vaultPath);
+            return FolderRights.TryGetValue(vaultPath, out var rights) ? rights : new PdmFolderRights();
+        }
+
+        public IReadOnlyList<string> ListSubFolderNames(string vaultPath)
+        {
+            Enter(nameof(ListSubFolderNames), vaultPath);
+            if (!_folders.Contains(vaultPath)) throw NotFoundAt(vaultPath);
+            if (SubFolderNames != null) return SubFolderNames;
+            return _folders.Where(folder => !string.Equals(folder, vaultPath, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(VaultPaths.Parent(folder), vaultPath, StringComparison.OrdinalIgnoreCase))
+                .Select(LastSegment).ToList();
+        }
+
         public bool FolderExists(string vaultPath)
         {
             Enter(nameof(FolderExists), vaultPath);
@@ -726,6 +751,21 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         public int RunCount => RunVaults.Count;
 
+        private bool _isBusy;
+        public Action? OnIsBusyRead { get; set; }
+
+        /// <summary>What IsBusy reports: true while a timed-out PDM item is still running.</summary>
+        public bool IsBusy
+        {
+            get
+            {
+                var busy = _isBusy;
+                OnIsBusyRead?.Invoke();
+                return busy;
+            }
+            set => _isBusy = value;
+        }
+
         public PdmClientFacts GetClientFacts() => Facts;
 
         public Task<T> RunAsync<T>(string vault, Func<IPdmVault, T> work, Deadline deadline, CancellationToken cancellationToken)
@@ -753,10 +793,15 @@ namespace Ragtime.SolidWorks.Core.Tests
         private readonly InMemoryPdmClaimStore _inner = new InMemoryPdmClaimStore();
 
         public List<string> Calls { get; } = new List<string>();
+        public int FindCount { get; private set; }
         public Exception? RemoveFailure { get; set; }
         public Exception? PutFailure { get; set; }
 
-        public PdmClaim? Find(string vault, int fileId) => _inner.Find(vault, fileId);
+        public PdmClaim? Find(string vault, int fileId)
+        {
+            FindCount++;
+            return _inner.Find(vault, fileId);
+        }
 
         public void Put(PdmClaim claim)
         {

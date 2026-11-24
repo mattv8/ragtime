@@ -34,6 +34,9 @@ namespace Ragtime.SolidWorks.Pdm
         }
 
         /// <inheritdoc />
+        public bool IsBusy => _worker.IsBusy;
+
+        /// <inheritdoc />
         /// <remarks>Never logs in and never throws. The PDM thread is asked for views at most every 30 seconds.</remarks>
         public PdmClientFacts GetClientFacts()
         {

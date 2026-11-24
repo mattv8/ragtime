@@ -14,3 +14,20 @@
   secret is shown only at creation/rotation; do not place it in repository files
   or logs. Route, repository, and service implementations live in
   `ragtime/pdm_automation/`; index behavior is in `ragtime/indexer/pdm_*`.
+- A SolidWorks tool can link one PDM tool (`connection_config.pdm_tool_id`).
+  Its `pdm.search` and `pdm.lookup` read this index in Ragtime
+  (`ragtime/solidworks/pdm_link.py`) and reach both Chat and MCP through the
+  `solidworks_<name>` wrapper, unlike the standalone Chat-only `lookup_{tool}`.
+  The SolidWorks tool sends the PDM tool's
+  `database` to its host as the vault name; deleting or disabling the PDM tool
+  makes the SolidWorks tool answer `pdm_not_linked`. See
+  `.agents/solidworks.md`.
+- The SQL login reads the vault database for indexing only. Vault reads and
+  writes on a SolidWorks machine use that machine's PDM client login, never
+  this one.
+- The SolidWorks `studying-models` routine finds comparable models with
+  `pdm.search`: semantic search by product family, description or part-number
+  pattern, then the items' `revision`, `configurations` and `bom_count`. A
+  filename match cannot do this. Any other source for this index must supply
+  the same data: latest-revision data-card values, configurations, folders,
+  BOM rows and the document IDs `pdm.lookup` accepts.

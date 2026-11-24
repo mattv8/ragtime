@@ -53,6 +53,7 @@ import {
   type PdmTarget,
 } from './SolidWorksPdmLinkPanel';
 import { SolidWorksPdmReview } from './SolidWorksPdmReview';
+import type { RightsState } from '../utils/solidworksPdmRights';
 import { SolidWorksScriptsPanel, SolidWorksScriptsReview } from './SolidWorksScriptsPanel';
 import { DEFAULT_PDM_CONNECTION_CONFIG } from './pdm/pdmDefaults';
 import { SolidWorksTestResult } from './SolidWorksTestResult';
@@ -2424,6 +2425,7 @@ export function ToolWizard({
     };
   });
   const [pdmTarget, setPdmTarget] = useState<PdmTarget | null>(null);
+  const [pdmRights, setPdmRights] = useState<RightsState | null>(null);
   const [pdmResolution, setPdmResolution] = useState<'loading' | 'failed' | 'missing' | 'ready'>(
     'loading',
   );
@@ -2443,6 +2445,7 @@ export function ToolWizard({
       idle_shutdown_seconds:
         config.idle_shutdown_seconds ?? SOLIDWORKS_DEFAULT_OPTIONS.idle_shutdown_seconds,
       allow_scripts: config.allow_scripts ?? false,
+      auto_update_host: config.auto_update_host !== false,
     };
   });
   const [solidworksHostStatus, setSolidworksHostStatus] = useState<SolidworksHostStatus | null>(
@@ -3798,6 +3801,7 @@ export function ToolWizard({
     if (next.pdm_tool_id !== pdmLink.pdm_tool_id) {
       setPdmResolution('loading');
       setPdmTarget(null);
+      setPdmRights(null);
     }
     setPdmLink(next);
     setTestResult(null);
@@ -3823,6 +3827,7 @@ export function ToolWizard({
     setSolidworksHostStatus(null);
     setPdmLink({ pdm_tool_id: null, approved_folders: [] });
     setPdmTarget(null);
+    setPdmRights(null);
     setPdmResolution('loading');
     setPdmBusy(false);
     setAllowWrite(false);
@@ -6535,8 +6540,8 @@ export function ToolWizard({
       <p className="wizard-help">
         {toolType === 'solidworks'
           ? connectionMode === 'quick'
-            ? 'Connect to the Windows machine that has SolidWorks installed. Run the command as the Windows account that works in SolidWorks. The next step installs a small host program for that account. To pair a different account, use the (i) button.'
-            : 'Connect to the Windows machine that has SolidWorks installed with your own SSH details. The next step installs a small host program for that account.'
+            ? 'Connect to the Windows machine that has SolidWorks installed. Run the command as the Windows account that works in SolidWorks. The next step installs the SolidWorks agent, a small Ragtime program, for that account. To pair a different account, use the (i) button.'
+            : 'Connect to the Windows machine that has SolidWorks installed with your own SSH details. The next step installs the SolidWorks agent, a small Ragtime program, for that account.'
           : 'Connect to a remote server via SSH to run shell commands.'}
       </p>
       <div className="connection-tabs" role="group" aria-label="Connection method">
@@ -7648,13 +7653,13 @@ export function ToolWizard({
                   ? `Paired machine ${sshConfig.host}`
                   : `${sshConfig.user}@${sshConfig.host}:${sshConfig.port || 22}`}
               </p>
-              {solidworksHostStatus?.running === true && <p>SolidWorks host: running</p>}
+              {solidworksHostStatus?.running === true && <p>SolidWorks agent: running</p>}
               {solidworksHostStatus?.running === false && (
                 <p className="sw-message" data-tone="warning">
                   <AlertTriangle className="sw-message-icon" size={14} aria-hidden="true" />
                   <span>
-                    SolidWorks host: not running yet. Calls fail until the host is installed and the
-                    account is logged in.
+                    SolidWorks agent: not running yet. Calls fail until the agent is installed and
+                    the account is logged in.
                   </span>
                 </p>
               )}
@@ -7670,6 +7675,12 @@ export function ToolWizard({
                   ? 'Attach to open SolidWorks'
                   : `Background instance, up to ${solidworksOptions.max_instances} at a time, closed after ${(solidworksOptions.idle_shutdown_seconds ?? 900) / 60} minutes idle`}
               </p>
+              <p data-sw-review-row="host-updates">
+                Agent updates:{' '}
+                {solidworksOptions.auto_update_host !== false
+                  ? 'Automatic when idle'
+                  : 'Manual only'}
+              </p>
             </>
           ) : (
             <pre className="review-config">{JSON.stringify(reviewConnectionConfig, null, 2)}</pre>
@@ -7683,6 +7694,7 @@ export function ToolWizard({
             target={pdmTarget}
             hostStatus={solidworksHostStatus}
             resolution={pdmResolution}
+            rights={pdmRights}
           />
         )}
         <div className="review-section">
@@ -7733,7 +7745,7 @@ export function ToolWizard({
             className="wizard-content sw-step"
           >
             <p className="wizard-help">
-              Install the host, choose how SolidWorks starts, then test.
+              Install the agent, choose how SolidWorks starts, then test.
             </p>
             <SolidWorksHostPanel
               toolId={existingTool?.id ?? createdToolId}
@@ -7751,6 +7763,7 @@ export function ToolWizard({
               disabled={saving || testing || solidworksActionBusy}
             />
             <SolidWorksPdmLinkPanel
+              toolId={existingTool?.id ?? createdToolId}
               value={pdmLink}
               onChange={handlePdmLinkChange}
               allowChanges={allowWrite}
@@ -7760,6 +7773,7 @@ export function ToolWizard({
               onBusyChange={setPdmBusy}
               onTargetChange={setPdmTarget}
               onResolutionChange={setPdmResolution}
+              onRightsChange={setPdmRights}
             />
             <SolidWorksScriptsPanel
               value={solidworksOptions.allow_scripts === true}

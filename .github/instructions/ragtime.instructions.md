@@ -24,6 +24,7 @@ applyTo: '**'
 - Discovery convention: module `my_tool.py` should export `my_tool_tool` (or `tool`) as a `StructuredTool`.
 - Runtime tools come from DB `tool_configs` and are materialized in `ragtime/rag/components.py` (not just filesystem modules).
 - Tool schemas must use Pydantic fields with descriptions (LLM-facing contract quality matters).
+- The `solidworks` tool type is one `solidworks_<name>` wrapper served by `ragtime/solidworks/` and a Windows host program in `dotnet/`; read `.agents/solidworks.md` before changing either.
 
 ## Auth, MCP, and User Space
 
@@ -76,5 +77,5 @@ applyTo: '**'
 - OAuth endpoints consumed by external MCP clients are strict about response shape: return RFC 6749 top-level JSON errors from `/token` via `JSONResponse`, not `HTTPException(detail={...})`, which FastAPI wraps as `{"detail": ...}`.
 - With `allow_credentials=True`, `ALLOWED_ORIGINS` entries must be full origins including scheme (for example `https://ragtime.hammerton.com`), not bare hostnames.
 - Keep async style and existing logging pattern (`get_logger` / `setup_logging`), and preserve mapped Prisma field naming conventions.
-- No dedicated test suite exists in repo; validate changes with targeted API/UI/container smoke checks.
+- Tests: pytest in `tests/` (see `testing.instructions.md`), Vitest files beside frontend sources, and the SolidWorks host's xUnit tests in `dotnet/tests/`. `bash tests/run_all_tests.sh` runs the full local gate.
 - House style: keep type hints and Pydantic `Field(description=...)` on LLM-facing schemas; avoid emojis in logs/UI text.

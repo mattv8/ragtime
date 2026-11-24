@@ -95,6 +95,22 @@ namespace Ragtime.SolidWorks.Core
 
         /// <summary>Seconds since the host process started.</summary>
         public double UptimeSeconds { get; set; }
+
+        /// <summary>Work in flight and idle time, used by the idle-stop gate.</summary>
+        public HostActivityInfo Activity { get; set; } = new HostActivityInfo();
+    }
+
+    /// <summary>The <c>activity</c> object of <c>status</c>.</summary>
+    public sealed class HostActivityInfo
+    {
+        /// <summary>Work requests currently running (0 or more).</summary>
+        public int InFlight { get; set; }
+
+        /// <summary>Whole seconds since the last work finished; 0 while work is in flight.</summary>
+        public int IdleSeconds { get; set; }
+
+        /// <summary>True while a PDM item whose caller gave up is still running.</summary>
+        public bool PdmBusy { get; set; }
     }
 
     /// <summary>One operation in the <c>describe</c> result.</summary>

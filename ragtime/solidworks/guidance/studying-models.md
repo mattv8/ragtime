@@ -4,8 +4,8 @@ Before you propose or change a model, read how the house already builds similar 
 only reads. It finds two or three comparable models in the vault, opens them and writes down the
 conventions they share. Do not treat one model as the rule.
 
-The tool does not create models. Use this routine to learn the conventions, then give the user the
-result.
+Use this routine to learn the conventions, then give the user the result. To build a model with
+them, use `script.run` when the tool allows scripts (see `scripts`).
 
 ## 1. Choose the models
 

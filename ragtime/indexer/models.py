@@ -2211,7 +2211,7 @@ class SSHShellConnectionConfig(BaseModel):
 
 
 class SolidworksConnectionConfig(SSHShellConnectionConfig):
-    """Connection configuration for a SolidWorks host over SSH."""
+    """Connection configuration for a SolidWorks agent over SSH."""
 
     pairing_id: str | None = Field(default=None, description="Remote client pairing ID")
     transport: str | None = Field(default=None, description="Remote client transport")
@@ -2223,6 +2223,7 @@ class SolidworksConnectionConfig(SSHShellConnectionConfig):
     allow_scripts: bool = False
     pdm_tool_id: str | None = None
     pdm_approved_folders: list[str] = Field(default_factory=list)
+    auto_update_host: bool = Field(default=True, description="Update the SolidWorks agent automatically when it is idle")
 
     @field_validator("pdm_approved_folders")
     @classmethod
@@ -2590,6 +2591,8 @@ class ToolConfig(BaseModel):
     group_id: Optional[str] = Field(default=None, description="Tool group ID")
     group_name: Optional[str] = Field(default=None, description="Tool group name (read-only)")
     pdm_link: Optional[dict] = Field(default=None, description="Computed linked PDM tool metadata")
+    solidworks_host_update: Optional[dict] = Field(default=None, description="Computed SolidWorks agent auto-update state")
+    tunnel_client: Optional[dict] = Field(default=None, description="Computed tunnel client version state")
     enabled: bool = Field(default=True, description="Whether this tool is enabled")
     description: str = Field(
         default="",

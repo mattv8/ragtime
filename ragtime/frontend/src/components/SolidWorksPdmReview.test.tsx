@@ -97,6 +97,80 @@ function renderReview(overrides: Partial<SolidWorksPdmReviewProps> = {}): string
 describe('SolidWorksPdmReview', () => {
   afterEach(cleanup);
 
+  it.each([
+    ['write_ready', 'can add and check out'],
+    ['missing_write', 'missing add or check-out rights'],
+    ['not_found', 'not found, or hidden from this PDM user'],
+    ['not_checked', 'rights not checked'],
+  ] as const)('shows folder rights %s', (state, label) => {
+    renderReview({
+      allowChanges: true,
+      link: { pdm_tool_id: 'pdm-a', approved_folders: [FOLDER] },
+      rights: {
+        root: 'ok',
+        folders: { [FOLDER.toLowerCase()]: state },
+        user: 'checked.user',
+        extraWriteInfo: false,
+      },
+    });
+    const folder = document.querySelector('#solidworks-review-pdm-folders li');
+    expect(folder?.getAttribute('data-sw-rights')).toBe(state);
+    expect(folder?.textContent).toContain(label);
+    if (state === 'missing_write' || state === 'not_found') {
+      expect(folder?.querySelector('.sw-message[data-tone="warning"]')?.textContent).toContain(
+        label,
+      );
+    } else {
+      expect(folder?.querySelector('.sw-message')).toBeNull();
+    }
+    expect(document.querySelector('[data-sw-review-row="vault-access"]')?.textContent).toContain(
+      'can read the vault',
+    );
+    expect(document.body.textContent).toContain('Changes appear in PDM as checked.user.');
+    expect(document.querySelector('[data-sw-review-row="pdm-user"]')).toBeNull();
+  });
+
+  it('shows the checked user when changes are off', () => {
+    renderReview({
+      rights: { root: 'ok', folders: {}, user: 'checked.user', extraWriteInfo: false },
+    });
+    expect(document.querySelector('[data-sw-review-row="pdm-user"]')?.textContent).toContain(
+      'checked.user',
+    );
+  });
+
+  it('shows a warning for no read and information about extra write rights', () => {
+    renderReview({ rights: { root: 'no_read', folders: {}, user: null, extraWriteInfo: true } });
+    expect(document.querySelector('[data-sw-review-row="vault-access"]')?.textContent).toContain(
+      'cannot read',
+    );
+    expect(document.querySelector('[data-sw-review-row="extra-write"]')?.textContent).toContain(
+      'Ragtime refuses changes',
+    );
+  });
+
+  it.each([null, undefined])('shows not checked when rights are %s', (rights) => {
+    renderReview({
+      rights,
+      allowChanges: true,
+      link: { pdm_tool_id: 'pdm-a', approved_folders: [FOLDER] },
+    });
+    expect(document.querySelector('[data-sw-review-row="pdm-user"]')).toBeNull();
+    expect(document.querySelector('[data-sw-review-row="vault-access"]')?.textContent).toContain(
+      'not checked',
+    );
+    expect(
+      document.querySelector('#solidworks-review-pdm-folders li')?.getAttribute('data-sw-rights'),
+    ).toBe('not_checked');
+  });
+
+  it('shows an unchecked user when changes are off and rights are unavailable', () => {
+    renderReview({ rights: null });
+    expect(document.querySelector('[data-sw-review-row="pdm-user"]')?.textContent).toContain(
+      'not checked',
+    );
+  });
+
   it('is a review section with stable hooks', () => {
     renderReview();
     const root = document.getElementById('solidworks-review-pdm') as HTMLElement;
@@ -112,7 +186,7 @@ describe('SolidWorksPdmReview', () => {
 
   it('lists a healthy link with its index and machine view', () => {
     const text = renderReview();
-    expect(text).toContain('PDM tool: PDM Ragtime');
+    expect(text).toContain('Search index: PDM Ragtime');
     expect(text).toContain('Vault database: Ragtime');
     expect(text).toContain('Index: 12,480 documents, last indexed');
     expect(text).toContain(
@@ -189,7 +263,7 @@ describe('SolidWorksPdmReview', () => {
     expect(renderReview({ hostStatus })).toContain(sentence);
   });
 
-  it('says the machine is not checked when the host is not running', () => {
+  it('says the machine is not checked when the agent is not running', () => {
     expect(renderReview({ hostStatus: null })).toContain('Vault view on the machine: not checked');
   });
 

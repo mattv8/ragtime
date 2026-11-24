@@ -161,11 +161,18 @@ namespace Ragtime.SolidWorks.Pdm
 
         private static void AddSubFolders(IEdmFolder5 folder, List<PdmFolderEntry> entries)
         {
+            foreach (var child in SubFolders(folder))
+            {
+                entries.Add(new PdmFolderEntry { Name = child.Name, IsFolder = true });
+            }
+        }
+
+        private static IEnumerable<IEdmFolder5> SubFolders(IEdmFolder5 folder)
+        {
             var position = folder.GetFirstSubFolderPosition();
             while (!position.IsNull)
             {
-                var child = folder.GetNextSubFolder(position);
-                entries.Add(new PdmFolderEntry { Name = child.Name, IsFolder = true });
+                yield return folder.GetNextSubFolder(position);
             }
         }
 

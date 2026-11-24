@@ -163,6 +163,8 @@ COPY typings/ /ragtime/typings/
 COPY ragtime/ /ragtime/ragtime/
 COPY runtime/ /ragtime/runtime/
 COPY tests/ /ragtime/tests/
+# tests/test_solidworks_protocol.py checks the host's request limit against Ragtime's.
+COPY dotnet/src/Ragtime.SolidWorks.Core/Wire/CallRequestArgument.cs /ragtime/dotnet/src/Ragtime.SolidWorks.Core/Wire/
 COPY .github/actions/ /ragtime/.github/actions/
 COPY .github/workflows/ /ragtime/.github/workflows/
 

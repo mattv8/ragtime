@@ -7,6 +7,7 @@ import {
   type SolidworksHostStatus,
 } from '../api/solidworks';
 import { deferred } from '../testHelpers/deferred';
+import type { SolidworksHostAutoUpdate } from '../types/api';
 import { SolidWorksHostPanel } from './SolidWorksHostPanel';
 
 vi.mock('../api/solidworks', async (importOriginal) => {
@@ -75,7 +76,7 @@ const ST_NO_SESSION: SolidworksHostStatus = {
 const ST_NOT_RESPONDING: SolidworksHostStatus = {
   ...BASE,
   running: false,
-  error: { code: 'host_not_running', message: 'The host did not answer within 20 seconds.' },
+  error: { code: 'host_not_running', message: 'The agent did not answer within 20 seconds.' },
 };
 const ST_UNREACHABLE: SolidworksHostStatus = {
   reachable: false,
@@ -132,6 +133,122 @@ afterEach(() => {
 });
 
 describe('SolidWorksHostPanel states', () => {
+  it.each(['off', 'pending', 'updating', 'failed', 'current', 'newer'] as const)(
+    'shows the correct auto-update line for %s',
+    async (state) => {
+      const auto_update: SolidworksHostAutoUpdate = {
+        enabled: state !== 'off',
+        state,
+        installed_version: '0.1.0',
+        target_version: '0.2.0',
+        reason: null,
+        last_attempt_at: null,
+        next_attempt_at: null,
+        message: null,
+      };
+      getStatus.mockResolvedValue({ ...ST_UPDATE, auto_update });
+      renderPanel();
+      await waitFor(() => expect(panelState()).toBe('running_update'));
+      const line = document.getElementById('solidworks-host-auto-update');
+      if (state === 'current' || state === 'newer') expect(line).toBeNull();
+      else expect(line?.getAttribute('data-sw-auto-update')).toBe(state);
+      expect(
+        (screen.getByRole('button', { name: /Update agent/i }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    },
+  );
+
+  it('hides off when no update is available', async () => {
+    getStatus.mockResolvedValue({
+      ...ST_RUNNING,
+      auto_update: {
+        enabled: false,
+        state: 'off',
+        installed_version: null,
+        target_version: null,
+        reason: null,
+        last_attempt_at: null,
+        next_attempt_at: null,
+        message: null,
+      },
+    });
+    renderPanel();
+    await waitFor(() => expect(panelState()).toBe('running_current'));
+    expect(document.getElementById('solidworks-host-auto-update')).toBeNull();
+  });
+
+  it.each([ST_NO_SESSION, ST_NOT_RESPONDING])(
+    'hides off when an update is available but the agent is not running',
+    async (status) => {
+      getStatus.mockResolvedValue({
+        ...status,
+        update_available: true,
+        auto_update: {
+          enabled: false,
+          state: 'off',
+          installed_version: '0.1.0',
+          target_version: '0.2.0',
+          reason: null,
+          last_attempt_at: null,
+          next_attempt_at: null,
+          message: null,
+        },
+      });
+      renderPanel();
+      await waitFor(() => expect(panelState()).not.toBe('checking'));
+      expect(document.getElementById('solidworks-host-auto-update')).toBeNull();
+    },
+  );
+
+  it('renders failure timestamps as time elements and preserves the message', async () => {
+    getStatus.mockResolvedValue({
+      ...ST_UPDATE,
+      auto_update: {
+        enabled: true,
+        state: 'failed',
+        installed_version: '0.1.0',
+        target_version: '0.2.0',
+        reason: null,
+        last_attempt_at: '2020-01-01T12:00:00Z',
+        next_attempt_at: '2099-01-01T12:00:00Z',
+        message: 'Try later.',
+      },
+    });
+    renderPanel();
+    await waitFor(() =>
+      expect(document.querySelectorAll('#solidworks-host-auto-update time')).toHaveLength(2),
+    );
+    expect(document.getElementById('solidworks-host-auto-update')?.textContent).toContain(
+      'Try later.',
+    );
+    const times = document.querySelectorAll('#solidworks-host-auto-update time');
+    expect(times[0].getAttribute('datetime')).toBe('2020-01-01T12:00:00Z');
+    expect(times[1].getAttribute('datetime')).toBe('2099-01-01T12:00:00Z');
+  });
+
+  it.each(['updating', 'pending', 'failed'] as const)(
+    'polls a running agent only when %s is updating',
+    async (state) => {
+      vi.useFakeTimers();
+      getStatus.mockResolvedValue({
+        ...ST_UPDATE,
+        auto_update: {
+          enabled: true,
+          state,
+          installed_version: '0.1.0',
+          target_version: '0.2.0',
+          reason: null,
+          last_attempt_at: null,
+          next_attempt_at: null,
+          message: null,
+        },
+      });
+      renderPanel();
+      await flush();
+      await advance(10000);
+      expect(getStatus).toHaveBeenCalledTimes(state === 'updating' ? 2 : 1);
+    },
+  );
   it('blocked without a saved connection: no request, no buttons, onStatusChange(null)', () => {
     const onStatusChange = vi.fn();
     renderPanel({ toolId: null, connectionReady: false, onStatusChange });
@@ -166,14 +283,16 @@ describe('SolidWorksHostPanel states', () => {
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('running_current'));
     expect(pillText()).toBe('Running');
-    expect(liveText()).toBe('The host is installed and answering.');
+    expect(liveText()).toBe('The agent is installed and answering.');
+    expect(screen.getByRole('heading', { name: 'SolidWorks agent' })).toBeTruthy();
+    expect(screen.getByLabelText('SolidWorks agent details')).toBeTruthy();
     expect(document.getElementById('solidworks-host-state')?.className).toBe('sw-visually-hidden');
     expect(factKeys()).toEqual(['account', 'session', 'solidworks', 'starts', 'host-version']);
     expect(
       document.querySelector('#solidworks-host-facts [data-sw-fact="solidworks"] dd')?.textContent,
     ).toBe('2024, 2022');
     expect(actionButtons()).toHaveLength(0);
-    expect(screen.getByRole('button', { name: 'Uninstall host' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Uninstall agent' })).toBeTruthy();
     expect(document.querySelector('header #solidworks-host-uninstall')).not.toBeNull();
     expect(document.querySelectorAll('.sw-pill')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'About session' }));
@@ -191,7 +310,7 @@ describe('SolidWorksHostPanel states', () => {
     await waitFor(() => expect(panelState()).toBe('running_current'));
     expect(
       screen.getByText(
-        'The host is running but found no SolidWorks installation for this account.',
+        'The agent is running but found no SolidWorks installation for this account.',
       ),
     ).toBeTruthy();
     expect(
@@ -199,7 +318,7 @@ describe('SolidWorksHostPanel states', () => {
     ).toBe('None found');
   });
 
-  it('update available: Update host is primary, pills show both labels, uninstall stays', async () => {
+  it('update available: Update agent is primary, pills show both labels, uninstall stays', async () => {
     getStatus.mockResolvedValue(ST_UPDATE);
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('running_update'));
@@ -208,13 +327,13 @@ describe('SolidWorksHostPanel states', () => {
     expect(liveText()).toBe('Version 0.1.0 is running; version 0.2.0 is available.');
     fireEvent.click(screen.getByRole('button', { name: 'About updating' }));
     expect(document.getElementById('solidworks-host-update-help-content')?.textContent).toBe(
-      'Updating restarts the host and closes any SolidWorks it started. Calls in progress fail.',
+      'Updating restarts the agent and closes any SolidWorks it started. Calls in progress fail.',
     );
     expect(actionButtons().map((b) => b.getAttribute('data-sw-action'))).toEqual(['update']);
-    expect(document.getElementById('solidworks-host-update')?.textContent).toBe('Update host');
+    expect(document.getElementById('solidworks-host-update')?.textContent).toBe('Update agent');
   });
 
-  it('not installed: Install host, facts without host version, collapsed manual checklist', async () => {
+  it('not installed: Install agent, facts without agent version, collapsed manual checklist', async () => {
     getStatus.mockResolvedValue(ST_NOT_INSTALLED);
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('not_installed'));
@@ -233,7 +352,7 @@ describe('SolidWorksHostPanel states', () => {
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('artifact_unavailable'));
     expect(pillText()).toBe('Installer missing');
-    expect(liveText()).toContain('does not include the SolidWorks host installer');
+    expect(liveText()).toContain('does not include the SolidWorks agent installer');
     expect(actionButtons()).toHaveLength(0);
     expect(document.getElementById('solidworks-manual-install')).toBeNull();
     expect(factKeys()).toEqual(['account', 'session', 'solidworks']);
@@ -263,14 +382,14 @@ describe('SolidWorksHostPanel states', () => {
     expect(actionButtons()).toHaveLength(0);
   });
 
-  it('not responding: Reinstall host primary, host log copy, uninstall hidden', async () => {
+  it('not responding: Reinstall agent primary, agent log copy, uninstall hidden', async () => {
     getStatus.mockResolvedValue(ST_NOT_RESPONDING);
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('not_responding'));
     expect(pillText()).toBe('Not running');
     expect(liveText()).toContain('did not answer. Reinstalling registers its logon task again');
     expect(liveText()).toContain('logs\\host.log');
-    expect(screen.getByText('The host did not answer within 20 seconds.')).toBeTruthy();
+    expect(screen.getByText('The agent did not answer within 20 seconds.')).toBeTruthy();
     expect(actionButtons().map((b) => b.getAttribute('data-sw-action'))).toEqual(['reinstall']);
     expect(document.getElementById('solidworks-manual-install')).not.toBeNull();
   });
@@ -281,7 +400,7 @@ describe('SolidWorksHostPanel states', () => {
     renderPanel({ onStatusChange });
     await waitFor(() => expect(panelState()).toBe('request_failed'));
     expect(pillText()).toBe('Check failed');
-    expect(liveText()).toBe('Ragtime could not check the host.');
+    expect(liveText()).toBe('Ragtime could not check the agent.');
     expect(document.getElementById('solidworks-host-panel')?.textContent).toContain(
       'Internal error',
     );
@@ -311,7 +430,7 @@ describe('SolidWorksHostPanel actions', () => {
     const onStatusChange = vi.fn();
     renderPanel({ onStatusChange });
     await waitFor(() => expect(panelState()).toBe('not_installed'));
-    fireEvent.click(screen.getByRole('button', { name: 'Install host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Install agent' }));
     expect(panelState()).toBe('installing');
     expect(pillText()).toBe('Installing…');
     expect(liveText()).toContain('can take about a minute');
@@ -333,7 +452,7 @@ describe('SolidWorksHostPanel actions', () => {
     install.mockResolvedValue(ST_INSTALL_FAILED);
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('not_installed'));
-    fireEvent.click(screen.getByRole('button', { name: 'Install host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Install agent' }));
     await waitFor(() => expect(panelState()).toBe('install_failed'));
     const alert = screen.getByRole('alert');
     expect(alert.querySelector('strong')?.textContent).toBe('Details');
@@ -362,11 +481,11 @@ describe('SolidWorksHostPanel actions', () => {
   it('artifact 503 on install shows the install error and drops the checklist', async () => {
     getStatus.mockResolvedValue(ST_NOT_INSTALLED);
     install.mockRejectedValue(
-      new SolidworksApiError('The SolidWorks host package is not available on this server.', 503),
+      new SolidworksApiError('The SolidWorks agent package is not available on this server.', 503),
     );
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('not_installed'));
-    fireEvent.click(screen.getByRole('button', { name: 'Install host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Install agent' }));
     await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
     expect(screen.getByRole('alert').textContent).toContain('not available on this server');
     expect(panelState()).toBe('install_failed');
@@ -379,7 +498,7 @@ describe('SolidWorksHostPanel actions', () => {
     renderPanel({ onStatusChange });
     await waitFor(() => expect(panelState()).toBe('running_current'));
     uninstall.mockResolvedValue(ST_NOT_INSTALLED);
-    fireEvent.click(screen.getByRole('button', { name: 'Uninstall host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Uninstall agent' }));
     const confirm = document.getElementById('solidworks-uninstall-confirm') as HTMLElement;
     expect(confirm.getAttribute('role')).toBe('group');
     expect(document.activeElement).toBe(document.getElementById('solidworks-uninstall-cancel'));
@@ -391,17 +510,17 @@ describe('SolidWorksHostPanel actions', () => {
     expect(document.getElementById('solidworks-uninstall-confirm')).toBeNull();
     expect(document.activeElement).toBe(document.getElementById('solidworks-host-uninstall'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Uninstall host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Uninstall agent' }));
     fireEvent.click(document.getElementById('solidworks-uninstall-cancel') as HTMLButtonElement);
     expect(document.getElementById('solidworks-uninstall-confirm')).toBeNull();
     expect(document.activeElement).toBe(document.getElementById('solidworks-host-uninstall'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Uninstall host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Uninstall agent' }));
     fireEvent.click(
       document.getElementById('solidworks-uninstall-confirm-button') as HTMLButtonElement,
     );
     await waitFor(() => expect(panelState()).toBe('not_installed'));
-    expect(liveText()).toBe('Host uninstalled.');
+    expect(liveText()).toBe('Agent uninstalled.');
     expect(uninstall).toHaveBeenCalledWith('tool-1');
     expect(onStatusChange).toHaveBeenLastCalledWith(ST_NOT_INSTALLED);
   });
@@ -411,12 +530,12 @@ describe('SolidWorksHostPanel actions', () => {
     uninstall.mockReturnValue(pending.promise);
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('running_current'));
-    fireEvent.click(screen.getByRole('button', { name: 'Uninstall host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Uninstall agent' }));
     fireEvent.click(
       document.getElementById('solidworks-uninstall-confirm-button') as HTMLButtonElement,
     );
     expect(panelState()).toBe('uninstalling');
-    expect(liveText()).toBe('Removing the SolidWorks host…');
+    expect(liveText()).toBe('Removing the SolidWorks agent…');
     const pressed = document.getElementById('solidworks-host-uninstall') as HTMLButtonElement;
     expect(pressed.textContent).toBe('Uninstalling…');
     expect(pressed.disabled).toBe(true);
@@ -431,7 +550,7 @@ describe('SolidWorksHostPanel actions', () => {
     });
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('running_current'));
-    fireEvent.click(screen.getByRole('button', { name: 'Uninstall host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Uninstall agent' }));
     fireEvent.click(
       document.getElementById('solidworks-uninstall-confirm-button') as HTMLButtonElement,
     );
@@ -443,14 +562,14 @@ describe('SolidWorksHostPanel actions', () => {
     expect(actionButtons().map((b) => b.getAttribute('data-sw-action'))).toEqual(['retry']);
   });
 
-  it('shows Update host as pressed while the update runs', async () => {
+  it('shows Update agent as pressed while the update runs', async () => {
     getStatus.mockResolvedValue(ST_UPDATE);
     const pending = deferred<SolidworksHostStatus>();
     install.mockReturnValue(pending.promise);
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('running_update'));
-    fireEvent.click(screen.getByRole('button', { name: 'Update host' }));
-    expect(liveText()).toContain('Updating also closes SolidWorks instances the host started.');
+    fireEvent.click(screen.getByRole('button', { name: 'Update agent' }));
+    expect(liveText()).toContain('Updating also closes SolidWorks instances the agent started.');
     expect(document.getElementById('solidworks-host-update')?.textContent).toBe('Updating…');
     await act(async () => pending.resolve(ST_RUNNING));
     expect(panelState()).toBe('running_current');
@@ -616,7 +735,7 @@ describe('SolidWorksHostPanel polling and refresh', () => {
     const onBusyChange = vi.fn();
     renderPanel({ onBusyChange });
     await waitFor(() => expect(panelState()).toBe('not_installed'));
-    fireEvent.click(screen.getByRole('button', { name: 'Install host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Install agent' }));
     await waitFor(() => expect(panelState()).toBe('running_current'));
     expect(onBusyChange.mock.calls.map((call) => call[0])).toEqual([
       false,
@@ -648,12 +767,12 @@ describe('SolidWorksHostPanel presentation, warnings and busy signals', () => {
   });
 
   it('shows a status warning under the state sentence in the resolved state', async () => {
-    getStatus.mockResolvedValue({ ...ST_RUNNING, warning: 'Some host files are still locked.' });
+    getStatus.mockResolvedValue({ ...ST_RUNNING, warning: 'Some agent files are still locked.' });
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('running_current'));
     const note = document.getElementById('solidworks-host-warning');
     expect(note?.getAttribute('data-tone')).toBe('warning');
-    expect(note?.textContent).toContain('Some host files are still locked.');
+    expect(note?.textContent).toContain('Some agent files are still locked.');
   });
 
   it('an uninstall with leftover files resolves to not installed, and Check again uses the normal rules', async () => {
@@ -661,19 +780,19 @@ describe('SolidWorksHostPanel presentation, warnings and busy signals', () => {
       ...ST_NOT_RESPONDING,
       error: null,
       warning:
-        'The host was stopped and its logon task removed, but some files could not be deleted.',
+        'The agent was stopped and its logon task removed, but some files could not be deleted.',
     };
     uninstall.mockResolvedValue(leftover);
     renderPanel();
     await waitFor(() => expect(panelState()).toBe('running_current'));
-    fireEvent.click(screen.getByRole('button', { name: 'Uninstall host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Uninstall agent' }));
     fireEvent.click(
       document.getElementById('solidworks-uninstall-confirm-button') as HTMLButtonElement,
     );
     await waitFor(() => expect(uninstall).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(panelState()).toBe('not_installed'));
     expect(pillText()).toBe('Not installed');
-    expect(liveText()).toBe('Host uninstalled.');
+    expect(liveText()).toBe('Agent uninstalled.');
     expect(screen.queryByRole('alert')).toBeNull();
     expect(document.getElementById('solidworks-host-warning')?.textContent).toContain(
       'some files could not be deleted',
@@ -699,7 +818,7 @@ describe('SolidWorksHostPanel presentation, warnings and busy signals', () => {
     renderPanel({ onBusyChange, onActionBusyChange });
     await waitFor(() => expect(panelState()).toBe('not_installed'));
     expect(onActionBusyChange.mock.calls.map((call) => call[0])).toEqual([false]);
-    fireEvent.click(screen.getByRole('button', { name: 'Install host' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Install agent' }));
     await waitFor(() => expect(panelState()).toBe('running_current'));
     fireEvent.click(document.getElementById('solidworks-host-refresh') as HTMLButtonElement);
     await waitFor(() => expect(getStatus).toHaveBeenCalledTimes(2));

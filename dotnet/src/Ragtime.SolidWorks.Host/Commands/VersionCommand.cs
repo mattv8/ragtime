@@ -12,6 +12,7 @@ namespace Ragtime.SolidWorks.Host
             {
                 ["host_version"] = WireJson.Value(HostEnvironment.ReadHostVersion()),
                 ["protocol"] = WireJson.Value(ProtocolInfo.Version),
+                ["features"] = new JArray(HostFeatures.All),
             };
             return ClientOutcome.Print(line, ExitCodes.Success);
         }

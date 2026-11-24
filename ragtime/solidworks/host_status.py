@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 
@@ -20,11 +21,12 @@ $ErrorActionPreference = 'Stop'
 $exe = Join-Path $env:LOCALAPPDATA 'RagtimeSolidWorks\host\ragtime-solidworks-host.exe'
 $present = Test-Path -LiteralPath $exe -PathType Leaf
 $version = $null
+$features = @()
 if ($present) {
     try {
         $output = & $exe version 2>$null
         foreach ($line in $output) {
-            try { $v = $line | ConvertFrom-Json; if ($v.host_version) { $version = [string]$v.host_version } } catch {}
+            try { $v = $line | ConvertFrom-Json; if ($v.host_version) { $version = [string]$v.host_version }; $features = @($v.features | ForEach-Object { [string]$_ }) } catch {}
         }
     } catch {}
 }
@@ -52,7 +54,7 @@ try {
         } | Sort-Object -Unique
     )
 } catch {}
-@{exe_present=$present; host_version=$version; account=@{name=$identity.Name; is_administrator=$admin};
+@{exe_present=$present; host_version=$version; host_features=$features; account=@{name=$identity.Name; is_administrator=$admin};
   interactive=$interactive; installed_versions=$versions} | ConvertTo-Json -Compress -Depth 4
 exit 0
 """
@@ -61,11 +63,11 @@ DEFAULT_TOOL_TIMEOUT_SECONDS = 100
 STATUS_TIMEOUT_CEILING_SECONDS = 60
 
 _MESSAGES = {
-    "ssh_unreachable": "SSH connection failed; check the host and connection.",
+    "ssh_unreachable": "SSH connection failed; check the SSH host and connection.",
     "ssh_auth_failed": "SSH authentication failed; check the configured credentials.",
-    "host_not_running": "The SolidWorks host is not running or did not respond.",
+    "host_not_running": "The SolidWorks agent is not running or did not respond.",
     "no_interactive_session": "The account has no interactive desktop session.",
-    "internal_error": "The SolidWorks host status could not be checked.",
+    "internal_error": "The SolidWorks agent status could not be checked.",
     "version_not_installed": "The configured SolidWorks version is not installed.",
 }
 PDM_VIEWS_WARNING = "The PDM vault view could not be checked."
@@ -76,6 +78,8 @@ _HOST_ERROR_CODES = {
     "invalid_arguments",
     "write_not_allowed",
     "host_not_running",
+    "host_busy",
+    "host_stopping",
     "no_interactive_session",
     "version_not_installed",
     "version_mismatch",
@@ -101,7 +105,11 @@ def empty_host_status() -> dict:
         "reachable": False,
         "installed": False,
         "running": False,
+        "instances_reported": False,
         "host_version": None,
+        "host_features": [],
+        "activity": None,
+        "auto_update": None,
         "expected_host_version": None,
         "update_available": False,
         "account": None,
@@ -123,7 +131,7 @@ def _status_timeout_seconds(config: dict) -> int:
 
 def _error(code: str) -> dict:
     if code in _HOST_ERROR_CODES and code not in _MESSAGES:
-        return {"code": code, "message": "The SolidWorks host could not report its status."}
+        return {"code": code, "message": "The SolidWorks agent could not report its status."}
     if code not in _MESSAGES:
         code = "host_not_running"
     return {"code": code, "message": _MESSAGES[code]}
@@ -144,6 +152,20 @@ def _versions(value: object) -> list[int] | None:
     if not isinstance(value, list) or any(type(year) is not int or year < 2022 for year in value):
         return None
     return value
+
+
+def _features(value: object) -> list[str]:
+    if not isinstance(value, list) or len(value) > 20 or any(not isinstance(item, str) or not re.fullmatch(r"[a-z0-9-]{1,40}", item) for item in value):
+        return []
+    return value
+
+
+def _activity(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    if any(type(value.get(key)) is not int or value[key] < 0 for key in ("in_flight", "idle_seconds")) or type(value.get("pdm_busy")) is not bool:
+        return None
+    return {key: value[key] for key in ("in_flight", "idle_seconds", "pdm_busy")}
 
 
 def _pdm_views(value: object) -> list[dict] | None:
@@ -204,7 +226,7 @@ class SolidworksHostStatusService:
     def __init__(self, transport_factory: Callable[[dict], SolidworksTransport] = SshSolidworksTransport):
         self.transport_factory = transport_factory
 
-    async def host_status(self, config: dict, *, probe_only: bool = False) -> dict:
+    async def host_status(self, config: dict, *, probe_only: bool = False, include_pdm: bool = True) -> dict:
         """Report host status; probe_only answers from the probe alone and never calls the host."""
         started = time.monotonic()
         status = empty_host_status()
@@ -222,6 +244,7 @@ class SolidworksHostStatusService:
             status["installed"] = probe["exe_present"]
             version = probe.get("host_version")
             status["host_version"] = version if isinstance(version, str) and version else None
+            status["host_features"] = _features(probe.get("host_features"))
             status["update_available"] = bool(status["installed"] and status["host_version"] and artifact and version != artifact.host_version)
             account = probe.get("account")
             if isinstance(account, dict) and isinstance(account.get("name"), str) and type(account.get("is_administrator")) is bool:
@@ -244,6 +267,7 @@ class SolidworksHostStatusService:
                 status["error"] = _error("no_interactive_session" if interactive is False else code)
                 return status
             status["running"] = True
+            status["activity"] = _activity(host.get("activity"))
             if isinstance(host.get("host_version"), str) and host["host_version"]:
                 status["host_version"] = host["host_version"]
                 status["update_available"] = bool(artifact and host["host_version"] != artifact.host_version)
@@ -256,8 +280,9 @@ class SolidworksHostStatusService:
                 instances = solidworks.get("instances")
                 if host_versions is not None and isinstance(instances, list) and all(isinstance(item, dict) for item in instances):
                     status["solidworks"] = {"installed_versions": host_versions, "instances": instances}
+                    status["instances_reported"] = True
             status["pdm"] = _pdm_block(host.get("pdm"))
-            if status["pdm"] is not None:
+            if include_pdm and status["pdm"] is not None:
                 await self._add_pdm_views(config, transport, context, status, timeout - (time.monotonic() - started))
         except paramiko.AuthenticationException:
             status["error"] = _error("ssh_auth_failed")
@@ -270,6 +295,15 @@ class SolidworksHostStatusService:
             status["error"] = _error("host_not_running" if status["reachable"] else "ssh_unreachable")
         except Exception:
             status["error"] = _error("internal_error")
+        finally:
+            try:
+                from ragtime.solidworks.host_updater import host_updater  # inline-import: keep
+
+                if status["installed"] and status["host_version"]:
+                    host_updater.observe(config, status["host_version"])
+                status["auto_update"] = host_updater.state_for(config.get("id") or "")
+            except Exception as exc:
+                logger.warning("Host updater status hook failed: %s", type(exc).__name__)
         return status
 
     async def _add_pdm_views(self, config: dict, transport: SolidworksTransport, context: dict, status: dict, remaining: float) -> None:
@@ -340,4 +374,4 @@ class SolidworksHostStatusService:
                 error = _error("version_not_installed")
         if error:
             return False, error["message"], {"error_code": error["code"], **details}
-        return True, f"SolidWorks host {details['host_version']} is running as {details['account']}.", details
+        return True, f"SolidWorks agent {details['host_version']} is running as {details['account']}.", details

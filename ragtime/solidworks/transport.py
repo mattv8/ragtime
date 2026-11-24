@@ -9,11 +9,12 @@ from typing import Literal, Protocol
 import paramiko
 
 from ragtime.core.ssh import RAGTIME_OUTPUT_LIMIT_MARKER, SSHConfig, SSHResult, _create_ssh_client, execute_ssh_command
+from ragtime.solidworks.host_activity import run_blocking
 from ragtime.solidworks.protocol import SolidworksProtocolError, encode_request, parse_response
 
 TransportErrorKind = Literal["ssh_unreachable", "ssh_auth_failed", "timeout", "no_response"]
 SOLIDWORKS_MAX_OUTPUT_BYTES = 1024 * 1024
-OUTPUT_LIMIT_MESSAGE = "The SolidWorks host returned too much output."
+OUTPUT_LIMIT_MESSAGE = "The SolidWorks agent returned too much output."
 
 
 class SolidworksTransportError(Exception):
@@ -60,12 +61,12 @@ def _classify_failure(result: SSHResult) -> SolidworksTransportError:
         return SolidworksTransportError("no_response", OUTPUT_LIMIT_MESSAGE, output_limit=True)
     stderr = result.stderr.lower()
     if "timed out" in stderr or "timeout" in stderr:
-        return SolidworksTransportError("timeout", "The SolidWorks host request timed out.")
+        return SolidworksTransportError("timeout", "The SolidWorks agent request timed out.")
     if "ssh authentication failed" in stderr or "authenticationexception" in stderr:
         return SolidworksTransportError("ssh_auth_failed", "SSH authentication failed; check the configured credentials.")
     if result.exit_code == -1 and (stderr.startswith("ssh ") or not stderr):
-        return SolidworksTransportError("ssh_unreachable", "SSH connection failed; check the host and connection.")
-    return SolidworksTransportError("no_response", "The SolidWorks host did not return a valid response.")
+        return SolidworksTransportError("ssh_unreachable", "SSH connection failed; check the SSH host and connection.")
+    return SolidworksTransportError("no_response", "The SolidWorks agent did not return a valid response.")
 
 
 class SshSolidworksTransport:
@@ -76,7 +77,7 @@ class SshSolidworksTransport:
 
     async def run_powershell(self, script: str, *, timeout_seconds: float) -> SSHResult:
         config = build_ssh_config(self.connection_config, timeout=timeout_seconds)
-        return await asyncio.to_thread(execute_ssh_command, config, script)
+        return await run_blocking(execute_ssh_command, config, script)
 
     async def call(self, request: dict, *, timeout_seconds: float) -> dict:
         encoded = encode_request(request)
@@ -86,9 +87,9 @@ class SshSolidworksTransport:
         except paramiko.AuthenticationException:
             raise SolidworksTransportError("ssh_auth_failed", "SSH authentication failed; check the configured credentials.") from None
         except TimeoutError:
-            raise SolidworksTransportError("timeout", "The SolidWorks host request timed out.") from None
+            raise SolidworksTransportError("timeout", "The SolidWorks agent request timed out.") from None
         except (OSError, ValueError, paramiko.SSHException):
-            raise SolidworksTransportError("ssh_unreachable", "SSH connection failed; check the host and connection.") from None
+            raise SolidworksTransportError("ssh_unreachable", "SSH connection failed; check the SSH host and connection.") from None
         try:
             return parse_response(result.stdout)
         except SolidworksProtocolError:
@@ -129,7 +130,7 @@ class SshSolidworksTransport:
                     timer.cancel()
                 client.close()
 
-        work = asyncio.to_thread(upload)
+        work = run_blocking(upload)
         if timeout_seconds > 0:
             await asyncio.wait_for(work, timeout_seconds)
         else:

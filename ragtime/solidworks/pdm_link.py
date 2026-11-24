@@ -122,6 +122,16 @@ async def resolve_actor_label() -> str:
     return "unknown"
 
 
+PDM_ADMIN_OPERATIONS = frozenset({"pdm.folder.rights", "pdm.folder.children"})
+
+
+def pdm_context_tool_id(config: dict) -> str:
+    tool_id = config.get("id")
+    if not isinstance(tool_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tool_id) is None:
+        return "unsaved"
+    return tool_id
+
+
 def build_pdm_context(config: dict, link: PdmLink, actor: str) -> dict:
     def clean(value: str) -> str:
         chars = []
@@ -136,11 +146,8 @@ def build_pdm_context(config: dict, link: PdmLink, actor: str) -> dict:
             units += size
         return "".join(chars)
 
-    tool_id = config.get("id")
-    if not isinstance(tool_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tool_id) is None:
-        tool_id = "unsaved"
     return {
-        "tool_id": tool_id,
+        "tool_id": pdm_context_tool_id(config),
         "vault": link.vault,
         "approved_folders": (config.get("connection_config") or {}).get("pdm_approved_folders") or [],
         "comment_prefix": f"[Ragtime: {clean(config.get('name') or '')}; user: {clean(actor)}] ",

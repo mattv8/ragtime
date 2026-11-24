@@ -36,6 +36,195 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         private static readonly string[] WriteMethods = { "CreateFolder", "AddFile", "CheckOut", "UndoCheckOut", "CheckIn", "SetVariables" };
 
+        [Fact]
+        public async Task FolderRightsAcceptsReadOnlyRootAndCollapsesDuplicates()
+        {
+            var h = new Harness();
+            var arguments = Args(("paths", new JArray("\\", "/")));
+            var result = Result(await h.CallAsync("pdm.folder.rights", arguments,
+                TestData.LinkedContext(allowWrite: false, approved: new string[0])));
+            var items = (JArray)result["items"]!;
+            Assert.Single(items);
+            Assert.Equal("\\", (string?)items[0]!["vault_path"]);
+            Assert.True((bool)items[0]!["checked"]!);
+        }
+
+        [Fact]
+        public async Task FolderRightsDistinguishesMissingAndFailedFolders()
+        {
+            var h = new Harness();
+            h.Pdm.Vault.FolderRightsFailures[@"\Other"] = new PdmGatewayException(PdmFailureKind.Api, "failure");
+            var result = Result(await h.CallAsync("pdm.folder.rights",
+                Args(("paths", new JArray(Approved, @"\Missing", @"\Other"))),
+                TestData.LinkedContext(allowWrite: false, approved: new string[0])));
+            var items = (JArray)result["items"]!;
+            Assert.True((bool)items[0]!["exists"]!);
+            Assert.False((bool)items[1]!["exists"]!);
+            Assert.True((bool)items[1]!["checked"]!);
+            Assert.False((bool)items[2]!["checked"]!);
+            Assert.Equal(JTokenType.Null, items[2]!["exists"]!.Type);
+            Assert.Equal(JTokenType.Null, items[2]!["rights"]!.Type);
+        }
+
+        [Fact]
+        public async Task FolderChildrenPagesSortedMembershipAndDetectsChanges()
+        {
+            var h = new Harness();
+            h.Pdm.Vault.SeedFolder(@"\13_Ragtime\Z");
+            h.Pdm.Vault.SeedFolder(@"\13_Ragtime\A");
+            var context = TestData.LinkedContext(allowWrite: false, approved: new string[0]);
+            var first = Result(await h.CallAsync("pdm.folder.children", Args(("path", S(Approved)), ("limit", I(1))), context));
+            Assert.Equal(new[] { "A" }, Names(first));
+            Assert.Equal(1, (int)first["next_offset"]!);
+            Assert.Single(h.Pdm.Vault.Calls, call => call.StartsWith("GetFolderRights:", StringComparison.Ordinal));
+            var snapshot = (string)first["snapshot"]!;
+            h.Pdm.Vault.FolderRights[Approved + @"\Z"] = new PdmFolderRights { Read = true };
+            var second = Result(await h.CallAsync("pdm.folder.children",
+                Args(("path", S(Approved)), ("offset", I(1)), ("snapshot", S(snapshot))), context));
+            Assert.Equal(new[] { "Z" }, Names(second));
+            h.Pdm.Vault.SeedFolder(Approved + @"\B");
+            AssertError(await h.CallAsync("pdm.folder.children",
+                Args(("path", S(Approved)), ("snapshot", S(snapshot))), context), "stale_snapshot");
+        }
+
+        [Theory]
+        [InlineData("pdm.folder.rights")]
+        [InlineData("pdm.folder.children")]
+        public async Task FolderDiscoveryRequiresALink(string operation)
+        {
+            var h = new Harness();
+            var arguments = operation == "pdm.folder.rights"
+                ? Args(("paths", new JArray("\\"))) : Args(("path", S("\\")));
+            AssertError(await h.CallAsync(operation, arguments, TestData.Context()), "pdm_not_linked");
+        }
+
+        [Fact]
+        public async Task FolderRightsRejectsEmptyAndOversizedLists()
+        {
+            var h = new Harness();
+            var context = TestData.LinkedContext();
+            AssertError(await h.CallAsync("pdm.folder.rights", Args(("paths", new JArray())), context), "invalid_arguments");
+            AssertError(await h.CallAsync("pdm.folder.rights",
+                Args(("paths", new JArray(Enumerable.Repeat("\\", 26)))), context), "invalid_arguments");
+        }
+
+        [Fact]
+        public async Task FolderRightsHandlesLengthBoundsAndDeadline()
+        {
+            var h = new Harness();
+            var longPath = "\\" + new string('a', 259);
+            h.Pdm.Vault.SeedFolder(longPath);
+            var context = TestData.LinkedContext();
+            var result = Result(await h.CallAsync("pdm.folder.rights", Args(("paths", new JArray(longPath))), context));
+            Assert.True((bool)result["items"]![0]!["exists"]!);
+            AssertError(await h.CallAsync("pdm.folder.rights",
+                Args(("paths", new JArray(longPath + "a"))), context), "invalid_arguments");
+            h.Pdm.Vault.OnCall = (method, count) =>
+            {
+                if (method == "GetFolderRights") h.Clock.Advance(TimeSpan.FromSeconds(100));
+            };
+            result = Result(await h.CallAsync("pdm.folder.rights",
+                Args(("paths", new JArray(Approved, @"\Other"))), context));
+            Assert.True((bool)result["items"]![0]!["checked"]!);
+            Assert.False((bool)result["items"]![1]!["checked"]!);
+        }
+
+        [Fact]
+        public async Task FolderChildrenHandlesTimeoutMissingAndPastEnd()
+        {
+            var h = new Harness();
+            var context = TestData.LinkedContext();
+            AssertError(await h.CallAsync("pdm.folder.children", Args(("path", S(@"\Missing"))), context), "pdm_not_found");
+            var empty = Result(await h.CallAsync("pdm.folder.children", Args(("path", S(Approved)), ("offset", I(100))), context));
+            Assert.Empty((JArray)empty["items"]!);
+            Assert.Equal(JTokenType.Null, empty["next_offset"]!.Type);
+            h.Pdm.Vault.SeedFolder(Approved + @"\A");
+            h.Pdm.Vault.OnCall = (method, count) =>
+            {
+                if (method == "ListSubFolderNames") h.Clock.Advance(TimeSpan.FromSeconds(100));
+            };
+            AssertError(await h.CallAsync("pdm.folder.children", Args(("path", S(Approved))), context), "operation_timeout");
+        }
+
+        [Fact]
+        public async Task FolderChildrenTrimsPageToByteBudget()
+        {
+            var h = new Harness();
+            for (var i = 0; i < 20; i++) h.Pdm.Vault.SeedFolder(Approved + "\\" + i.ToString("D2") + new string('x', 50));
+            var context = TestData.LinkedContext();
+            context["max_result_bytes"] = 1000;
+            var result = Result(await h.CallAsync("pdm.folder.children", Args(("path", S(Approved))), context));
+            var count = ((JArray)result["items"]!).Count;
+            Assert.InRange(count, 1, 19);
+            Assert.Equal(count, (int)result["next_offset"]!);
+        }
+
+        [Theory]
+        [InlineData("pdm.folder.rights")]
+        [InlineData("pdm.folder.children")]
+        public async Task FolderDiscoveryDoesNotAccessClaims(string operation)
+        {
+            var h = new Harness();
+            var file = h.Pdm.Vault.SeedFile(ApprovedFile);
+            h.Claim(file);
+            var claim = JObject.FromObject(h.Claims.Find(Vault, file.FileId)!);
+            var findCount = h.Claims.FindCount;
+            h.Claims.Calls.Clear();
+            var arguments = operation == "pdm.folder.rights"
+                ? Args(("paths", new JArray(Approved))) : Args(("path", S(Approved)));
+
+            Result(await h.CallAsync(operation, arguments, TestData.LinkedContext()));
+
+            Assert.Equal(findCount, h.Claims.FindCount);
+            Assert.Empty(h.Claims.Calls);
+            Assert.True(JToken.DeepEquals(claim, JObject.FromObject(h.Claims.Find(Vault, file.FileId)!)));
+        }
+
+        [Fact]
+        public async Task FolderChildrenRejectsAnItemLargerThanTheByteBudget()
+        {
+            var h = new Harness();
+            var name = new string('\u754c', 255);
+            h.Pdm.Vault.SeedFolder(Approved + "\\" + name);
+            var context = TestData.LinkedContext();
+            context["max_result_bytes"] = 1000;
+
+            AssertError(await h.CallAsync("pdm.folder.children", Args(("path", S(Approved))), context), "result_too_large");
+        }
+
+        [Fact]
+        public async Task FolderChildrenSortsCaseInsensitiveTiesOrdinally()
+        {
+            var h = new Harness();
+            h.Pdm.Vault.SubFolderNames = new[] { "abc", "Abd", "ABC" };
+            h.Pdm.Vault.SeedFolder(Approved + @"\abc");
+            h.Pdm.Vault.SeedFolder(Approved + @"\Abd");
+
+            var result = Result(await h.CallAsync("pdm.folder.children", Args(("path", S(Approved))), TestData.LinkedContext()));
+
+            Assert.Equal(new[] { "ABC", "abc", "Abd" }, Names(result));
+        }
+
+        [Fact]
+        public async Task FolderChildrenKeepsOtherRightsWhenIndividualReadsFail()
+        {
+            var h = new Harness();
+            h.Pdm.Vault.SeedFolder(Approved + @"\A");
+            h.Pdm.Vault.SeedFolder(Approved + @"\B");
+            h.Pdm.Vault.SeedFolder(Approved + @"\C");
+            h.Pdm.Vault.FolderRightsFailures[Approved + @"\A"] = new PdmGatewayException(PdmFailureKind.Api, "failure");
+            h.Pdm.Vault.FolderRightsFailures[Approved + @"\B"] = new PdmGatewayException(PdmFailureKind.NotFound, "missing");
+            h.Pdm.Vault.FolderRights[Approved + @"\C"] = new PdmFolderRights { Read = true };
+
+            var result = Result(await h.CallAsync("pdm.folder.children", Args(("path", S(Approved))), TestData.LinkedContext()));
+            var items = (JArray)result["items"]!;
+
+            Assert.Equal(new[] { "A", "B", "C" }, Names(result));
+            Assert.Equal(JTokenType.Null, items[0]!["rights"]!.Type);
+            Assert.Equal(JTokenType.Null, items[1]!["rights"]!.Type);
+            Assert.True((bool)items[2]!["rights"]!["read"]!);
+        }
+
         // ----- ladder: refusals for each write operation -----
 
         public static IEnumerable<object[]> WriteOperations() => Writes.Select(name => new object[] { name });

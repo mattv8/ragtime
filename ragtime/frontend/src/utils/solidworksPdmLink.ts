@@ -122,7 +122,7 @@ export function vaultFolderKey(path: string): string {
   return path.toLowerCase();
 }
 
-function isWithinFolder(folder: string, parent: string): boolean {
+export function isWithinFolder(folder: string, parent: string): boolean {
   return vaultFolderKey(folder).startsWith(`${vaultFolderKey(parent)}\\`);
 }
 

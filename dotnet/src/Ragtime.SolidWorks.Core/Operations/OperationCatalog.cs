@@ -21,11 +21,11 @@ namespace Ragtime.SolidWorks.Core
                 ProtocolInfo.Access.Read,
                 paged: false,
                 argumentsSchema: SchemaTypes.NoArguments(),
-                result: "Protocol, host version and the operations array (name, summary, access, paged, arguments, result)."),
+                result: "Protocol, host_version and the operations array (name, summary, access, paged, arguments, result)."),
 
             new OperationDefinition(
                 "status",
-                "Reports the host account, its desktop session, installed SolidWorks versions and the instances.",
+                "Reports the Windows account the SolidWorks agent runs as, its desktop session, installed SolidWorks versions and the instances.",
                 ProtocolInfo.Access.Read,
                 paged: false,
                 argumentsSchema: SchemaTypes.NoArguments(),
@@ -33,7 +33,7 @@ namespace Ragtime.SolidWorks.Core
 
             new OperationDefinition(
                 "documents.list",
-                "Lists the documents the host knows about in every instance.",
+                "Lists the documents the SolidWorks agent knows about in every instance.",
                 ProtocolInfo.Access.Read,
                 paged: true,
                 argumentsSchema: new ObjectSchema().Paged().Build(),
@@ -52,7 +52,7 @@ namespace Ragtime.SolidWorks.Core
 
             new OperationDefinition(
                 "document.close",
-                "Closes a document that the host opened. Never saves.",
+                "Closes a document that the SolidWorks agent opened. Never saves.",
                 ProtocolInfo.Access.Read,
                 paged: false,
                 argumentsSchema: new ObjectSchema()
@@ -203,6 +203,22 @@ namespace Ragtime.SolidWorks.Core
                     .Property("configuration", SchemaTypes.Text("Configuration name; default @.")).Build(),
                 "vault_path, configurations, configuration, variables [{name, value}]."),
             new OperationDefinition(
+                "pdm.folder.rights", "Checks folder rights for the logged-in user.", ProtocolInfo.Access.Read, false,
+                new ObjectSchema().Property("paths", new JObject
+                {
+                    ["type"] = "array",
+                    ["maxItems"] = 25,
+                    ["items"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 260 },
+                }, true).Build(),
+                "user, items [{vault_path, checked, exists, rights {read, add_files, check_out, add_folders}}]."),
+            new OperationDefinition(
+                "pdm.folder.children", "Lists direct subfolders with folder rights.", ProtocolInfo.Access.Read, true,
+                new ObjectSchema().Property("path", SchemaTypes.Text("Vault folder path."), true)
+                    .Property("offset", SchemaTypes.Integer(0, int.MaxValue, "Index of the first item; default 0."))
+                    .Property("limit", SchemaTypes.Integer(1, 100, "Maximum items; default 50."))
+                    .Property("snapshot", SchemaTypes.Snapshot()).Build(),
+                "Paged items: name, vault_path, rights {read, add_files, check_out, add_folders} or null."),
+            new OperationDefinition(
                 "pdm.file.get_latest", "Fetches the latest vault file and optionally its references.", ProtocolInfo.Access.Read, false,
                 new ObjectSchema().Property("path", SchemaTypes.Text("Vault file path."), true)
                     .Property("include_references", SchemaTypes.Boolean("Include references; default true.")).Build(),
@@ -269,11 +285,13 @@ namespace Ragtime.SolidWorks.Core
 
             new OperationDefinition(
                 "host.shutdown",
-                "Internal: asks the host to close its owned instances and exit.",
+                "Internal: asks the SolidWorks agent to close its owned instances and exit.",
                 ProtocolInfo.Access.Read,
                 paged: false,
-                argumentsSchema: SchemaTypes.NoArguments(),
-                result: "{stopping: true}.",
+                argumentsSchema: new ObjectSchema()
+                    .Property("if_idle_seconds", SchemaTypes.Integer(0, 86400, "Refuse with host_busy unless the SolidWorks agent has been idle this many seconds and nothing would be lost."))
+                    .Build(),
+                result: "{stopping: true}, or host_busy with details.reasons when if_idle_seconds is given and the SolidWorks agent is in use.",
                 isInternal: true),
         };
     }

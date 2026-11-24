@@ -118,6 +118,164 @@ namespace Ragtime.SolidWorks.Core.Tests
     public class ProcessorDispatchTests
     {
         [Fact]
+        public async Task StatusReportsIdleTimeWithoutResettingIt()
+        {
+            var h = new Harness();
+            h.Clock.Now = 2500;
+            await h.CallAsync("describe");
+            await h.CallAsync("pdm.status");
+            var activity = (await h.CallAsync("status"))["result"]!["activity"]!;
+            Assert.Equal(0, (int)activity["in_flight"]!);
+            Assert.Equal(2, (int)activity["idle_seconds"]!);
+            Assert.False((bool)activity["pdm_busy"]!);
+        }
+
+        [Fact]
+        public async Task WorkResetsIdleAndStatusReflectsPdmBusy()
+        {
+            var h = new Harness();
+            h.Clock.Now = 5000;
+            h.Pdm.IsBusy = true;
+            Assert.True((bool)(await h.CallAsync("documents.list"))["ok"]!);
+            h.Clock.Now = 6900;
+            var activity = (await h.CallAsync("status"))["result"]!["activity"]!;
+            Assert.Equal(1, (int)activity["idle_seconds"]!);
+            Assert.True((bool)activity["pdm_busy"]!);
+            h.Pdm.IsBusy = false;
+            Assert.False((bool)(await h.CallAsync("status"))["result"]!["activity"]!["pdm_busy"]!);
+        }
+
+        [Fact]
+        public async Task InFlightWorkBlocksConditionalShutdown()
+        {
+            var h = new Harness();
+            h.Manager.AddBackground("i1");
+            using var entered = new ManualResetEventSlim();
+            using var release = new ManualResetEventSlim();
+            h.Manager.SessionFor("i1").BeforeListOpenDocuments = () => { entered.Set(); release.Wait(); };
+            var work = Task.Run(() => h.CallAsync("documents.list"));
+            try
+            {
+                Assert.True(entered.Wait(System.TimeSpan.FromSeconds(10)));
+                var activity = (await h.CallAsync("status"))["result"]!["activity"]!;
+                Assert.Equal(1, (int)activity["in_flight"]!);
+                Assert.Equal(0, (int)activity["idle_seconds"]!);
+                var response = await h.CallAsync("host.shutdown", Harness.Args(("if_idle_seconds", Harness.I(0))));
+                Assert.Equal("host_busy", (string?)response["error"]!["code"]);
+                Assert.Equal(new[] { "request_in_flight" }, ((JArray)response["error"]!["details"]!["reasons"]!).Values<string>().ToArray());
+                Assert.Equal(0, h.ShutdownCalls);
+            }
+            finally
+            {
+                release.Set();
+                await work;
+            }
+            Assert.True((bool)(await h.CallAsync("documents.list"))["ok"]!);
+        }
+
+        [Theory]
+        [InlineData("recently_used")]
+        [InlineData("instance_busy")]
+        [InlineData("documents_open")]
+        [InlineData("pdm_busy")]
+        public async Task ConditionalShutdownRefusesEachBlockingReason(string reason)
+        {
+            var h = new Harness();
+            if (reason == "instance_busy") h.Manager.AddBackground("i1", busy: true);
+            if (reason == "pdm_busy") h.Pdm.IsBusy = true;
+            if (reason == "documents_open")
+            {
+                h.Manager.AddBackground("i1");
+                Assert.True((bool)(await h.CallAsync("document.open", Harness.Args(("path", Harness.S(@"C:\Work\part.sldprt")))))["ok"]!);
+            }
+            var threshold = reason == "recently_used" ? 1 : 0;
+            var response = await h.CallAsync("host.shutdown", Harness.Args(("if_idle_seconds", Harness.I(threshold))));
+            Assert.Equal("host_busy", (string?)response["error"]!["code"]);
+            Assert.Equal(new[] { reason }, ((JArray)response["error"]!["details"]!["reasons"]!).Values<string>().ToArray());
+            Assert.Equal(0, h.ShutdownCalls);
+            Assert.True((bool)(await h.CallAsync("documents.list"))["ok"]!);
+        }
+
+        [Fact]
+        public async Task ConditionalShutdownStopsWorkButLeavesNeutralOperationsAvailable()
+        {
+            var h = new Harness();
+            var response = await h.CallAsync("host.shutdown", Harness.Args(("if_idle_seconds", Harness.I(0))));
+            Assert.True((bool)response["result"]!["stopping"]!);
+            Assert.Equal(1, h.ShutdownCalls);
+            Assert.Equal("host_stopping", (string?)(await h.CallAsync("documents.list"))["error"]!["code"]);
+            Assert.True((bool)(await h.CallAsync("status"))["ok"]!);
+            Assert.True((bool)(await h.CallAsync("describe"))["ok"]!);
+            Assert.True((bool)(await h.CallAsync("host.shutdown", Harness.Args(("if_idle_seconds", Harness.I(86400)))))["result"]!["stopping"]!);
+        }
+
+        [Fact]
+        public async Task ConditionalShutdownRetriesWhenWorkOpensDocumentAfterSnapshot()
+        {
+            var h = new Harness();
+            h.Manager.AddBackground("i1");
+            JObject? opened = null;
+            var reads = 0;
+            h.Pdm.OnIsBusyRead = () =>
+            {
+                reads++;
+                if (reads == 1)
+                {
+                    opened = h.CallAsync("document.open", Harness.Args(("path", Harness.S(@"C:\Work\part.sldprt"))))
+                        .GetAwaiter().GetResult();
+                }
+            };
+
+            var response = await h.CallAsync("host.shutdown", Harness.Args(("if_idle_seconds", Harness.I(0))));
+
+            Assert.NotNull(opened);
+            Assert.True((bool)opened!["ok"]!);
+            Assert.Equal(2, reads);
+            Assert.Equal("host_busy", (string?)response["error"]!["code"]);
+            Assert.Equal(new[] { "documents_open" }, ((JArray)response["error"]!["details"]!["reasons"]!).Values<string>().ToArray());
+            Assert.Equal(0, h.ShutdownCalls);
+        }
+
+        [Fact]
+        public async Task ConditionalShutdownRefusesAfterThreeChangingSnapshots()
+        {
+            var h = new Harness();
+            var reads = 0;
+            h.Pdm.OnIsBusyRead = () =>
+            {
+                reads++;
+                h.CallAsync("documents.list").GetAwaiter().GetResult();
+            };
+
+            var response = await h.CallAsync("host.shutdown", Harness.Args(("if_idle_seconds", Harness.I(0))));
+
+            Assert.Equal(3, reads);
+            Assert.Equal("host_busy", (string?)response["error"]!["code"]);
+            Assert.Equal(new[] { "request_in_flight" }, ((JArray)response["error"]!["details"]!["reasons"]!).Values<string>().ToArray());
+            Assert.Equal(0, h.ShutdownCalls);
+        }
+
+        [Fact]
+        public async Task PlainShutdownStopsWorkAndCanBeRepeated()
+        {
+            var h = new Harness();
+            Assert.True((bool)(await h.CallAsync("host.shutdown"))["result"]!["stopping"]!);
+            Assert.Equal("host_stopping", (string?)(await h.CallAsync("documents.list"))["error"]!["code"]);
+            Assert.True((bool)(await h.CallAsync("host.shutdown"))["result"]!["stopping"]!);
+        }
+
+        [Theory]
+        [InlineData(-1)]
+        [InlineData(86401)]
+        public async Task ConditionalShutdownRejectsInvalidThreshold(int threshold)
+        {
+            var h = new Harness();
+            var response = await h.CallAsync("host.shutdown", Harness.Args(("if_idle_seconds", Harness.I(threshold))));
+            Assert.Equal("invalid_arguments", (string?)response["error"]!["code"]);
+            Assert.Equal(0, h.ShutdownCalls);
+        }
+
+        [Fact]
         public async Task DescribeOmitsHostShutdownAndListsEverySectionFiveOperation()
         {
             var h = new Harness();
@@ -126,7 +284,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             var names = ((JArray)response["result"]!["operations"]!).Select(o => (string?)o["name"]).ToList();
             Assert.DoesNotContain("host.shutdown", names);
-            Assert.Equal(28, names.Count);
+            Assert.Equal(30, names.Count);
             Assert.Contains("features.list", names);
             Assert.Contains("mass_properties.get", names);
         }

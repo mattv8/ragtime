@@ -69,13 +69,14 @@ def test_replacement_session_closes_old_listener() -> None:
         manager = RelayManager()
         await manager.start()
         first, second = FakeWebSocket(), FakeWebSocket()
-        first_task = asyncio.create_task(manager.attach("pairing", first))
+        first_task = asyncio.create_task(manager.attach("pairing", first, client_version=1))
         for _ in range(20):
             old_endpoint = manager.endpoint_for("pairing")
             if old_endpoint:
                 break
             await asyncio.sleep(0.01)
-        second_task = asyncio.create_task(manager.attach("pairing", second))
+        assert manager.client_version("pairing") == (True, 1)
+        second_task = asyncio.create_task(manager.attach("pairing", second, client_version=2))
         for _ in range(20):
             endpoint = manager.endpoint_for("pairing")
             if endpoint and endpoint != old_endpoint:
@@ -83,9 +84,33 @@ def test_replacement_session_closes_old_listener() -> None:
             await asyncio.sleep(0.01)
         assert endpoint and endpoint != old_endpoint
         assert first.closed
-        await manager.stop()
         await asyncio.wait_for(first_task, timeout=1)
+        assert manager.client_version("pairing") == (True, 2)
+        await manager.stop()
+        assert manager.client_version("pairing") == (False, 2)
         await asyncio.wait_for(second_task, timeout=1)
+
+    asyncio.run(exercise())
+
+
+def test_version_disconnect_and_revoke() -> None:
+    async def exercise() -> None:
+        manager = RelayManager()
+        await manager.start()
+        assert manager.client_version("pairing") is None
+        websocket = FakeWebSocket()
+        task = asyncio.create_task(manager.attach("pairing", websocket))
+        for _ in range(20):
+            if manager.client_version("pairing") is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert manager.client_version("pairing") == (True, None)
+        await websocket.incoming.put({"type": "websocket.disconnect"})
+        await asyncio.wait_for(task, timeout=1)
+        assert manager.client_version("pairing") == (False, None)
+        await manager.revoke("pairing")
+        assert manager.client_version("pairing") is None
+        await manager.stop()
 
     asyncio.run(exercise())
 

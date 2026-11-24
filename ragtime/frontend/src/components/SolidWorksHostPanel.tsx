@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle,
   Circle,
+  Clock,
   Info,
   RefreshCw,
   XCircle,
@@ -14,8 +15,82 @@ import {
   type SolidworksHostArtifact,
   type SolidworksHostStatus,
 } from '../api/solidworks';
+import type { SolidworksHostAutoUpdate } from '../types/api';
+import {
+  formatAttemptTime,
+  HOST_UPDATE_OFF_TEXT,
+  hostUpdateFailureParts,
+  hostUpdateUpdatingText,
+  hostUpdateWaitingText,
+} from '../utils/solidworksHostUpdate';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 import { InfoPopover } from './shared/InfoPopover';
+
+function HostUpdateLine({
+  update,
+  panelState,
+}: {
+  update: SolidworksHostAutoUpdate;
+  panelState: State;
+}) {
+  let icon: ReactNode;
+  let text: ReactNode;
+  const now = new Date();
+  switch (update.state) {
+    case 'off':
+      if (panelState !== 'running_update') return null;
+      icon = <Info className="sw-message-icon" size={14} aria-hidden="true" />;
+      text = HOST_UPDATE_OFF_TEXT;
+      break;
+    case 'pending':
+      icon = <Clock className="sw-message-icon" size={14} aria-hidden="true" />;
+      text = `Waiting to update automatically. ${hostUpdateWaitingText(update)}`;
+      break;
+    case 'updating':
+      icon = <span className="rc-polling-indicator" aria-hidden="true" />;
+      text = hostUpdateUpdatingText(update);
+      break;
+    case 'failed': {
+      icon = <AlertTriangle className="sw-message-icon" size={14} aria-hidden="true" />;
+      const { last, next, message } = hostUpdateFailureParts(update, now);
+      text = (
+        <>
+          Automatic update failed
+          {last && (
+            <>
+              {' '}
+              at <time dateTime={last}>{formatAttemptTime(last, now)}</time>
+            </>
+          )}
+          .{message && <> {message}</>} Ragtime tries again{' '}
+          {next ? (
+            <>
+              at <time dateTime={next}>{formatAttemptTime(next, now)}</time>
+            </>
+          ) : (
+            'soon'
+          )}
+          .
+        </>
+      );
+      break;
+    }
+    default:
+      return null;
+  }
+  return (
+    <p
+      id="solidworks-host-auto-update"
+      className="sw-message"
+      data-tone={update.state === 'failed' ? 'warning' : 'info'}
+      data-sw-auto-update={update.state}
+      data-sw-auto-update-reason={update.reason ?? undefined}
+    >
+      {icon}
+      <span>{text}</span>
+    </p>
+  );
+}
 
 export interface SolidWorksHostPanelProps {
   toolId: string | null;
@@ -101,11 +176,11 @@ const TONE_ICON: Record<Tone, LucideIcon> = {
   muted: Circle,
 };
 const BUTTON_LABEL: Record<Button, string> = {
-  install: 'Install host',
-  update: 'Update host',
-  reinstall: 'Reinstall host',
+  install: 'Install agent',
+  update: 'Update agent',
+  reinstall: 'Reinstall agent',
   retry: 'Try again',
-  uninstall: 'Uninstall host',
+  uninstall: 'Uninstall agent',
 };
 const PENDING_LABEL: Record<Action, string> = {
   install: 'Installing…',
@@ -172,23 +247,23 @@ interface TextContext {
   pollingStopped: boolean;
 }
 
-const REQUEST_FAILED_TEXT = 'Ragtime could not check the host.';
+const REQUEST_FAILED_TEXT = 'Ragtime could not check the agent.';
 
 function stateText(state: State, context: TextContext): ReactNode {
   const account = context.status?.account?.name ?? 'this account';
   const size = megabytes(context.artifact?.size_bytes);
   switch (state) {
     case 'blocked':
-      return 'Finish the connection in the previous step first. The host is installed over that connection.';
+      return 'Finish the connection in the previous step first. The agent is installed over that connection.';
     case 'checking':
-      return 'Checking the SSH connection and the SolidWorks host. This can take up to 30 seconds.';
+      return 'Checking the SSH connection and the SolidWorks agent. This can take up to 30 seconds.';
     case 'installing':
       if (context.action === 'update')
-        return 'Updating the SolidWorks host… Updating also closes SolidWorks instances the host started.';
-      if (context.action === 'reinstall') return 'Reinstalling the SolidWorks host…';
-      return 'Installing the SolidWorks host. Uploading, verifying and starting it can take about a minute.';
+        return 'Updating the SolidWorks agent… Updating also closes SolidWorks instances the agent started.';
+      if (context.action === 'reinstall') return 'Reinstalling the SolidWorks agent…';
+      return 'Installing the SolidWorks agent. Uploading, verifying and starting it can take about a minute.';
     case 'uninstalling':
-      return 'Removing the SolidWorks host…';
+      return 'Removing the SolidWorks agent…';
     case 'install_failed':
       return 'Install failed. See the details below.';
     case 'uninstall_failed':
@@ -198,24 +273,24 @@ function stateText(state: State, context: TextContext): ReactNode {
     case 'unreachable':
       return 'Ragtime could not reach this machine over SSH.';
     case 'artifact_unavailable':
-      return 'This Ragtime server does not include the SolidWorks host installer, so the host cannot be installed from here. Update or rebuild Ragtime with the host package, then check again.';
+      return 'This Ragtime server does not include the SolidWorks agent installer, so the agent cannot be installed from here. Update or rebuild Ragtime with the agent package, then check again.';
     case 'not_installed':
-      if (context.uninstalled) return 'Host uninstalled.';
-      return `The SolidWorks host is not installed for this account. Ragtime can install it over SSH: it uploads the package${size ? ` (${size})` : ''}, verifies its SHA-256 hash, installs it for this account only and starts it at logon.`;
+      if (context.uninstalled) return 'Agent uninstalled.';
+      return `The SolidWorks agent is not installed for this account. Ragtime can install it over SSH: it uploads the package${size ? ` (${size})` : ''}, verifies its SHA-256 hash, installs it for this account only and starts it at logon.`;
     case 'no_desktop_session':
       if (context.pollingStopped)
         return `Ragtime stopped checking automatically. Log in as ${account}, then choose Check again.`;
-      return `The host is installed, but ${account} has no desktop session on this machine, so it cannot start. Log in to the machine as ${account}; a remote desktop session is enough and it may stay disconnected. Ragtime checks again every 10 seconds.`;
+      return `The agent is installed, but ${account} has no desktop session on this machine, so it cannot start. Log in to the machine as ${account}; a remote desktop session is enough and it may stay disconnected. Ragtime checks again every 10 seconds.`;
     case 'not_responding':
       return (
         <>
-          The host is installed and {account} is logged in, but the host did not answer.
-          Reinstalling registers its logon task again and starts it. The host log is{' '}
+          The agent is installed and {account} is logged in, but it did not answer. Reinstalling
+          registers its logon task again and starts it. The agent log is{' '}
           <code>%LOCALAPPDATA%\RagtimeSolidWorks\logs\host.log</code> on the machine.
         </>
       );
     case 'running_current':
-      return 'The host is installed and answering.';
+      return 'The agent is installed and answering.';
     case 'running_update':
       return `Version ${context.status?.host_version ?? 'unknown'} is running; version ${context.status?.expected_host_version ?? 'unknown'} is available.`;
   }
@@ -256,7 +331,7 @@ function Manual({ artifact, open }: { artifact: SolidworksHostArtifact; open: bo
       </p>
       <ol id="solidworks-manual-steps" className="sw-manual-steps">
         <li data-sw-manual-step="download">
-          Download the host package ({artifact.host_version ?? 'unknown version'}, {size}).
+          Download the agent package ({artifact.host_version ?? 'unknown version'}, {size}).
           <div>
             <a
               id="solidworks-host-download"
@@ -264,7 +339,7 @@ function Manual({ artifact, open }: { artifact: SolidworksHostArtifact; open: bo
               href={solidworksApi.hostDownloadUrl()}
               download
             >
-              Download host (.zip)
+              Download agent (.zip)
             </a>
           </div>
           <div>
@@ -298,7 +373,7 @@ function Manual({ artifact, open }: { artifact: SolidworksHostArtifact; open: bo
           />
         </li>
         <li data-sw-manual-step="install">
-          Register and start the host:
+          Register and start the agent:
           <Command
             id="install"
             command={
@@ -431,7 +506,12 @@ export function SolidWorksHostPanel({
     uninstalled && status?.reachable ? 'not_installed' : observedState(status, artifact);
   const resting = failureState(failure) ?? observed;
   const polling = POLLING_STATES.includes(resting) && attempts < POLL_LIMIT;
-  const pollable = Boolean(toolId && connectionReady && polling);
+  const pollable = Boolean(
+    toolId &&
+    connectionReady &&
+    (polling ||
+      (!busy && !failure && status?.auto_update?.state === 'updating' && attempts < POLL_LIMIT)),
+  );
 
   useEffect(() => {
     if (!pollable || !toolId) return;
@@ -611,7 +691,7 @@ export function SolidWorksHostPanel({
       aria-busy={requesting}
     >
       <header className="sw-panel-header">
-        <h3 id="solidworks-host-title">SolidWorks host</h3>
+        <h3 id="solidworks-host-title">SolidWorks agent</h3>
         <span className="sw-pill" data-tone={meta.tone}>
           {showSpinner ? (
             <span className="rc-polling-indicator" aria-hidden="true" />
@@ -651,9 +731,18 @@ export function SolidWorksHostPanel({
         </p>
         {state === 'running_update' && (
           <InfoPopover id="solidworks-host-update-help" label="About updating">
-            Updating restarts the host and closes any SolidWorks it started. Calls in progress fail.
+            Updating restarts the agent and closes any SolidWorks it started. Calls in progress
+            fail.
           </InfoPopover>
         )}
+      </div>
+      <div id="solidworks-host-auto-update-live" role="status" aria-live="polite">
+        {status?.auto_update &&
+          !busy &&
+          !failure &&
+          ['running_current', 'running_update', 'not_responding', 'no_desktop_session'].includes(
+            state,
+          ) && <HostUpdateLine update={status.auto_update} panelState={state} />}
       </div>
       {state === 'request_failed' && !showAlert && failure?.message && <p>{failure.message}</p>}
       {status?.warning && (
@@ -685,17 +774,17 @@ export function SolidWorksHostPanel({
       {state === 'unreachable' && (
         <ul>
           <li>Check that the machine is on and the OpenSSH Server service is running.</li>
-          <li>Check the host name, port and credentials from the previous step.</li>
+          <li>Check the SSH host name, port and credentials from the previous step.</li>
           <li>For a paired machine, check that the Ragtime remote client is running on it.</li>
         </ul>
       )}
       {facts.length > 0 && (
-        <dl id="solidworks-host-facts" className="sw-facts" aria-label="SolidWorks host details">
+        <dl id="solidworks-host-facts" className="sw-facts" aria-label="SolidWorks agent details">
           {facts.map((key) => (
             <div key={key} data-sw-fact={key}>
               <dt>
                 {key === 'host-version'
-                  ? 'Host version'
+                  ? 'Agent version'
                   : key === 'account'
                     ? 'Account'
                     : key === 'session'
@@ -718,7 +807,7 @@ export function SolidWorksHostPanel({
       {observed === 'running_current' && versions?.length === 0 && (
         <div className="sw-message" data-tone="warning">
           <AlertTriangle className="sw-message-icon" size={14} aria-hidden="true" />
-          <span>The host is running but found no SolidWorks installation for this account.</span>
+          <span>The agent is running but found no SolidWorks installation for this account.</span>
         </div>
       )}
       {status?.account?.is_administrator === true && (
@@ -748,12 +837,12 @@ export function SolidWorksHostPanel({
             if (event.key === 'Escape') closeConfirm();
           }}
         >
-          <strong id="solidworks-uninstall-title">Uninstall the SolidWorks host?</strong>
+          <strong id="solidworks-uninstall-title">Uninstall the SolidWorks agent?</strong>
           <p>
-            This stops the host, closes any SolidWorks it started, removes its logon task and
+            This stops the agent, closes any SolidWorks it started, removes its logon task and
             deletes its files from this machine. Every Ragtime tool that uses this account on this
-            machine stops working until you install the host again. Your SolidWorks installation and
-            documents are not touched.
+            machine stops working until you install the agent again. Your SolidWorks installation
+            and documents are not touched.
           </p>
           <div className="sw-actions">
             <button
@@ -762,7 +851,7 @@ export function SolidWorksHostPanel({
               type="button"
               onClick={() => void runAction('uninstall', 'uninstall')}
             >
-              Uninstall host
+              Uninstall agent
             </button>
             <button
               ref={cancelButton}

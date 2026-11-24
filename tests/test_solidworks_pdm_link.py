@@ -16,6 +16,7 @@ from ragtime.solidworks.pdm_link import (
     execute_index_operation,
     load_stored_pdm_settings,
     normalize_vault_folder,
+    pdm_context_tool_id,
     validate_approved_folders,
 )
 
@@ -97,6 +98,7 @@ def test_context_prefix_limits_utf16_units():
 )
 def test_context_tool_id(tool_id, expected):
     link = PdmLink("pdm-id", "name", "index", "vault")
+    assert pdm_context_tool_id({"id": tool_id}) == expected
     assert build_pdm_context({"id": tool_id}, link, "user")["tool_id"] == expected
 
 

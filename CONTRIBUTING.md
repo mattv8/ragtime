@@ -55,6 +55,7 @@ The `CI Gate` check runs the full validation suite:
 - Backend quality checks and complete pytest suite
 - Frontend format, lint, Vitest, and production build
 - Storage Maven tests
+- SolidWorks agent .NET build and tests
 - Manifest, README sync, and workflow validation
 
 Feature-branch pushes without an open PR run no CI. Once a PR is opened, `CI Gate` runs automatically on every push and must pass before merge.
@@ -75,6 +76,9 @@ docker build --target frontend-builder -f docker/Dockerfile .
 
 # Run Maven tests once in storage-test, skipping the preceding package-stage test run
 docker build --target storage-test -f docker/Dockerfile.storage --build-arg MAVEN_SKIP_TESTS=1 .
+
+# SolidWorks agent .NET build and tests
+docker build --target solidworks-host-test -f docker/Dockerfile .
 
 # Or run all checks via the combined local test suite
 bash tests/run_all_tests.sh

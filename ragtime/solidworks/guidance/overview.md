@@ -2,7 +2,11 @@
 
 This tool reads structured data from SolidWorks desktop on a Windows machine: feature tree,
 sketch geometry and constraints, dimensions, mates, components, custom properties and mass
-properties. Results are JSON. There are no screenshots, and SolidWorks documents are never written.
+properties. Results are JSON, with no screenshots. Read operations never write SolidWorks documents;
+`script.run` can build or edit models when the tool allows scripts (see `scripts`).
+
+The **SolidWorks agent** is the Ragtime program on the Windows machine that does the SolidWorks work for this
+tool. In this guide the term always means that program, never you.
 
 ## Call shape
 
@@ -17,8 +21,8 @@ Every call goes to the same tool with an `operation` and optional `arguments`:
 ## First steps
 
 1. `guide`: read this file (or another topic, see the index below).
-2. `describe`: the exact operation list with argument schemas, from the installed host.
-3. `status`: is the host running, which SolidWorks versions are installed, which instances exist.
+2. `describe`: the exact operation list with argument schemas, from the installed SolidWorks agent.
+3. `status`: is the SolidWorks agent running, which SolidWorks versions are installed, which instances exist.
 4. `documents.list` to see open documents, or `document.open` with a local path.
 5. Then use the topic-specific operations. Read `model.summary` before listing large models.
 
@@ -30,7 +34,8 @@ Every call goes to the same tool with an `operation` and optional `arguments`:
 
 - `ok` true: the data is in `result`.
 - `ok` false: `error.code` names the problem, `error.message` says it in one sentence,
-  `error.details` may add facts. `host` shows the SolidWorks instance involved, if any.
+  `error.details` may add facts. The `host` field describes the SolidWorks agent and shows the SolidWorks instance
+  involved, if any.
 - Errors are returned, not raised. Read `error.code` and act on the table below.
 
 ## Units
@@ -42,8 +47,9 @@ before you answer: millimetres = metres x 1000, inches = metres / 0.0254, degree
 
 ## Behaviour to keep in mind
 
-- Read-only: documents are opened read-only and silently. Nothing is saved, rebuilt or modified.
-  Vault changes through a linked PDM vault are separate; see `pdm`.
+- Read operations are read-only: documents are opened read-only and silently, and nothing is saved,
+  rebuilt or modified. `script.run` can change and save models when `describe` reports
+  `scripts_enabled` true; see `scripts`. Vault changes through a linked PDM vault are separate; see `pdm`.
 - A background instance holds a floating SolidWorks licence until it is idle-shutdown. Close
   documents you opened (`document.close`) when you are done, and do not open files speculatively.
 - The tool works only while the Windows account has a desktop session. A disconnected remote
@@ -52,13 +58,16 @@ before you answer: millimetres = metres x 1000, inches = metres / 0.0254, degree
   `.sldasm` or `.slddrw`. UNC and network paths (`\\server\share\...`) and relative paths are
   rejected.
 - In attach mode, `document.open` is refused. Only documents the user already has open are
-  available, and the tool never saves, closes or kills SolidWorks.
+  available. The tool never closes or kills SolidWorks; a script works in that session and can
+  change its open documents.
 
 ## Error codes and what to do
 
 | Code | Meaning and action |
 |---|---|
-| `host_not_running` | Host is not installed or did not start. Tell the user to check the tool's host panel; do not retry in a loop. |
+| `host_not_running` | The SolidWorks agent is not installed or did not start. Tell the user to check the SolidWorks agent panel in the tool's settings; do not retry in a loop. |
+| `host_updating` | Ragtime is updating the SolidWorks agent. Tell the user; retry after a few minutes. Do not loop. |
+| `host_stopping` | The SolidWorks agent is stopping for an update or restart. Retry in a minute. |
 | `no_interactive_session` | The Windows account has no desktop session. Ask the user to sign in on that machine. |
 | `version_not_installed` | The pinned SolidWorks year is not installed. Ask the user to change the tool's version. |
 | `version_mismatch` | Attach mode: the running SolidWorks is not the pinned year. Ask the user to start the right one. |
@@ -88,6 +97,7 @@ with the message rather than guessing.
 - `paging`: limits, `next_offset`, snapshots, large results.
 - `pdm`: PDM vault search, live file state, get latest, check-out and check-in.
 - `studying-models`: learn the house conventions from existing models.
+- `scripts`: build or change models with C# scripts, when the tool allows scripts.
 
 Read `pdm` when the tool is linked to a PDM vault and you need to find or change vault files.
 Read `studying-models` before you propose or change a model, to see how similar models are built.

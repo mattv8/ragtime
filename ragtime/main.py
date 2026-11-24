@@ -124,6 +124,8 @@ from ragtime.remote_client import router as remote_client_router
 from ragtime.remote_client.relay import relay_manager
 from ragtime.remote_client.repository import remote_pairing_repository
 from ragtime.skills.routes import router as instruction_skills_router
+from ragtime.solidworks.host_activity import host_activity
+from ragtime.solidworks.host_updater import host_updater
 from ragtime.solidworks.routes import router as solidworks_router
 from ragtime.userspace.agent_routes import (
     agent_management_router,
@@ -364,6 +366,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Initial remote pairing draft cleanup failed")
     await relay_manager.start()
+    host_updater.start()
     # Start cleanup after readiness-critical initialization. It is deliberately
     # independent of startup success and always cancelled before DB teardown.
     auth_cleanup_task = asyncio.create_task(_auth_cleanup_loop(), name="auth-expiry-cleanup")
@@ -386,6 +389,9 @@ async def lifespan(app: FastAPI):
 
     # Cleanup - cancel the startup Git policy reconciliation task
     await pdm_automation_service.stop()
+    await host_updater.stop()
+    if not await host_activity.drain(10):
+        logger.warning("Timed out waiting for SolidWorks host activity to drain")
     await relay_manager.stop()
     await git_webhook_service.stop()
     await workspace_code_index_service.stop()

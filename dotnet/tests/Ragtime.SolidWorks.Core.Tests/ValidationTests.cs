@@ -15,6 +15,9 @@ namespace Ragtime.SolidWorks.Core.Tests
             yield return new object[] { "script.run", "{\"source\":\"return null;\",\"purpose\":\"Inspect a model\",\"arguments\":{\"nested\":{\"items\":[null,1]}}}" };
             yield return new object[] { "describe", "{}" };
             yield return new object[] { "status", "{}" };
+            yield return new object[] { "host.shutdown", "{}" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":0}" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":86400}" };
             yield return new object[] { "documents.list", "{}" };
             yield return new object[] { "document.open", "{\"path\":\"C:\\\\Models\\\\part.sldprt\"}" };
             yield return new object[] { "document.open", "{\"path\":\"C:\\\\Models\\\\a.SLDASM\",\"configuration\":\"Default\"}" };
@@ -35,6 +38,8 @@ namespace Ragtime.SolidWorks.Core.Tests
             yield return new object[] { "pdm.folder.list", "{\"path\":\"\\\\A\"}" };
             yield return new object[] { "pdm.file.info", "{\"path\":\"\\\\A\"}" };
             yield return new object[] { "pdm.variables.get", "{\"path\":\"\\\\A\"}" };
+            yield return new object[] { "pdm.folder.rights", "{\"paths\":[\"\\\\A\"]}" };
+            yield return new object[] { "pdm.folder.children", "{\"path\":\"\\\\A\",\"limit\":100}" };
             yield return new object[] { "pdm.file.get_latest", "{\"path\":\"\\\\A\"}" };
             yield return new object[] { "pdm.folder.create", "{\"path\":\"\\\\A\"}" };
             yield return new object[] { "pdm.file.add", "{\"source\":\"C:\\\\a\",\"folder\":\"\\\\A\"}" };
@@ -49,6 +54,11 @@ namespace Ragtime.SolidWorks.Core.Tests
             yield return new object[] { "script.run", "{}", "source" };
             yield return new object[] { "describe", "{\"x\":1}", "x" };
             yield return new object[] { "status", "{\"x\":1}", "x" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":-1}", "if_idle_seconds" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":86401}", "if_idle_seconds" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":\"5\"}", "if_idle_seconds" };
+            yield return new object[] { "host.shutdown", "{\"if_idle_seconds\":1.5}", "if_idle_seconds" };
+            yield return new object[] { "host.shutdown", "{\"x\":1}", "x" };
             yield return new object[] { "documents.list", "{\"limit\":0}", "limit" };
             yield return new object[] { "document.open", "{}", "path" };
             yield return new object[] { "document.open", "{\"path\":\"C:\\\\a.sldprt\",\"bogus\":1}", "bogus" };
@@ -71,6 +81,8 @@ namespace Ragtime.SolidWorks.Core.Tests
             yield return new object[] { "pdm.folder.list", "{}", "path" };
             yield return new object[] { "pdm.file.info", "{}", "path" };
             yield return new object[] { "pdm.variables.get", "{}", "path" };
+            yield return new object[] { "pdm.folder.rights", "{}", "paths" };
+            yield return new object[] { "pdm.folder.children", "{\"path\":\"\\\\A\",\"limit\":101}", "limit" };
             yield return new object[] { "pdm.file.get_latest", "{}", "path" };
             yield return new object[] { "pdm.folder.create", "{}", "path" };
             yield return new object[] { "pdm.file.add", "{}", "source" };
@@ -197,7 +209,7 @@ namespace Ragtime.SolidWorks.Core.Tests
         private static readonly string[] PagedOperations =
         {
             "documents.list", "configurations.list", "features.list", "sketch.get",
-            "dimensions.list", "mates.list", "components.list", "equations.list", "pdm.folder.list",
+            "dimensions.list", "mates.list", "components.list", "equations.list", "pdm.folder.list", "pdm.folder.children",
         };
 
         [Fact]
@@ -207,7 +219,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             Assert.Equal(1, result.Protocol);
             Assert.Equal(TestData.HostVersion, result.HostVersion);
-            Assert.Equal(28, result.Operations.Count);
+            Assert.Equal(30, result.Operations.Count);
             var writes = new[] { "pdm.folder.create", "pdm.file.add", "pdm.file.checkout", "pdm.file.undo_checkout", "pdm.file.checkin", "pdm.variables.set" };
             Assert.All(result.Operations, op => Assert.Equal(op.Name == "script.run" ? "script" : writes.Contains(op.Name) ? "write" : "read", op.Access));
             Assert.DoesNotContain(result.Operations, op => op.Name == "host.shutdown");
@@ -301,7 +313,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             var response = await h.CallAsync("describe");
 
-            Assert.Equal(28, ((JArray)response["result"]!["operations"]!).Count);
+            Assert.Equal(30, ((JArray)response["result"]!["operations"]!).Count);
         }
     }
 }

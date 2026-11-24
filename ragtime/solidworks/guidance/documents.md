@@ -20,9 +20,10 @@ If you get `document_not_open`, call `document.open` with the path first.
 The document is opened read-only and silently. A missing file gives `document_not_found`;
 UNC or relative paths give `invalid_arguments`.
 
-**`document.close`** `document`. Closes a document the host opened (`opened_by_host` true) and
-returns `{closed: true}`. It never saves. Use it when you are finished, because background
-instances hold a licence. Documents the user opened are refused with `invalid_arguments`.
+**`document.close`** `document`. Closes a document the SolidWorks agent (the Ragtime program on the
+Windows machine) opened (`opened_by_host` true) and returns `{closed: true}`. It never saves. Use it
+when you are finished, because background instances hold a licence. Documents the user opened are
+refused with `invalid_arguments`.
 
 **`model.summary`** `document`. One call to see what the model is. Key fields:
 `type`, `title`, `active_configuration`, `configuration_count`, `feature_count`,

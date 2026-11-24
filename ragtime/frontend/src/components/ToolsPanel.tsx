@@ -1,5 +1,6 @@
 import {
   Fragment,
+  type ReactNode,
   useState,
   useEffect,
   useCallback,
@@ -22,8 +23,16 @@ import type {
   InstructionSkillCount,
   InstructionSkillOwner,
   InstructionSkillSummary,
+  SolidworksHostAutoUpdate,
+  TunnelClientState,
 } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
+import {
+  hostUpdateBadgeKind,
+  hostUpdateFailureText,
+  hostUpdateWaitingText,
+  type HostUpdateBadgeKind,
+} from '@/utils/solidworksHostUpdate';
 import { ToolWizard } from './ToolWizard';
 import { InstructionSkillsDialog } from './InstructionSkillsDialog';
 import { MountSourceWizard } from './MountSourceWizard';
@@ -316,6 +325,94 @@ function describeInstructionSkillCount(count: InstructionSkillCount | undefined)
   return `${count.total} attached, ${count.enabled} enabled`;
 }
 
+function hostUpdatePendingText(update: SolidworksHostAutoUpdate): string {
+  const { installed_version: installed, target_version: target } = update;
+  const versions =
+    installed && target
+      ? `Version ${installed} is running; ${target} will be installed automatically. `
+      : '';
+  return `${versions}${hostUpdateWaitingText(update)}`;
+}
+
+function hostUpdateBadgeText(update: SolidworksHostAutoUpdate, kind: HostUpdateBadgeKind): string {
+  if (kind === 'pending') return hostUpdatePendingText(update);
+  if (kind === 'updating') {
+    const target = update.target_version ? ` to version ${update.target_version}` : '';
+    return `Ragtime is updating the agent${target}. Requests wait until it finishes.`;
+  }
+  return `${hostUpdateFailureText(update)} Open the tool to update the agent yourself.`;
+}
+
+function tunnelClientOutdatedText(client: TunnelClientState): string {
+  const prefix = 'The tunnel keeps working.';
+  const suffix = 'Ragtime cannot update tunnel clients yet.';
+  if (client.version === null) {
+    return `${prefix} This machine's tunnel client did not report a version, so it is older than version ${client.current_version}. ${suffix}`;
+  }
+  return `${prefix} This machine's tunnel client is version ${client.version}; the newest is version ${client.current_version}. ${suffix}`;
+}
+
+interface DetailBadgeProps {
+  hook: string;
+  className: string;
+  icon: ReactNode;
+  label: string;
+  detail: string;
+}
+
+/**
+ * A focusable badge whose popover detail is also rendered as visually hidden text, so keyboard and
+ * screen-reader users get it from the badge itself (the shared Popover has no aria-describedby).
+ */
+function DetailBadge({ hook, className, icon, label, detail }: DetailBadgeProps) {
+  return (
+    <Popover content={detail} position="top" style={{ display: 'inline-flex' }}>
+      <span className={className} data-tool-badge={hook} tabIndex={0}>
+        {icon}
+        <span className="path-text">{label}</span>
+        <span className="rc-visually-hidden">{detail}</span>
+      </span>
+    </Popover>
+  );
+}
+
+interface HostUpdateBadgeProps {
+  update: SolidworksHostAutoUpdate;
+  kind: HostUpdateBadgeKind;
+}
+
+function HostUpdateBadge({ update, kind }: HostUpdateBadgeProps) {
+  const badge = {
+    pending: {
+      label: 'Agent update pending',
+      hook: 'host-update-pending',
+      className: 'tool-badge',
+      icon: <Icon name="refresh" size={12} />,
+    },
+    updating: {
+      label: 'Updating agent…',
+      hook: 'host-updating',
+      className: 'tool-badge',
+      icon: <span className="rc-polling-indicator" aria-hidden="true" />,
+    },
+    failed: {
+      label: 'Agent update failed',
+      hook: 'host-update-failed',
+      className: 'tool-badge badge-warning',
+      icon: <Icon name="alert-triangle" size={12} />,
+    },
+  }[kind];
+  return (
+    <DetailBadge
+      hook={badge.hook}
+      className={badge.className}
+      icon={badge.icon}
+      label={badge.label}
+      detail={hostUpdateBadgeText(update, kind)}
+    />
+  );
+}
+
 function ToolCard({
   tool,
   tools,
@@ -371,6 +468,8 @@ function ToolCard({
   const pdmUnavailable = pdmLink && (!pdmLink.exists || !pdmLink.enabled);
   const pdmDatabase = (linkedPdmTool?.connection_config as { database?: string } | undefined)
     ?.database;
+  const hostUpdate = tool.tool_type === 'solidworks' ? tool.solidworks_host_update : null;
+  const hostUpdateKind = hostUpdateBadgeKind(hostUpdate);
   const pdmLinkDescription = pdmLink
     ? !pdmLink.exists
       ? 'The linked PDM tool no longer exists.'
@@ -668,6 +767,18 @@ function ToolCard({
                     <span className="path-text">Scripts on</span>
                   </span>
                 </Popover>
+              )}
+              {hostUpdate && hostUpdateKind && (
+                <HostUpdateBadge update={hostUpdate} kind={hostUpdateKind} />
+              )}
+              {tool.tunnel_client?.outdated === true && (
+                <DetailBadge
+                  hook="tunnel-client-outdated"
+                  className="tool-badge"
+                  icon={<Icon name="plug" size={12} />}
+                  label="Tunnel client outdated"
+                  detail={tunnelClientOutdatedText(tool.tunnel_client)}
+                />
               )}
               {skillCount && skillCount.total > 0 && (
                 <button

@@ -237,6 +237,7 @@ class RelayManager:
 
     def __init__(self) -> None:
         self._sessions: dict[str, _Session] = {}
+        self._client_versions: dict[str, tuple[bool, int | None]] = {}
         self._revoked: set[str] = set()
         self._lock = asyncio.Lock()
         self._started = False
@@ -254,11 +255,13 @@ class RelayManager:
     async def stop(self) -> None:
         async with self._lock:
             sessions = list(self._sessions.values())
+            for pairing_id in self._sessions:
+                self._client_versions[pairing_id] = (False, self._client_versions[pairing_id][1])
             self._sessions.clear()
             self._started = False
         await asyncio.gather(*(session.close() for session in sessions), return_exceptions=True)
 
-    async def attach(self, pairing_id: str, websocket: Any) -> None:
+    async def attach(self, pairing_id: str, websocket: Any, client_version: int | None = None) -> None:
         if not self._started:
             raise RelayUnavailable("remote relay has not been started")
         session = _Session(self, pairing_id, websocket)
@@ -272,6 +275,7 @@ class RelayManager:
             previous = None if rejected else self._sessions.get(pairing_id)
             if not rejected:
                 self._sessions[pairing_id] = session
+                self._client_versions[pairing_id] = (True, client_version)
         if rejected:
             await session.close(code=4403)
             return
@@ -283,10 +287,14 @@ class RelayManager:
         session = self._sessions.get(pairing_id)
         return session.endpoint() if session is not None else None
 
+    def client_version(self, pairing_id: str) -> tuple[bool, int | None] | None:
+        return self._client_versions.get(pairing_id)
+
     async def revoke(self, pairing_id: str) -> None:
         async with self._lock:
             self._revoked.add(pairing_id)
             session = self._sessions.pop(pairing_id, None)
+            self._client_versions.pop(pairing_id, None)
         if session is not None:
             await session.close()
 
@@ -294,6 +302,7 @@ class RelayManager:
         async with self._lock:
             if self._sessions.get(session.pairing_id) is session:
                 self._sessions.pop(session.pairing_id, None)
+                self._client_versions[session.pairing_id] = (False, self._client_versions[session.pairing_id][1])
 
 
 relay_manager = RelayManager()

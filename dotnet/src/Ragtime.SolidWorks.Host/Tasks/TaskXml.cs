@@ -13,7 +13,7 @@ namespace Ragtime.SolidWorks.Host
 @"<?xml version=""1.0"" encoding=""UTF-16""?>
 <Task version=""1.2"" xmlns=""http://schemas.microsoft.com/windows/2004/02/mit/task"">
   <RegistrationInfo>
-    <Description>Starts the Ragtime SolidWorks host when this user logs on. Managed by Ragtime install and uninstall.</Description>
+    <Description>Starts the Ragtime SolidWorks agent when this user logs on. Managed by Ragtime install and uninstall.</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
