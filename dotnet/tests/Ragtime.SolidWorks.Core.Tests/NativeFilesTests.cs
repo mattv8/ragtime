@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Xunit;
 
 namespace Ragtime.SolidWorks.Core.Tests
@@ -7,6 +8,21 @@ namespace Ragtime.SolidWorks.Core.Tests
     public sealed class NativeFilesTests
     {
         private const string Root = @"C:\Models";
+
+        [Fact]
+        public void SharedReadWorksWhileFileIsOpenForWriting()
+        {
+            using (var folder = new TempWorkFolder())
+            {
+                var path = Path.Combine(folder.Path, "part.sldprt");
+                File.WriteAllText(path, "native contents");
+                using (var writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
+                using (var reader = new StreamReader(NativeFiles.OpenSharedRead(path)))
+                {
+                    Assert.Equal("native contents", reader.ReadToEnd());
+                }
+            }
+        }
 
         [Theory]
         [InlineData("assembly", "zip")]

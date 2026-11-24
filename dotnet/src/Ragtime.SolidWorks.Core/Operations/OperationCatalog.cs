@@ -10,8 +10,8 @@ namespace Ragtime.SolidWorks.Core
     public static class OperationCatalog
     {
         private const string DocumentArgument = "Document id from documents.list or document.open (doc-N), or the full path of an open document.";
+        private const string FileDocumentArgument = DocumentArgument + " Optional when exactly one document is open.";
         private const string SketchPartDescription = "Which part of the sketch: summary (default, not paged), segments, points, relations or dimensions.";
-        private const string DocumentPathArgument = "Full path of an open document. Optional when exactly one document is open.";
         /// <summary>Schema ceiling for preview sizes; larger values are clamped to 2048 by Core, not rejected.</summary>
         private const int PreviewSchemaMaximum = 100000;
 
@@ -194,8 +194,8 @@ namespace Ragtime.SolidWorks.Core
                 ProtocolInfo.Access.Read,
                 paged: false,
                 argumentsSchema: new ObjectSchema()
-                    .Property("path", SchemaTypes.Text(DocumentPathArgument), required: false)
-                    .Property("format", SchemaTypes.Enum("Export format: step, stl, 3mf, glb or native.", "step", "stl", "3mf", "glb", "native"), required: true)
+                    .Property("document", SchemaTypes.Document(FileDocumentArgument), required: false)
+                    .Property("format", SchemaTypes.Enum("Export format: step, stl, 3mf, glb or native. Drawings export as native only; assemblies support step, 3mf, glb and native, not stl.", "step", "stl", "3mf", "glb", "native"), required: true)
                     .Property("configuration", SchemaTypes.Text("Configuration to export; default is the active configuration."))
                     .Property("include_preview", SchemaTypes.Boolean("Also render an isometric PNG preview; default true."))
                     .Build(),
@@ -207,7 +207,7 @@ namespace Ragtime.SolidWorks.Core
                 ProtocolInfo.Access.Read,
                 paged: false,
                 argumentsSchema: new ObjectSchema()
-                    .Property("path", SchemaTypes.Text(DocumentPathArgument), required: false)
+                    .Property("document", SchemaTypes.Document(FileDocumentArgument), required: false)
                     .Property("view", SchemaTypes.Enum("Named view: isometric, front, top or right; default isometric.", "isometric", "front", "top", "right"))
                     .Property("width", SchemaTypes.Integer(1, PreviewSchemaMaximum, "Width in pixels, clamped to 256-2048; default 1024."))
                     .Property("height", SchemaTypes.Integer(1, PreviewSchemaMaximum, "Height in pixels, clamped to 256-2048; default 768."))

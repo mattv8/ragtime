@@ -50,22 +50,25 @@ namespace Ragtime.SolidWorks.Readers
             var previous = ActiveConfigurationName(model);
             var requested = request.Configuration;
             var switched = requested != null && requested != previous;
-            try
+            WithActiveDocument(model, ExportRequiresActiveDocument(request.Format), ErrorCodes.ExportFailed, () =>
             {
-                if (requested != null && switched)
+                try
                 {
-                    ShowConfiguration(model, requested);
-                }
+                    if (requested != null && switched)
+                    {
+                        ShowConfiguration(model, requested);
+                    }
 
-                SaveCopy(model, request.TargetPath, ErrorCodes.ExportFailed);
-            }
-            finally
-            {
-                if (switched && previous != null)
-                {
-                    RestoreConfiguration(model, previous);
+                    SaveCopy(model, request.TargetPath, ErrorCodes.ExportFailed);
                 }
-            }
+                finally
+                {
+                    if (switched && previous != null)
+                    {
+                        RestoreConfiguration(model, previous);
+                    }
+                }
+            });
 
             return new ExportResult(
                 new[] { new ExportedFile("model", request.TargetPath, request.Format) },
@@ -75,8 +78,7 @@ namespace Ragtime.SolidWorks.Readers
 
         /// <summary>
         /// Renders one PNG of a named view of the document, in the requested configuration. The document and the
-        /// configuration are activated for the picture and restored afterwards, and the view pose is put back. Drawings
-        /// use the sheet as it is.
+        /// configuration are activated for the picture and restored afterwards, and the view pose is put back.
         /// </summary>
         public ExportResult RenderPreview(PreviewRequest request) => RunAs(ErrorCodes.PreviewUnavailable, "rendering the preview", () =>
         {
@@ -89,59 +91,80 @@ namespace Ragtime.SolidWorks.Readers
                 warnings.Add("The document has unsaved changes; the preview shows them.");
             }
 
-            var previousDocument = ActiveDocumentOrNull();
-            var switchedDocument = previousDocument == null || !SameDocument(previousDocument, model);
             var previousConfiguration = ActiveConfigurationName(model);
             var requested = request.Configuration;
             var switchedConfiguration = requested != null && requested != previousConfiguration;
-            SW.IModelView? view = null;
-            ViewPose? pose = null;
-            try
+            WithActiveDocument(model, true, ErrorCodes.PreviewUnavailable, () =>
             {
-                if (switchedDocument)
+                SW.IModelView? view = null;
+                ViewPose? pose = null;
+                try
                 {
-                    ActivateDocument(model);
-                }
+                    if (requested != null && switchedConfiguration)
+                    {
+                        ShowConfiguration(model, requested);
+                    }
 
-                if (requested != null && switchedConfiguration)
-                {
-                    ShowConfiguration(model, requested);
-                }
-
-                if (!isSheet)
-                {
-                    view = (SW.IModelView)model.ActiveView;
-                    pose = CapturePose(view);
-                    // ShowNamedView2 reports nothing; a missing view leaves the current orientation in the picture.
-                    model.ShowNamedView2(NamedViewName(request.View), DefaultNamedViewType);
+                    pose = TryCapturePose(model, out view);
+                    if (!isSheet)
+                    {
+                        // ShowNamedView2 reports nothing; a missing view leaves the current orientation in the picture.
+                        model.ShowNamedView2(NamedViewName(request.View), DefaultNamedViewType);
+                    }
                     model.ViewZoomtofit2();
-                }
 
-                SaveCopy(model, request.TargetPath, ErrorCodes.PreviewUnavailable);
-            }
-            finally
-            {
-                if (view != null && pose != null)
-                {
-                    RestorePose(view, pose);
+                    SaveCopy(model, request.TargetPath, ErrorCodes.PreviewUnavailable);
                 }
+                finally
+                {
+                    if (view != null && pose != null)
+                    {
+                        RestorePose(view, pose);
+                    }
 
-                if (switchedConfiguration && previousConfiguration != null)
-                {
-                    RestoreConfiguration(model, previousConfiguration);
+                    if (switchedConfiguration && previousConfiguration != null)
+                    {
+                        RestoreConfiguration(model, previousConfiguration);
+                    }
                 }
-
-                if (switchedDocument && previousDocument != null)
-                {
-                    ReactivateDocument(previousDocument);
-                }
-            }
+            });
 
             return new ExportResult(
                 new[] { new ExportedFile("preview", request.TargetPath, "png") },
                 requested ?? previousConfiguration,
                 warnings);
         });
+
+        // The Extended Reality GLB exporter writes the active document, unlike STEP, STL and 3MF.
+        private static bool ExportRequiresActiveDocument(string format) => format == "glb";
+
+        private void WithActiveDocument(SW.ModelDoc2 model, bool activate, string code, Action work)
+        {
+            if (!activate)
+            {
+                work();
+                return;
+            }
+
+            var previous = ActiveDocumentOrNull();
+            var switched = previous == null || !SameDocument(previous, model);
+            try
+            {
+                if (switched)
+                {
+                    ActivateDocument(model, code);
+                }
+
+                work();
+            }
+            finally
+            {
+                if (switched && previous != null)
+                {
+                    ReactivateDocument(previous);
+                }
+            }
+        }
 
         /// <summary>
         /// Runs one export or preview step. A COM failure is reported under the operation's own code, and so are the
@@ -216,16 +239,15 @@ namespace Ragtime.SolidWorks.Readers
         }
 
         /// <summary>
-        /// Activates the target document for the picture and verifies it: the active document must match the target by
-        /// path (or title when there is no path). Otherwise the picture would show the wrong model.
+        /// Activates the target document and verifies it by path (or title when there is no path).
         /// </summary>
-        private void ActivateDocument(SW.ModelDoc2 document)
+        private void ActivateDocument(SW.ModelDoc2 document, string code)
         {
             _application.ActivateDoc2(document.GetTitle(), false, 0);
             var active = ActiveDocumentOrNull();
             if (active == null || !SameDocument(active, document))
             {
-                throw HostError.Coded(ErrorCodes.PreviewUnavailable, "SolidWorks did not make the document active for the picture.");
+                throw HostError.Coded(code, "SolidWorks did not make the document active.");
             }
         }
 
@@ -258,8 +280,21 @@ namespace Ragtime.SolidWorks.Readers
         }
 
         /// <summary>The view pose that a named view change replaces: orientation, translation and scale.</summary>
-        private static ViewPose CapturePose(SW.IModelView view) =>
-            new ViewPose(view.Orientation3, view.Translation3, view.Scale2);
+        private static ViewPose? TryCapturePose(SW.ModelDoc2 model, out SW.IModelView? view)
+        {
+            view = null;
+            try
+            {
+                var activeView = (SW.IModelView)model.ActiveView;
+                var pose = new ViewPose(activeView.Orientation3, activeView.Translation3, activeView.Scale2);
+                view = activeView;
+                return pose;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
 
         /// <summary>Puts the captured pose back. Never throws: the picture is already taken.</summary>
         private static void RestorePose(SW.IModelView view, ViewPose pose)
@@ -293,7 +328,11 @@ namespace Ragtime.SolidWorks.Readers
 
             if (type != ProtocolInfo.DocumentTypes.Assembly)
             {
-                File.Copy(source, target, false);
+                using (var input = NativeFiles.OpenSharedRead(source))
+                using (var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write))
+                {
+                    input.CopyTo(output);
+                }
                 return;
             }
 
@@ -334,12 +373,12 @@ namespace Ragtime.SolidWorks.Readers
                 entries.Add(new KeyValuePair<string, string>(reference, name));
             }
 
-            using (var stream = File.Create(target))
+            using (var stream = new FileStream(target, FileMode.CreateNew, FileAccess.Write))
             using (var archive = new ZipArchive(stream, ZipArchiveMode.Create))
             {
                 foreach (var entry in entries)
                 {
-                    using (var input = File.OpenRead(entry.Key))
+                    using (var input = NativeFiles.OpenSharedRead(entry.Key))
                     using (var output = archive.CreateEntry(entry.Value, CompressionLevel.Optimal).Open())
                     {
                         input.CopyTo(output);

@@ -39,11 +39,171 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         public void Dispose() => _work.Dispose();
 
+        [Fact]
+        public async Task CleanupWorksWhenWorkFolderHasLinkedAncestor()
+        {
+            var real = Path.Combine(_work.Path, "real");
+            var link = Path.Combine(_work.Path, "link");
+            Directory.CreateDirectory(real);
+            try
+            {
+                Directory.CreateSymbolicLink(link, real);
+            }
+            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException || error is PlatformNotSupportedException)
+            {
+                // Symlink creation may require privileges unavailable to this test.
+                return;
+            }
+
+            var h = await OpenedHarness(link);
+            string? stray = null;
+            h.Manager.SessionFor("i1").OnFileWrite = target =>
+            {
+                stray = Path.Combine(link, Path.GetFileNameWithoutExtension(target) + " - box.STL");
+                File.WriteAllText(stray, "stray");
+            };
+
+            var response = await h.CallAsync("model.export", Harness.Args(("format", Harness.S("stl")), ("include_preview", WireJson.Value(false))));
+
+            Assert.True((bool)response["ok"]!, response.ToString());
+            Assert.NotNull(stray);
+            Assert.False(File.Exists(stray));
+        }
+
+        [Fact]
+        public void FileOperationSchemasDescribeOptionalDocumentAndFormatLimits()
+        {
+            var export = OperationRegistry.Default.Find("model.export")!.ArgumentsSchema;
+            var preview = OperationRegistry.Default.Find("model.preview")!.ArgumentsSchema;
+            var summary = OperationRegistry.Default.Find("model.summary")!.ArgumentsSchema;
+            var shared = (string)summary["properties"]!["document"]!["description"]!;
+            var expected = shared + " Optional when exactly one document is open.";
+            Assert.Equal(expected, (string)export["properties"]!["document"]!["description"]!);
+            Assert.Equal(expected, (string)preview["properties"]!["document"]!["description"]!);
+            var format = (string)export["properties"]!["format"]!["description"]!;
+            Assert.Contains("Drawings export as native only", format);
+            Assert.Contains("assemblies support step, 3mf, glb and native, not stl", format);
+        }
+
+        [Theory]
+        [InlineData("model.export", false)]
+        [InlineData("model.export", true)]
+        [InlineData("model.preview", false)]
+        [InlineData("model.preview", true)]
+        public async Task StrayFilesAreRemovedAfterEachAttempt(string operation, bool fail)
+        {
+            var h = await OpenedHarness(_work.Path);
+            var session = h.Manager.SessionFor("i1");
+            session.FailExport = fail;
+            session.FailPreview = fail;
+            var unrelated = Path.Combine(_work.Path, "unrelated.stl");
+            File.WriteAllText(unrelated, "keep");
+            string? stray = null;
+            session.OnFileWrite = target =>
+            {
+                stray = Path.Combine(_work.Path, Path.GetFileNameWithoutExtension(target) + " - box-1.STL");
+                File.WriteAllText(stray, "stray");
+            };
+            var args = operation == "model.export"
+                ? Harness.Args(("format", Harness.S("stl")), ("include_preview", WireJson.Value(false)))
+                : Harness.Args();
+
+            var response = await h.CallAsync(operation, args);
+
+            Assert.Equal(!fail, (bool)response["ok"]!);
+            Assert.NotNull(stray);
+            Assert.False(File.Exists(stray));
+            Assert.True(File.Exists(unrelated));
+            if (!fail)
+            {
+                Assert.True(File.Exists((string)response["result"]!["files"]![0]!["path"]!));
+            }
+        }
+
+        [Fact]
+        public async Task CleanupDoesNotFollowOrDeleteStraySymlink()
+        {
+            var h = await OpenedHarness(_work.Path);
+            var original = Path.Combine(_work.Path, "unrelated.stl");
+            File.WriteAllText(original, "keep");
+            string? link = null;
+            var symlinkUnavailable = false;
+            h.Manager.SessionFor("i1").OnFileWrite = target =>
+            {
+                link = Path.Combine(_work.Path, Path.GetFileNameWithoutExtension(target) + " - link.STL");
+                try
+                {
+                    File.CreateSymbolicLink(link, original);
+                }
+                catch (Exception error) when (error is IOException || error is UnauthorizedAccessException || error is PlatformNotSupportedException)
+                {
+                    symlinkUnavailable = true;
+                }
+            };
+
+            var response = await h.CallAsync("model.export", Harness.Args(("format", Harness.S("stl")), ("include_preview", WireJson.Value(false))));
+
+            // Symlink creation may be unavailable without platform privileges.
+            if (symlinkUnavailable) return;
+            Assert.True((bool)response["ok"]!, response.ToString());
+            Assert.Equal("keep", File.ReadAllText(original));
+            Assert.True(File.Exists(link));
+        }
+
+        [Theory]
+        [InlineData("model.export", "doc-1")]
+        [InlineData("model.export", PartPath)]
+        [InlineData("model.preview", "doc-1")]
+        [InlineData("model.preview", PartPath)]
+        public async Task FileOperationResolvesDocumentIdOrPath(string operation, string document)
+        {
+            var h = await OpenedHarness(_work.Path);
+            var args = operation == "model.export"
+                ? Harness.Args(("document", Harness.S(document)), ("format", Harness.S("step")), ("include_preview", WireJson.Value(false)))
+                : Harness.Args(("document", Harness.S(document)));
+
+            var response = await h.CallAsync(operation, args);
+
+            Assert.True((bool)response["ok"]!, response.ToString());
+            Assert.Equal(PartPath, (string?)response["result"]!["document"]!["path"]);
+        }
+
+        [Theory]
+        [InlineData("model.export", "slddrw")]
+        [InlineData("model.preview", "png")]
+        public async Task DrawingFileNameUsesPathInsteadOfSheetTitle(string operation, string extension)
+        {
+            var h = new Harness(workFolder: _work.Path);
+            h.Manager.AddBackground("i1");
+            h.Manager.SessionFor("i1").Open.Add(new SessionDocumentInfo("box - Sheet1", @"C:\Models\box.slddrw", "drawing", null, false, false));
+            var args = operation == "model.export"
+                ? Harness.Args(("format", Harness.S("native")))
+                : Harness.Args();
+
+            var response = await h.CallAsync(operation, args);
+
+            Assert.True((bool)response["ok"]!, response.ToString());
+            Assert.Equal("box." + extension, (string)response["result"]!["files"]![0]!["file_name"]!);
+        }
+
+        [Fact]
+        public async Task UnsavedPreviewFileNameFallsBackToTitle()
+        {
+            var h = new Harness(workFolder: _work.Path);
+            h.Manager.AddBackground("i1");
+            h.Manager.SessionFor("i1").Open.Add(new SessionDocumentInfo("Drawing1 - Sheet1", "", "drawing", null, false, true));
+
+            var response = await h.CallAsync("model.preview", Harness.Args());
+
+            Assert.True((bool)response["ok"]!, response.ToString());
+            Assert.Equal("Drawing1 - Sheet1.png", (string)response["result"]!["files"]![0]!["file_name"]!);
+        }
+
         private static JObject Export(string path, string format, bool? includePreview = null, string? configuration = null)
         {
             var pairs = new System.Collections.Generic.List<(string, JToken)>
             {
-                ("path", Harness.S(path)),
+                ("document", Harness.S(path)),
                 ("format", Harness.S(format)),
             };
             if (includePreview.HasValue)
@@ -203,6 +363,31 @@ namespace Ragtime.SolidWorks.Core.Tests
         }
 
         [Fact]
+        public async Task AssemblyStlIsRejectedBeforeCallingSession()
+        {
+            var h = await OpenedHarness(_work.Path, AssemblyPath);
+
+            var response = await h.CallAsync("model.export", Export(AssemblyPath, "stl", includePreview: false));
+
+            Assert.False((bool)response["ok"]!, response.ToString());
+            Assert.Equal("invalid_arguments", (string?)response["error"]!["code"]);
+            Assert.Equal("format", (string?)response["error"]!["details"]!["field"]);
+            Assert.Equal("STL export of an assembly writes one file per component. Export the assembly as 3mf or glb for a single mesh, or step.", (string?)response["error"]!["message"]);
+            Assert.Empty(h.Manager.SessionFor("i1").Exports);
+        }
+
+        [Fact]
+        public async Task PartStlRemainsAvailable()
+        {
+            var h = await OpenedHarness(_work.Path);
+
+            var response = await h.CallAsync("model.export", Export(PartPath, "stl", includePreview: false));
+
+            Assert.True((bool)response["ok"]!, response.ToString());
+            Assert.Single(h.Manager.SessionFor("i1").Exports);
+        }
+
+        [Fact]
         public async Task NativeAssemblyIsZipNamedAfterTheDocument()
         {
             var h = await OpenedHarness(_work.Path, AssemblyPath);
@@ -256,7 +441,7 @@ namespace Ragtime.SolidWorks.Core.Tests
         {
             var h = await OpenedHarness(_work.Path);
 
-            await h.CallAsync("model.preview", Preview(("path", Harness.S(PartPath)), ("width", Harness.I(5000)), ("height", Harness.I(10))));
+            await h.CallAsync("model.preview", Preview(("document", Harness.S(PartPath)), ("width", Harness.I(5000)), ("height", Harness.I(10))));
 
             var preview = h.Manager.SessionFor("i1").Previews.Single();
             Assert.Equal(2048, preview.Width);
@@ -268,7 +453,7 @@ namespace Ragtime.SolidWorks.Core.Tests
         {
             var h = await OpenedHarness(_work.Path);
 
-            var response = await h.CallAsync("model.preview", Preview(("path", Harness.S(PartPath)), ("view", Harness.S("front"))));
+            var response = await h.CallAsync("model.preview", Preview(("document", Harness.S(PartPath)), ("view", Harness.S("front"))));
 
             Assert.True((bool)response["ok"]!, response.ToString());
             var files = (JArray)response["result"]!["files"]!;
@@ -284,7 +469,7 @@ namespace Ragtime.SolidWorks.Core.Tests
             var h = await OpenedHarness(_work.Path);
             h.Manager.SessionFor("i1").FailPreview = true;
 
-            var response = await h.CallAsync("model.preview", Preview(("path", Harness.S(PartPath))));
+            var response = await h.CallAsync("model.preview", Preview(("document", Harness.S(PartPath))));
 
             Assert.Equal("preview_unavailable", (string?)response["error"]!["code"]);
             Assert.Empty(Directory.GetFiles(_work.Path));
@@ -305,7 +490,7 @@ namespace Ragtime.SolidWorks.Core.Tests
         {
             var h = await OpenedHarness(_work.Path);
 
-            await h.CallAsync("model.preview", Preview(("path", Harness.S(PartPath))));
+            await h.CallAsync("model.preview", Preview(("document", Harness.S(PartPath))));
 
             Assert.Null(h.Manager.SessionFor("i1").Previews.Single().Configuration);
         }
@@ -334,26 +519,51 @@ namespace Ragtime.SolidWorks.Core.Tests
             Assert.Empty(Directory.GetFiles(_work.Path));
         }
 
-        [Fact]
-        public async Task PathIsOptionalWhenExactlyOneDocumentIsOpen()
+        [Theory]
+        [InlineData("model.export")]
+        [InlineData("model.preview")]
+        public async Task DocumentIsOptionalWhenExactlyOneDocumentIsOpen(string operation)
         {
             var h = await OpenedHarness(_work.Path);
 
-            var response = await h.CallAsync("model.export", Harness.Args(("format", Harness.S("step")), ("include_preview", WireJson.Value(false))));
+            var args = operation == "model.export"
+                ? Harness.Args(("format", Harness.S("step")), ("include_preview", WireJson.Value(false)))
+                : Harness.Args();
+            var response = await h.CallAsync(operation, args);
 
             Assert.True((bool)response["ok"]!, response.ToString());
             Assert.Equal(PartPath, (string?)response["result"]!["document"]!["path"]);
         }
 
-        [Fact]
-        public async Task PathIsRequiredWhenSeveralDocumentsAreOpen()
+        [Theory]
+        [InlineData("model.export")]
+        [InlineData("model.preview")]
+        public async Task DocumentIsRequiredWhenSeveralDocumentsAreOpen(string operation)
         {
             var h = await OpenedHarness(_work.Path);
             await h.CallAsync("document.open", Harness.Args(("path", Harness.S(AssemblyPath))));
 
-            var response = await h.CallAsync("model.export", Harness.Args(("format", Harness.S("step"))));
+            var args = operation == "model.export" ? Harness.Args(("format", Harness.S("step"))) : Harness.Args();
+            var response = await h.CallAsync(operation, args);
 
             Assert.Equal("invalid_arguments", (string?)response["error"]!["code"]);
+            Assert.Equal("document", (string?)response["error"]!["details"]!["field"]);
+        }
+
+        [Theory]
+        [InlineData("model.export")]
+        [InlineData("model.preview")]
+        public async Task FileOperationRejectsOldPathArgument(string operation)
+        {
+            var h = await OpenedHarness(_work.Path);
+            var args = operation == "model.export"
+                ? Harness.Args(("path", Harness.S(PartPath)), ("format", Harness.S("step")))
+                : Harness.Args(("path", Harness.S(PartPath)));
+
+            var response = await h.CallAsync(operation, args);
+
+            Assert.Equal("invalid_arguments", (string?)response["error"]!["code"]);
+            Assert.Equal("path", (string?)response["error"]!["details"]!["field"]);
         }
     }
 }

@@ -34,6 +34,9 @@ MIN_OPERATION_SECONDS = 6
 MAX_RESULT_BYTES = 32768
 MAX_CACHED_TOOLS = 256
 HOST_MISMATCH_MESSAGE = "The SolidWorks agent answered a different request."
+AGENT_FAILED_MESSAGE = "The SolidWorks agent could not complete the requested operation."
+AGENT_MESSAGE_MAX_CHARS = 500
+AGENT_DETAILS_MAX_CHARS = 2000
 UNKNOWN_OPERATION_MESSAGE = "The SolidWorks agent does not offer this operation; call describe for the operation list."
 logger = logging.getLogger(__name__)
 _ARTIFACT_PATH = re.compile(
@@ -393,10 +396,7 @@ class SolidworksService:
         if operation in ("model.export", "model.preview"):
             if response.get("ok"):
                 return await self._fetch_artifacts(response, transport, config, deadline)
-            error = response.get("error")
-            code = error.get("code") if isinstance(error, dict) else None
-            code = code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code) else "internal_error"
-            return self._error(operation, code, "The SolidWorks agent could not complete the requested operation.")
+            return self._agent_error(operation, response.get("error"))
         if operation == "status" and response.get("ok"):
             response["result"]["scripts_enabled"] = bool(connection.get("allow_scripts", False))
         return self._json(response)
@@ -591,6 +591,19 @@ class SolidworksService:
 
     def _error(self, operation: str, code: str, message: str, details: dict | None = None) -> str:
         return self._json(error_response(operation, code, message, details))
+
+    def _agent_error(self, operation: str, error: object) -> str:
+        if not isinstance(error, dict):
+            return self._error(operation, "internal_error", AGENT_FAILED_MESSAGE)
+        code = error.get("code")
+        code = code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code) else "internal_error"
+        message = error.get("message")
+        if not isinstance(message, str) or not 0 < len(message) <= AGENT_MESSAGE_MAX_CHARS:
+            message = AGENT_FAILED_MESSAGE
+        details = error.get("details")
+        if not isinstance(details, dict) or len(self._json(details)) > AGENT_DETAILS_MAX_CHARS:
+            details = None
+        return self._error(operation, code, message, details)
 
     async def host_status(self, config: dict) -> dict:
         from ragtime.solidworks.host_status import SolidworksHostStatusService

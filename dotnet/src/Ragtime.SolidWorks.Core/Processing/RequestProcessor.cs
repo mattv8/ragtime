@@ -465,15 +465,15 @@ namespace Ragtime.SolidWorks.Core
         }
 
         /// <summary>
-        /// The document for model.export and model.preview: the given path, or the only document open in this request's
+        /// The document for model.export and model.preview: the given id or path, or the only document open in this request's
         /// scope. Refreshes the registry once when none is known, then fails with invalid_arguments.
         /// </summary>
         private async Task<DocumentEntry> ResolveFileDocumentAsync(JObject arguments, RequestContext context, Deadline deadline, CancellationToken cancellationToken)
         {
-            var path = ArgumentReader.OptionalString(arguments, "path");
-            if (path != null)
+            var document = ArgumentReader.OptionalString(arguments, "document");
+            if (document != null)
             {
-                return await ResolveDocumentAsync(path, context, deadline, cancellationToken).ConfigureAwait(false);
+                return await ResolveDocumentAsync(document, context, deadline, cancellationToken).ConfigureAwait(false);
             }
 
             var open = _documents.Snapshot().Where(ScopeOf(context)).ToList();
@@ -489,10 +489,10 @@ namespace Ragtime.SolidWorks.Core
             }
 
             throw HostError.InvalidArguments(
-                "path",
+                "document",
                 open.Count == 0
-                    ? "No document is open. Open one with document.open first, or give its path."
-                    : "More than one document is open. Give the path of the one to use.");
+                    ? "No document is open. Open one with document.open first, or give its id or path."
+                    : "More than one document is open. Give the id or path of the one to use.");
         }
 
         /// <summary>

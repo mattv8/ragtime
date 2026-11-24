@@ -233,3 +233,80 @@ def test_failure_logging_is_sanitized(phase, caplog):
         assert "secret" not in caplog.text and "/private/path" not in caplog.text and ROOT not in caplog.text
 
     asyncio.run(run())
+
+
+MISSING = object()
+
+
+def _agent_failure_output(error, operation="model.preview"):
+    class FailingTransport(Transport):
+        async def call(self, request: dict, *, timeout_seconds: float) -> dict:
+            if request["operation"] == "describe":
+                result = {"operations": [{"name": operation, "access": "read"}]}
+                return {"protocol": 1, "id": request["id"], "operation": "describe", "ok": True, "result": result, "host": {}}
+            response = {"protocol": 1, "id": request["id"], "operation": request["operation"], "ok": False, "host": {}}
+            if error is not MISSING:
+                response["error"] = error
+            return response
+
+    async def run():
+        config = {"id": "tool", "connection_config": {"host": "render", "user": "alice"}}
+        return json.loads(await SolidworksService(lambda config: FailingTransport()).execute(config, operation))
+
+    return asyncio.run(run())
+
+
+def test_agent_invalid_arguments_message_and_details_pass_through():
+    error = {"code": "invalid_arguments", "message": "Drawings support native only.", "details": {"errors": ["native"], "warnings": []}}
+    output = _agent_failure_output(error)
+    assert output["ok"] is False
+    assert output["error"] == error
+
+
+def test_agent_export_failure_details_pass_through():
+    error = {"code": "export_failed", "message": "SolidWorks could not save the file in that format.", "details": {"errors": [1], "warnings": []}}
+    output = _agent_failure_output(error, "model.export")
+    assert output["error"] == error
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["", "x" * 501, 123, None],
+)
+def test_agent_message_falls_back_to_generic(message):
+    output = _agent_failure_output({"code": "export_failed", "message": message, "details": {}})
+    assert output["error"]["code"] == "export_failed"
+    assert output["error"]["message"] == "The SolidWorks agent could not complete the requested operation."
+
+
+def test_agent_message_at_limit_passes_through():
+    output = _agent_failure_output({"code": "export_failed", "message": "x" * 500})
+    assert output["error"]["message"] == "x" * 500
+
+
+@pytest.mark.parametrize("details", [["not", "a", "dict"], "text", None])
+def test_agent_non_dict_details_are_dropped(details):
+    output = _agent_failure_output({"code": "export_failed", "message": "Failed.", "details": details})
+    assert output["error"]["message"] == "Failed."
+    assert output["error"]["details"] == {}
+
+
+def test_agent_oversized_details_are_dropped():
+    output = _agent_failure_output({"code": "export_failed", "message": "Failed.", "details": {"errors": ["e" * 2100]}})
+    assert output["error"]["details"] == {}
+
+
+@pytest.mark.parametrize("code", ["Bad-Code", "x" * 65, "", None])
+def test_agent_invalid_code_becomes_internal_error(code):
+    output = _agent_failure_output({"code": code, "message": "Failed."})
+    assert output["error"]["code"] == "internal_error"
+    assert output["error"]["message"] == "Failed."
+
+
+@pytest.mark.parametrize("error", [MISSING, "export failed", ["export_failed"], 42])
+def test_agent_failure_without_error_dict_is_internal_error(error):
+    output = _agent_failure_output(error)
+    assert output["ok"] is False
+    assert output["error"]["code"] == "internal_error"
+    assert output["error"]["message"] == "The SolidWorks agent could not complete the requested operation."
+    assert output["error"]["details"] == {}

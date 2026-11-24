@@ -423,6 +423,11 @@ class PreviewsTopicTests(unittest.TestCase):
             with self.subTest(format=format_name):
                 self.assertIn(format_name, self.previews)
         self.assertIn("Drawings support only `native` and `model.preview`", self.previews)
+        self.assertIn("Assemblies support `step`, `3mf`, `glb` and `native`, not `stl`", self.previews)
+
+    def test_topic_names_the_document_argument(self) -> None:
+        self.assertIn("Arguments: `document`", self.previews)
+        self.assertNotIn("`path`", self.previews)
 
     def test_topic_states_retention_size_and_sign_in(self) -> None:
         for phrase in ("7 days", "100 MB", "sign-in", "`page_url`"):

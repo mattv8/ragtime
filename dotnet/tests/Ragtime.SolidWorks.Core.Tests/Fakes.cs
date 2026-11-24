@@ -244,11 +244,14 @@ namespace Ragtime.SolidWorks.Core.Tests
         /// <summary>When set, a preview throws this exception (an unexpected host fault, not a preview failure).</summary>
         public Exception? PreviewException { get; set; }
 
+        public Action<string>? OnFileWrite { get; set; }
+
         /// <summary>Writes a small file at the request's target path, as the Readers session does.</summary>
         public ExportResult ExportModel(ExportRequest request)
         {
             Calls.Add(nameof(ExportModel));
             Exports.Add(request);
+            OnFileWrite?.Invoke(request.TargetPath);
             File.WriteAllText(request.TargetPath, "export:" + request.Format);
             if (FailExport)
             {
@@ -267,6 +270,7 @@ namespace Ragtime.SolidWorks.Core.Tests
         {
             Calls.Add(nameof(RenderPreview));
             Previews.Add(request);
+            OnFileWrite?.Invoke(request.TargetPath);
             if (PreviewException != null)
             {
                 throw PreviewException;

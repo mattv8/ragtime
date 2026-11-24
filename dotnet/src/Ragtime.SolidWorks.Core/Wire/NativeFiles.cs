@@ -21,6 +21,10 @@ namespace Ragtime.SolidWorks.Core
         private const int MaxEntryNameLength = 260;
         private static readonly string[] ReferenceExtensions = { ".sldprt", ".sldasm", ".slddrw" };
 
+        /// <summary>Opens a native file that SolidWorks may already hold open for writing.</summary>
+        public static FileStream OpenSharedRead(string path) =>
+            new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
         /// <summary>File extension of a native file for a document type: zip for assemblies, else the SolidWorks extension.</summary>
         public static string Extension(string documentType)
         {

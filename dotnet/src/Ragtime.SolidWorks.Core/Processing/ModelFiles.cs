@@ -77,16 +77,24 @@ namespace Ragtime.SolidWorks.Core
             }
         }
 
-        /// <summary>Display name: the document title with its SolidWorks extension removed, sanitised, plus the extension.</summary>
-        public static string DisplayName(string title, string extension)
+        /// <summary>Display name from the saved file stem, or the title for unsaved documents.</summary>
+        public static string DisplayName(string title, string path, string extension)
         {
-            var stem = (title ?? string.Empty).Trim();
-            foreach (var known in KnownExtensions)
+            string stem;
+            if (!string.IsNullOrEmpty(path))
             {
-                var suffix = "." + known;
-                if (stem.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                stem = Path.GetFileNameWithoutExtension(path.Replace('\\', '/'));
+            }
+            else
+            {
+                stem = (title ?? string.Empty).Trim();
+                foreach (var known in KnownExtensions)
                 {
-                    stem = stem.Substring(0, stem.Length - suffix.Length);
+                    var suffix = "." + known;
+                    if (stem.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        stem = stem.Substring(0, stem.Length - suffix.Length);
+                    }
                 }
             }
 
@@ -128,7 +136,7 @@ namespace Ragtime.SolidWorks.Core
                 var target = GeneratedPath(request.WorkFolder, "export", ExportExtension(request.Format, document.Type));
                 var exported = WriteFile(target, written, () => session.ExportModel(
                     new ExportRequest(reference, request.Format, request.Configuration, target)));
-                files.Add(FileEntry(SingleFile(exported, target, ErrorCodes.ExportFailed), target, request.WorkFolder, document.Title));
+                files.Add(FileEntry(SingleFile(exported, target, ErrorCodes.ExportFailed), target, request.WorkFolder, document));
                 warnings.AddRange(exported.Warnings);
                 configuration = exported.Configuration ?? configuration;
 
@@ -143,7 +151,7 @@ namespace Ragtime.SolidWorks.Core
                 var target = GeneratedPath(request.WorkFolder, "preview", PreviewFormat);
                 var preview = WriteFile(target, written, () => session.RenderPreview(
                     new PreviewRequest(reference, request.View, request.Width, request.Height, target, null)));
-                files.Add(FileEntry(SingleFile(preview, target, ErrorCodes.PreviewUnavailable), target, request.WorkFolder, document.Title));
+                files.Add(FileEntry(SingleFile(preview, target, ErrorCodes.PreviewUnavailable), target, request.WorkFolder, document));
                 warnings.AddRange(preview.Warnings);
                 configuration = preview.Configuration ?? configuration;
             }
@@ -176,6 +184,13 @@ namespace Ragtime.SolidWorks.Core
                 throw HostError.InvalidArguments(
                     "format",
                     "Drawings can be exported as native only. Use model.preview for a picture of the sheet.");
+            }
+
+            if (document.Type == ProtocolInfo.DocumentTypes.Assembly && format == "stl")
+            {
+                throw HostError.InvalidArguments(
+                    "format",
+                    "STL export of an assembly writes one file per component. Export the assembly as 3mf or glb for a single mesh, or step.");
             }
 
             return new ModelFileRequest(
@@ -234,7 +249,7 @@ namespace Ragtime.SolidWorks.Core
             {
                 var preview = WriteFile(target, written, () => session.RenderPreview(
                     new PreviewRequest(reference, DefaultView, DefaultPreviewWidth, DefaultPreviewHeight, target, configuration)));
-                files.Add(FileEntry(SingleFile(preview, target, ErrorCodes.PreviewUnavailable), target, request.WorkFolder, document.Title));
+                files.Add(FileEntry(SingleFile(preview, target, ErrorCodes.PreviewUnavailable), target, request.WorkFolder, document));
                 warnings.AddRange(preview.Warnings);
             }
             catch (HostErrorException error) when (error.Code == ErrorCodes.PreviewUnavailable)
@@ -269,10 +284,14 @@ namespace Ragtime.SolidWorks.Core
                 TryDelete(target);
                 throw;
             }
+            finally
+            {
+                ModelFileCleanup.DeleteStrays(target);
+            }
         }
 
         /// <summary>The file entry for one written file: checks it is inside the work folder, then measures it.</summary>
-        private static JObject FileEntry(ExportedFile file, string target, string workFolder, string title)
+        private static JObject FileEntry(ExportedFile file, string target, string workFolder, DocumentEntry document)
         {
             var info = new FileInfo(target);
             if (!info.Exists || !IsInside(info.FullName, workFolder))
@@ -284,7 +303,7 @@ namespace Ragtime.SolidWorks.Core
             {
                 ["role"] = WireJson.Value(file.Role),
                 ["path"] = WireJson.Value(info.FullName),
-                ["file_name"] = WireJson.Value(DisplayName(title, file.Format)),
+                ["file_name"] = WireJson.Value(DisplayName(document.Title, document.Path, file.Format)),
                 ["format"] = WireJson.Value(file.Format),
                 ["size_bytes"] = WireJson.Value(info.Length),
                 ["sha256"] = WireJson.Value(Sha256Hex(info.FullName)),
