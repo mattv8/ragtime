@@ -82,12 +82,20 @@
   white-space: nowrap;
 }
 
+/* Same inset box as the stat boxes, in the error tint. */
 #tools-connections .tool-card-heartbeat-error {
   margin: 0;
-  padding: 0;
-  background: none;
+  padding: var(--space-xs) var(--space-sm);
   border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--color-error-light);
+  font-size: var(--text-xs);
   align-items: flex-start;
+}
+
+/* Default's error red is under 4.5:1 on its tint; mixing in the text colour lifts it in both modes. */
+:root:not([data-theme-pack]) #tools-connections .tool-card-heartbeat-error {
+  color: color-mix(in srgb, var(--color-error) 65%, var(--color-text-primary));
 }
 
 #tools-connections .tool-card-heartbeat-error > span:last-child {
