@@ -22,7 +22,9 @@ def client():
 
 def test_reorder_route_requires_admin():
     route = next(
-        route for route in routes.router.routes if isinstance(route, APIRoute) and route.path == "/indexes/tool-groups/reorder" and "POST" in route.methods
+        route
+        for route in routes.router.routes
+        if isinstance(route, APIRoute) and route.path == "/indexes/tool-groups/reorder" and "POST" in (route.methods or set())
     )
     assert any(dep.call is require_admin for dep in route.dependant.dependencies)
 
