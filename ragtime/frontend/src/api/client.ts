@@ -262,6 +262,7 @@ import type {
   PublicErrorDetail,
 } from '@/types';
 import { getThemeSnapshot } from '@/theme/themeSnapshot';
+import { ArtifactRequestError, type ModelArtifact } from '@/utils/modelArtifact';
 import { formatPublicErrorDetail, getPublicErrorDetail } from './publicErrorDetail';
 import {
   sessionLifecycle,
@@ -632,9 +633,28 @@ function instructionSkillsPath(owner: InstructionSkillOwner): string {
   return `${API_BASE}/${ownerSegment}/${encodeURIComponent(owner.id)}/skills`;
 }
 
+/** Metadata served by `GET /indexes/solidworks/artifacts/{id}`. */
+export interface ModelArtifactMetadata extends ModelArtifact {
+  sha256?: string;
+  expired: boolean;
+  tool_config_name: string | null;
+}
+
 export const api = {
   getConversationEventsUrl(conversationId: string, workspaceId?: string): string {
     return withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/events`, workspaceId);
+  },
+
+  /**
+   * Artifact metadata for the standalone page. Rejects with ArtifactRequestError carrying the
+   * HTTP status (401, 403, 404, 410); `expired` is reported in the body while the file exists.
+   */
+  async getModelArtifact(artifactId: string): Promise<ModelArtifactMetadata> {
+    const response = await apiFetch(
+      `${API_BASE}/solidworks/artifacts/${encodeURIComponent(artifactId)}`,
+    );
+    if (!response.ok) throw new ArtifactRequestError(response.status);
+    return response.json() as Promise<ModelArtifactMetadata>;
   },
 
   async discoverHttpApiOAuth(

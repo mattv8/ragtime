@@ -23,6 +23,7 @@ import { ApiError } from '@/api/client';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import {
   ChatPanel,
+  ReasoningDisplay,
   ToolCallDisplay,
   applyConversationToolGroupWriteToggle,
   getConversationToolGroupWriteMenuItem,
@@ -4247,6 +4248,77 @@ describe('ChatPanel standalone first-paint loading', () => {
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'Compaction Result' })).toBeNull(),
     );
+  });
+});
+
+describe('ToolCallDisplay model artifact rendering', () => {
+  it.each([false, true])('shows a card outside the collapsed row (truncated: %s)', (truncated) => {
+    const id = 'a'.repeat(32);
+    const output = JSON.stringify({
+      ok: true,
+      operation: 'model.export',
+      result: {
+        artifact: {
+          id,
+          kind: 'model',
+          format: 'step',
+          file_name: 'bracket.step',
+          size_bytes: 123,
+          expires_at: '2099-01-01T00:00:00Z',
+          content_url: `/indexes/solidworks/artifacts/${id}/content`,
+          preview_image_url: `/indexes/solidworks/artifacts/${id}/content`,
+          page_url: `/?artifact=${id}`,
+        },
+        extra: 'more',
+      },
+    });
+    const { container } = render(
+      <ToolCallDisplay
+        toolCall={{
+          tool: 'solidworks_host',
+          status: 'complete',
+          output: truncated ? output.slice(0, -5) : output,
+        }}
+      />,
+    );
+    expect(container.querySelector('[data-model-artifact-card]')).not.toBeNull();
+    expect(screen.getByRole('link', { name: 'Download bracket.step' })).toBeDefined();
+    expect(container.querySelector('.tool-call-section')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom preview of bracket.step' }));
+    expect(screen.getByAltText('bracket.step preview, full view')).toBeDefined();
+  });
+
+  it('shows an artifact outside collapsed shared-chat reasoning', () => {
+    const id = 'b'.repeat(32);
+    const output = JSON.stringify({
+      ok: true,
+      operation: 'model.preview',
+      result: {
+        artifact: {
+          id,
+          kind: 'preview',
+          format: 'png',
+          file_name: 'preview.png',
+          size_bytes: 10,
+          expires_at: '2099-01-01T00:00:00Z',
+          content_url: `/indexes/solidworks/artifacts/${id}/content`,
+          page_url: `/?artifact=${id}`,
+        },
+      },
+    });
+    const { container } = render(
+      <ReasoningDisplay
+        content="Thinking"
+        isComplete
+        parts={[
+          { type: 'text', text: 'Thinking' },
+          { type: 'tool', toolCall: { tool: 'solidworks_host', status: 'complete', output } },
+        ]}
+      />,
+    );
+    const card = container.querySelector('[data-model-artifact-card]');
+    expect(card).not.toBeNull();
+    expect(card?.closest('.reasoning-content')).toBeNull();
   });
 });
 

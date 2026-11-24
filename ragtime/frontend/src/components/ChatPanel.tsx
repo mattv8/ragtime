@@ -64,6 +64,8 @@ import {
 } from 'lucide-react';
 import { api, type ChatTaskStreamEvent } from '@/api';
 import { formatPublicErrorDetail, getPublicErrorDetail } from '@/api/publicErrorDetail';
+import { parseModelArtifact } from '@/utils/modelArtifact';
+import { ModelArtifactCard } from './ModelArtifactCard';
 import { getThemeFontFamily, subscribeToThemeChanges } from '@/theme';
 import type {
   Conversation,
@@ -1324,6 +1326,10 @@ function isVisualizationToolName(toolName?: string): boolean {
 
 function isVisualizationToolCall(toolCall?: Pick<ActiveToolCall, 'tool'>): boolean {
   return isVisualizationToolName(toolCall?.tool);
+}
+
+function isModelArtifactToolCall(toolCall: ActiveToolCall): boolean {
+  return parseModelArtifact(toolCall) !== null;
 }
 
 // `event` is a dynamically-shaped streaming JSON payload from the SSE backend;
@@ -5164,6 +5170,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const toolCallPillName = getToolCallPillName(toolCall);
   const [isRerunning, setIsRerunning] = useState(false);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
+  const [zoomedImageAlt, setZoomedImageAlt] = useState('Screenshot full view');
   // Per-entry diff state keyed by snapshot+path+writeSignature so a batched
   // tool call can load each file's diff independently and a partial failure
   // does not blank the entire card.
@@ -5254,6 +5261,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Effective output (use retry output if available)
   const effectiveOutput = activeOutput || '';
+  const modelArtifact = useMemo(
+    () => (hasErrorInOutput ? null : parseModelArtifact({ ...toolCall, output: effectiveOutput })),
+    [hasErrorInOutput, toolCall, effectiveOutput],
+  );
   const isUserspaceStructuredJsonTool = USERSPACE_STRUCTURED_JSON_TOOL_NAMES.has(toolCall.tool);
 
   // Split into two memos: the searchable string composition (expensive — stringifies
@@ -8600,7 +8611,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     alt="Captured User Space screenshot"
                     className="tool-call-screenshot-image"
                     loading="lazy"
-                    onClick={() => setZoomedImage(screenshotPreviewForDisplay.imageUrl)}
+                    onClick={() => {
+                      setZoomedImageAlt('Screenshot full view');
+                      setZoomedImage(screenshotPreviewForDisplay.imageUrl);
+                    }}
                     style={{ cursor: 'zoom-in' }}
                   />
                 </div>
@@ -8610,10 +8624,21 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           </div>
         )}
       </div>
+      {modelArtifact && (
+        <div className="tool-call-model-artifact" data-tool-call-model-artifact={modelArtifact.id}>
+          <ModelArtifactCard
+            artifact={modelArtifact}
+            onZoomImage={(url, alt) => {
+              setZoomedImageAlt(alt);
+              setZoomedImage(url);
+            }}
+          />
+        </div>
+      )}
       {zoomedImage && (
         <ChatImageModal
           imageUrl={zoomedImage}
-          alt="Screenshot full view"
+          alt={zoomedImageAlt}
           onClose={() => setZoomedImage(null)}
         />
       )}
@@ -8748,6 +8773,19 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
       })
       .filter(Boolean) as ReasoningPart[];
   }, [parts, content, cleanToolCallXml]);
+  const artifactParts = useMemo(() => {
+    if (!showToolCalls) return [];
+    return renderedParts.flatMap((part, index) => {
+      const toolCall = part.toolCall;
+      if (!toolCall) return [];
+      const artifact = parseModelArtifact(toolCall);
+      return artifact ? [{ toolCall, artifact, index }] : [];
+    });
+  }, [renderedParts, showToolCalls]);
+  const artifactIndexes = useMemo(
+    () => new Set(artifactParts.map((part) => part.index)),
+    [artifactParts],
+  );
 
   const cleanedContent = useMemo(() => cleanToolCallXml(content), [content, cleanToolCallXml]);
   const hasInlineToolCalls =
@@ -8877,9 +8915,9 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
   );
 
   // Keep this after all hooks so hook order remains stable across renders.
-  if (visibility === 'hidden' && isComplete) return null;
+  if (visibility === 'hidden' && isComplete && artifactParts.length === 0) return null;
 
-  return (
+  const reasoningBlock = (
     <div className={`reasoning-block ${isComplete ? 'reasoning-complete' : 'reasoning-active'}`}>
       <button className="reasoning-header" onClick={handleToggle} aria-expanded={isExpanded}>
         <BrainCircuit size={14} className="reasoning-icon" />
@@ -8931,7 +8969,7 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
                   </div>
                 );
               }
-              if (!part.toolCall) return null;
+              if (!part.toolCall || artifactIndexes.has(index)) return null;
               return (
                 <div key={index} className="chat-tool-calls reasoning-embedded-tool">
                   <ToolCallDisplay
@@ -8963,6 +9001,16 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
         )}
       </div>
     </div>
+  );
+  return (
+    <>
+      {(visibility !== 'hidden' || !isComplete) && reasoningBlock}
+      {artifactParts.map(({ toolCall, artifact, index }) => (
+        <div className="chat-tool-calls" data-tool-call-model-artifact={artifact.id} key={index}>
+          <ToolCallDisplay toolCall={toolCall} defaultExpanded={false} allowRerun={false} />
+        </div>
+      ))}
+    </>
   );
 });
 
@@ -13476,7 +13524,8 @@ export function ChatPanel({
         if (
           currentReasoning &&
           ev.toolCall.tool !== WORKSPACE_SUBAGENTS_TOOL_ID &&
-          !isVisualizationToolCall(ev.toolCall)
+          !isVisualizationToolCall(ev.toolCall) &&
+          !isModelArtifactToolCall(ev.toolCall)
         ) {
           currentReasoningParts.push({ type: 'tool', toolCall: ev.toolCall });
         } else {
@@ -20146,7 +20195,13 @@ export function ChatPanel({
                                               pendingReasoning &&
                                               ev.tool !== SUBAGENT_HANDOFF_TOOL_ID &&
                                               ev.tool !== WORKSPACE_SUBAGENTS_TOOL_ID &&
-                                              !isVisualizationToolName(ev.tool)
+                                              !isVisualizationToolName(ev.tool) &&
+                                              !isModelArtifactToolCall({
+                                                tool: ev.tool,
+                                                output: ev.output,
+                                                connection: ev.connection,
+                                                status: 'complete',
+                                              })
                                             ) {
                                               pendingReasoningParts.push({
                                                 type: 'tool',
