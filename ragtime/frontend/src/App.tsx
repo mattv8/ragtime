@@ -1775,6 +1775,7 @@ export function App() {
                     schemaJobs={schemaJobs}
                     highlightSection={highlightToolsSection}
                     onHighlightComplete={() => setHighlightToolsSection(null)}
+                    currentUser={currentUser}
                   />
                 </Suspense>
               </div>

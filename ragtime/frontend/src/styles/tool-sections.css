@@ -191,6 +191,57 @@
   }
 }
 
+/* Toolbar above the sections (#tools-toolbar). */
+.tools-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+.tools-toolbar-search.settings-filter-search {
+  flex: 1 1 280px;
+  max-width: 420px;
+}
+.tools-toolbar-summary {
+  margin-left: auto;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+/* Brief confirmation on a collapsed section header that received a drop. */
+.tools-section-header.tools-section-flash {
+  animation: tools-section-flash 1s ease-out;
+}
+@keyframes tools-section-flash {
+  from {
+    background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+@media (max-width: 640px) {
+  .tools-toolbar {
+    gap: var(--space-xs);
+  }
+  .tools-toolbar-search.settings-filter-search {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+  .tools-toolbar-summary {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tools-section-header.tools-section-flash {
+    animation: none;
+  }
+}
+
 /* Keeps health aligned in sections without a menu (e.g. Ungrouped). */
 .tools-section-actions-spacer {
   flex: none;
@@ -235,4 +286,35 @@
   background: var(--color-error);
   border-color: var(--color-error);
   color: var(--color-text-inverse);
+}
+
+/* Modern toolbar: bordered, workbench-height buttons; items share one centre line. */
+[data-theme-pack='modern'] #tools-toolbar .btn-secondary {
+  border: 1px solid var(--color-border);
+  height: var(--workbench-control-height);
+}
+#tools-toolbar {
+  align-items: center;
+}
+#tools-toolbar .tools-toolbar-search.settings-filter-search {
+  box-sizing: border-box;
+  flex-wrap: nowrap;
+  height: 34px;
+  margin-bottom: 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+#tools-toolbar .tools-toolbar-search.settings-filter-search input {
+  padding: 0;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+[data-theme-pack='modern'] #tools-toolbar .tools-toolbar-search.settings-filter-search {
+  height: var(--workbench-control-height);
+}
+@media (max-width: 768px), (pointer: coarse) {
+  #tools-toolbar .tools-toolbar-search.settings-filter-search,
+  [data-theme-pack='modern'] #tools-toolbar .tools-toolbar-search.settings-filter-search {
+    height: 44px;
+  }
 }
