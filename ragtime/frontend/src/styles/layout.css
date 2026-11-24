@@ -1133,7 +1133,8 @@ legend {
   align-items: center;
   gap: var(--space-xs);
   flex-wrap: wrap;
-  flex: 0 0 auto;
+  flex: 1 1 100%;
+  min-width: 0;
 }
 
 .tool-badge {
@@ -1302,20 +1303,6 @@ legend {
   overflow: hidden;
 }
 
-/* When a heartbeat error banner is present (even reserved via visibility:
-   hidden), drop the description box padding and trim one line so more text
-   fits without growing the card past its siblings. The wrapper keeps its
-   bottom margin as the gap above the banner. */
-.tool-card:has(.tool-card-heartbeat-error) .description-wrapper {
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-.tool-card:has(.tool-card-heartbeat-error) .tool-card-description {
-  -webkit-line-clamp: 5;
-  line-clamp: 5;
-}
-
 .tool-card-heartbeat-error {
   display: flex;
   align-items: center;
@@ -1394,21 +1381,6 @@ legend {
   padding: var(--space-xs) var(--space-sm);
   background: var(--color-surface-hover);
   border-radius: var(--radius-sm);
-}
-
-.schema-stats-label {
-  color: var(--color-text-secondary);
-}
-
-.schema-stats-value {
-  color: var(--color-primary);
-  font-weight: 500;
-}
-
-.schema-stats-memory {
-  color: var(--color-text-muted);
-  font-weight: normal;
-  margin-left: var(--space-xs);
 }
 
 .tool-card-footer {

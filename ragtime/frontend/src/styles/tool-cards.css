@@ -1,0 +1,267 @@
+/* Tools page tool cards (#tools-connections). Shared .tool-card rules live in layout.css. */
+
+#tools-connections .tool-card {
+  gap: var(--space-sm);
+  background: var(--color-widget);
+}
+
+#tools-connections .tool-card.disabled {
+  opacity: 1;
+}
+
+#tools-connections .tool-card.disabled .tool-card-icon {
+  opacity: 0.6;
+}
+
+#tools-connections .tool-card.disabled .tool-card-title h3 {
+  color: var(--color-text-secondary);
+}
+
+#tools-connections .tool-card-header {
+  align-items: center;
+  margin: 0;
+}
+
+#tools-connections .tool-card-icon {
+  width: 40px;
+  height: 40px;
+  min-height: 0;
+  align-self: center;
+}
+
+#tools-connections .tool-card-header-main {
+  position: relative;
+  margin: 0;
+}
+
+#tools-connections .tool-card-title.name-wrapper {
+  margin: 0;
+  padding: 0;
+}
+
+#tools-connections .name-wrapper .inline-edit-btn {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--color-widget);
+}
+
+#tools-connections .tool-card-summary-popover {
+  display: flex;
+  min-width: 0;
+}
+
+#tools-connections .tool-card-connection-sub {
+  display: block;
+  background: none;
+  border: 0;
+  padding: 0;
+  width: 100%;
+}
+
+#tools-connections .tool-card-meta-row {
+  margin: 0;
+  min-width: 0;
+}
+
+#tools-connections .tool-card-badges .popover-container {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#tools-connections .tool-card-badges .tool-badge {
+  max-width: 100%;
+  min-width: 0;
+}
+
+#tools-connections .tool-card-badges .path-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#tools-connections .tool-card-heartbeat-error {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  align-items: flex-start;
+}
+
+#tools-connections .tool-card-heartbeat-error > span:last-child {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+#tools-connections .tool-card-description-region {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#tools-connections .description-wrapper {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+#tools-connections .description-wrapper .inline-edit-btn {
+  right: 0;
+  top: 0;
+  background: var(--color-widget);
+}
+
+#tools-connections .description-wrapper .tool-card-description {
+  margin: 0;
+  -webkit-line-clamp: var(--tool-card-description-lines, 6);
+  line-clamp: var(--tool-card-description-lines, 6);
+}
+
+#tools-connections .tool-card-more-popover {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+}
+
+#tools-connections .tool-card-more {
+  border: 0;
+  padding: 0 var(--space-xs);
+  background: var(--color-widget);
+  color: var(--color-primary);
+  cursor: pointer;
+}
+
+#tools-connections .tool-card-more::before {
+  content: '…';
+  padding-right: var(--space-xs);
+}
+
+#tools-connections .heartbeat-indicator .status-dot {
+  width: 10px;
+  height: 10px;
+}
+
+#tools-connections .heartbeat-indicator:not(.dead) .status-dot {
+  animation: none;
+}
+
+#tools-connections .tool-card-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: 0;
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+  font-size: var(--text-xs);
+}
+
+#tools-connections .tool-card-facts > div {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-sm);
+}
+
+#tools-connections .tool-card-facts dt {
+  color: var(--color-text-secondary);
+}
+
+#tools-connections .tool-card-facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+#tools-connections .tool-card-fact-detail {
+  color: var(--color-text-secondary);
+}
+
+#tools-connections .tool-card-footer {
+  margin-top: 0;
+}
+
+#tools-connections .tool-card-menu-button {
+  position: absolute;
+  right: 28px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: var(--color-widget);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+#tools-connections .tool-card .inline-edit-btn,
+#tools-connections .tool-card-menu-button {
+  opacity: 0;
+}
+
+#tools-connections .tool-card:hover .inline-edit-btn,
+#tools-connections .tool-card:focus-within .inline-edit-btn,
+#tools-connections .tool-card:hover .tool-card-menu-button,
+#tools-connections .tool-card:focus-within .tool-card-menu-button,
+#tools-connections .tool-card-menu-button[aria-expanded='true'] {
+  opacity: 1;
+}
+
+/* While the name is being edited, the menu button would cover the end of the input. */
+#tools-connections .tool-card:has(.tool-card-title.inline-edit-field) .tool-card-menu-button {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  #tools-connections .tools-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  #tools-connections .tool-card .inline-edit-btn,
+  #tools-connections .tool-card-menu-button {
+    opacity: 1;
+  }
+
+  #tools-connections .tool-card-description-region {
+    padding-right: 44px;
+  }
+
+  #tools-connections .description-wrapper .inline-edit-btn {
+    top: 0;
+    right: -44px;
+    width: 44px;
+    height: 44px;
+  }
+
+  #tools-connections .tool-skills-badge,
+  #tools-connections .tool-card-more {
+    position: relative;
+  }
+
+  #tools-connections .name-wrapper .inline-edit-btn::before,
+  #tools-connections .tool-card-menu-button::before,
+  #tools-connections .tool-skills-badge::before,
+  #tools-connections .tool-card-more::after {
+    content: '';
+    position: absolute;
+    inset: 50% auto auto 50%;
+    width: max(100%, 44px);
+    height: 44px;
+    transform: translate(-50%, -50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #tools-connections .tool-card,
+  #tools-connections .tool-card .status-dot {
+    transition: none;
+    animation: none;
+  }
+}
