@@ -5934,15 +5934,16 @@ class IndexerRepository:
         # Sanitize user message for PostgreSQL storage (remove null bytes)
         user_message = _sanitize_for_postgres(user_message)
 
-        prisma_task = await db.chattask.create(
-            data={  # type: ignore[arg-type]
-                "id": str(uuid.uuid4()),
-                "conversation": {"connect": {"id": conversation_id}},
-                "status": _to_prisma_task_status(ChatTaskStatus.pending),
-                "userMessage": user_message,
-                "executionPolicy": Json(_sanitize_json_for_postgres(execution_policy)) if execution_policy is not None else None,
-            }
-        )
+        create_data: dict[str, Any] = {
+            "id": str(uuid.uuid4()),
+            "conversation": {"connect": {"id": conversation_id}},
+            "status": _to_prisma_task_status(ChatTaskStatus.pending),
+            "userMessage": user_message,
+        }
+        # Prisma rejects null for nullable Json fields, so omit the key.
+        if execution_policy is not None:
+            create_data["executionPolicy"] = Json(_sanitize_json_for_postgres(execution_policy))
+        prisma_task = await db.chattask.create(data=cast(Any, create_data))
 
         # Update conversation to track active task
         await db.conversation.update(where={"id": conversation_id}, data={"activeTaskId": prisma_task.id})
