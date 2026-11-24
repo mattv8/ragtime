@@ -92,6 +92,12 @@ namespace Ragtime.SolidWorks.Core
         /// <summary>The host is stopping; new work is refused.</summary>
         public const string HostStopping = "host_stopping";
 
+        /// <summary>model.export could not write the file, or SolidWorks could not save it in that format.</summary>
+        public const string ExportFailed = "export_failed";
+
+        /// <summary>model.preview could not render the picture (no graphics, or SolidWorks refused the image).</summary>
+        public const string PreviewUnavailable = "preview_unavailable";
+
         /// <summary>Every code Core may produce, in contract order.</summary>
         public static IReadOnlyList<string> All { get; } = new[]
         {
@@ -102,7 +108,7 @@ namespace Ragtime.SolidWorks.Core
             EntityNotFound, StaleSnapshot, ResultTooLarge, SolidworksError, InternalError,
             PdmNotLinked, PdmUnavailable, PdmFolderNotApproved, PdmNotFound, PdmConflict, PdmError,
             ScriptsNotAllowed, ScriptCompileFailed, ScriptCompileUnavailable, ScriptInvalid, ScriptFailed, SolidworksUnavailable,
-            HostBusy, HostStopping,
+            HostBusy, HostStopping, ExportFailed, PreviewUnavailable,
         };
     }
 }

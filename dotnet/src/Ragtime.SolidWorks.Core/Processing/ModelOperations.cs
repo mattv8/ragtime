@@ -14,17 +14,22 @@ namespace Ragtime.SolidWorks.Core
         public static bool RequiresAssembly(string operation) =>
             operation == "mates.list" || operation == "components.list";
 
-        /// <summary>Executes one model operation against the session.</summary>
+        /// <summary>Executes one model operation against the session. <paramref name="workFolder"/> is the agent work folder.</summary>
         public static JToken Execute(
             string operation,
             ISolidWorksSession session,
             DocumentEntry document,
             JObject arguments,
-            RequestContext context)
+            RequestContext context,
+            string? workFolder)
         {
             var reference = document.ToRef();
             switch (operation)
             {
+                case ModelFiles.ExportOperation:
+                case ModelFiles.PreviewOperation:
+                    return ModelFiles.Execute(ModelFiles.Parse(operation, arguments, document, workFolder), session, document, context);
+
                 case "model.summary":
                 {
                     var summary = session.GetModelSummary(reference);

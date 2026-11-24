@@ -34,6 +34,8 @@ namespace Ragtime.SolidWorks.Core.Tests
             yield return new object[] { "properties.get", "{\"document\":\"doc-1\",\"configuration\":\"Default\"}" };
             yield return new object[] { "mass_properties.get", "{\"document\":\"doc-1\"}" };
             yield return new object[] { "equations.list", "{\"document\":\"doc-1\"}" };
+            yield return new object[] { "model.export", "{\"path\":\"C:\\\\Models\\\\Bracket.sldprt\",\"format\":\"step\"}" };
+            yield return new object[] { "model.preview", "{\"path\":\"C:\\\\Models\\\\Bracket.sldprt\",\"view\":\"front\",\"width\":800}" };
             yield return new object[] { "pdm.status", "{}" };
             yield return new object[] { "pdm.folder.list", "{\"path\":\"\\\\A\"}" };
             yield return new object[] { "pdm.file.info", "{\"path\":\"\\\\A\"}" };
@@ -76,6 +78,8 @@ namespace Ragtime.SolidWorks.Core.Tests
             yield return new object[] { "properties.get", "{\"document\":\"doc-1\",\"configuration\":5}", "configuration" };
             yield return new object[] { "mass_properties.get", "{}", "document" };
             yield return new object[] { "equations.list", "{\"document\":\"doc-1\",\"limit\":\"ten\"}", "limit" };
+            yield return new object[] { "model.export", "{\"path\":\"C:\\\\Models\\\\Bracket.sldprt\",\"format\":\"iges\"}", "format" };
+            yield return new object[] { "model.preview", "{\"path\":\"C:\\\\Models\\\\Bracket.sldprt\",\"view\":\"back\"}", "view" };
             yield return new object[] { "features.list", "{\"document\":\"doc-1\",\"types\":[\"A\"],\"offset\":\"x\"}", "offset" };
             yield return new object[] { "pdm.status", "{\"x\":1}", "x" };
             yield return new object[] { "pdm.folder.list", "{}", "path" };
@@ -219,7 +223,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             Assert.Equal(1, result.Protocol);
             Assert.Equal(TestData.HostVersion, result.HostVersion);
-            Assert.Equal(30, result.Operations.Count);
+            Assert.Equal(32, result.Operations.Count);
             var writes = new[] { "pdm.folder.create", "pdm.file.add", "pdm.file.checkout", "pdm.file.undo_checkout", "pdm.file.checkin", "pdm.variables.set" };
             Assert.All(result.Operations, op => Assert.Equal(op.Name == "script.run" ? "script" : writes.Contains(op.Name) ? "write" : "read", op.Access));
             Assert.DoesNotContain(result.Operations, op => op.Name == "host.shutdown");
@@ -313,7 +317,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             var response = await h.CallAsync("describe");
 
-            Assert.Equal(30, ((JArray)response["result"]!["operations"]!).Count);
+            Assert.Equal(32, ((JArray)response["result"]!["operations"]!).Count);
         }
     }
 }

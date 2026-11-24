@@ -11,6 +11,9 @@ namespace Ragtime.SolidWorks.Core
     {
         private const string DocumentArgument = "Document id from documents.list or document.open (doc-N), or the full path of an open document.";
         private const string SketchPartDescription = "Which part of the sketch: summary (default, not paged), segments, points, relations or dimensions.";
+        private const string DocumentPathArgument = "Full path of an open document. Optional when exactly one document is open.";
+        /// <summary>Schema ceiling for preview sizes; larger values are clamped to 2048 by Core, not rejected.</summary>
+        private const int PreviewSchemaMaximum = 100000;
 
         /// <summary>Builds the definitions in describe order.</summary>
         public static List<OperationDefinition> Create() => new List<OperationDefinition>
@@ -184,6 +187,32 @@ namespace Ragtime.SolidWorks.Core
                     .Paged()
                     .Build(),
                 result: "Paged items: index, equation, value (null when SolidWorks has no finite value), is_global_variable, suppressed."),
+
+            new OperationDefinition(
+                "model.export",
+                "Exports a document to a file in the agent work folder: step, stl, 3mf or glb, or native (the SolidWorks file itself; an assembly becomes a zip with its referenced files). Read-only: the document is not modified or saved. Drawings support native only.",
+                ProtocolInfo.Access.Read,
+                paged: false,
+                argumentsSchema: new ObjectSchema()
+                    .Property("path", SchemaTypes.Text(DocumentPathArgument), required: false)
+                    .Property("format", SchemaTypes.Enum("Export format: step, stl, 3mf, glb or native.", "step", "stl", "3mf", "glb", "native"), required: true)
+                    .Property("configuration", SchemaTypes.Text("Configuration to export; default is the active configuration."))
+                    .Property("include_preview", SchemaTypes.Boolean("Also render an isometric PNG preview; default true."))
+                    .Build(),
+                result: "files (role model or native, or preview; path inside the work folder; file_name; format; size_bytes; sha256), document (path, type, title, configuration) and warnings."),
+
+            new OperationDefinition(
+                "model.preview",
+                "Renders a PNG of one named view (isometric, front, top or right) of a document, into the agent work folder. Read-only: the document is not modified or saved, and the view is restored afterwards.",
+                ProtocolInfo.Access.Read,
+                paged: false,
+                argumentsSchema: new ObjectSchema()
+                    .Property("path", SchemaTypes.Text(DocumentPathArgument), required: false)
+                    .Property("view", SchemaTypes.Enum("Named view: isometric, front, top or right; default isometric.", "isometric", "front", "top", "right"))
+                    .Property("width", SchemaTypes.Integer(1, PreviewSchemaMaximum, "Width in pixels, clamped to 256-2048; default 1024."))
+                    .Property("height", SchemaTypes.Integer(1, PreviewSchemaMaximum, "Height in pixels, clamped to 256-2048; default 768."))
+                    .Build(),
+                result: "files (one preview entry: path inside the work folder, file_name, format png, size_bytes, sha256), document (path, type, title, configuration) and warnings."),
 
             new OperationDefinition(
                 "pdm.status", "Reports PDM client and linked vault status.", ProtocolInfo.Access.Read, false,

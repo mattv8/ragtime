@@ -104,6 +104,19 @@ namespace Ragtime.SolidWorks.Core
 
         /// <summary>All equations of the model.</summary>
         IReadOnlyList<EquationItem> ListEquations(DocumentRef document);
+
+        /// <summary>
+        /// Writes one export file to <see cref="ExportRequest.TargetPath"/>. Never saves the document. Throws
+        /// export_failed when the file cannot be written in that format. A configuration other than the active one may be
+        /// activated for the export and must be restored before returning.
+        /// </summary>
+        ExportResult ExportModel(ExportRequest request);
+
+        /// <summary>
+        /// Writes one PNG of the named view to <see cref="PreviewRequest.TargetPath"/>. The view orientation is restored
+        /// afterwards. Throws preview_unavailable when no picture can be rendered. Never saves the document.
+        /// </summary>
+        ExportResult RenderPreview(PreviewRequest request);
     }
 
     /// <summary>
