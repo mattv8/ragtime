@@ -14,6 +14,7 @@ import { InlineCopyButton } from './shared/InlineCopyButton';
 import { generateCredentialValue } from '@/utils/credentialGenerator';
 import {
   EMPTY_INSTRUCTION_SKILL_SUMMARY,
+  DEFAULT_MCP_ROUTE_OWNER_ID,
   countInstructionSkills,
   restoreFocusIfLost,
 } from '@/utils/instructionSkills';
@@ -62,6 +63,67 @@ function generateSecret(): string {
 
 function formatRouteSkillCount(count: InstructionSkillCount): string {
   return count.total === 1 ? '1 route skill' : `${count.total} route skills`;
+}
+
+function formatDefaultRouteSkillCount(
+  count: InstructionSkillCount = { total: 0, enabled: 0 },
+): string {
+  const total =
+    count.total === 0 ? 'No skills yet' : `${count.total} skill${count.total === 1 ? '' : 's'}`;
+  return count.total > 0 && count.enabled < count.total
+    ? `${total}, ${count.enabled} of ${count.total} enabled`
+    : total;
+}
+
+function DefaultRouteCard({
+  count,
+  unavailable,
+  onOpenSkills,
+}: {
+  count?: InstructionSkillCount;
+  unavailable: boolean;
+  onOpenSkills: () => void;
+}) {
+  return (
+    <div id="mcp-default-route" className="tool-card" tabIndex={-1}>
+      <div className="tool-card-header">
+        <div className="tool-card-icon">
+          <Icon name="plug" size={24} />
+        </div>
+        <div className="tool-card-title">
+          <h3>Default route</h3>
+          <span className="tool-card-type">/mcp</span>
+        </div>
+      </div>
+      <p className="tool-card-description">
+        Skills here are added to the instructions Ragtime sends on the default /mcp route. Ragtime
+        always sends its own built-in guide first, which explains how its tools, skills and
+        workspace tools work. You can&apos;t edit that guide, and your skills come after it.
+      </p>
+      <p className="field-help">
+        Skills reach only clients that can use the general tool catalog. Workspace-only development
+        credentials (such as rtdev_ credentials) and sign-ins outside the default route&apos;s
+        allowed group don&apos;t receive them. Who can connect is set in Settings → MCP
+        Configuration.
+      </p>
+      <div className="tool-card-meta">
+        <span className="instruction-skills-route-count" data-mcp-default-route-skills-count>
+          {unavailable ? 'Skill count unavailable' : formatDefaultRouteSkillCount(count)}
+        </span>
+      </div>
+      <div className="tool-card-actions">
+        <button
+          type="button"
+          className="btn btn-sm btn-secondary"
+          aria-label="Skills for the default /mcp route"
+          data-mcp-default-route-skills-button
+          onClick={onOpenSkills}
+        >
+          <Icon name="book" size={14} /> Skills
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // Route card component
@@ -1618,9 +1680,11 @@ export function MCPRoutesPanel({
     EMPTY_INSTRUCTION_SKILL_SUMMARY,
   );
   const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
+  const [skillSummaryUnavailable, setSkillSummaryUnavailable] = useState(false);
   const [skillsDialogTarget, setSkillsDialogTarget] = useState<{
     owner: InstructionSkillOwner;
     ownerName: string;
+    returnFocusId: string;
   } | null>(null);
 
   // Categorize tools
@@ -1652,6 +1716,7 @@ export function MCPRoutesPanel({
       setDocumentIndexes(indexesRes);
       setSettings(settingsRes.settings);
       if (skillSummary) setInstructionSkillSummary(skillSummary);
+      setSkillSummaryUnavailable(!skillSummary);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to load MCP configuration');
     } finally {
@@ -1710,14 +1775,27 @@ export function MCPRoutesPanel({
   };
 
   const openSkillsDialog = (route: McpRouteConfig) => {
-    setSkillsDialogTarget({ owner: { kind: 'route', id: route.id }, ownerName: route.name });
+    setSkillsDialogTarget({
+      owner: { kind: 'route', id: route.id },
+      ownerName: route.name,
+      returnFocusId: `mcp-route-${route.id}`,
+    });
+    setSkillsDialogOpen(true);
+  };
+
+  const openDefaultSkillsDialog = () => {
+    setSkillsDialogTarget({
+      owner: { kind: 'route', id: DEFAULT_MCP_ROUTE_OWNER_ID },
+      ownerName: 'Default /mcp route',
+      returnFocusId: 'mcp-default-route',
+    });
     setSkillsDialogOpen(true);
   };
 
   const closeSkillsDialog = useCallback(() => {
     setSkillsDialogOpen(false);
     if (skillsDialogTarget) {
-      restoreFocusIfLost(`mcp-route-${skillsDialogTarget.owner.id}`);
+      restoreFocusIfLost(skillsDialogTarget.returnFocusId);
     }
   }, [skillsDialogTarget]);
 
@@ -1725,6 +1803,7 @@ export function MCPRoutesPanel({
     (skills: InstructionSkill[]) => {
       if (!skillsDialogTarget) return;
       const routeId = skillsDialogTarget.owner.id;
+      if (routeId === DEFAULT_MCP_ROUTE_OWNER_ID) setSkillSummaryUnavailable(false);
       setInstructionSkillSummary((current) => ({
         ...current,
         routes: { ...current.routes, [routeId]: countInstructionSkills(skills) },
@@ -1895,6 +1974,24 @@ export function MCPRoutesPanel({
         <>
           {activeTab === 'custom-routes' && (
             <>
+              {!showRouteWizard && (
+                <>
+                  <section
+                    id="mcp-default-route-section"
+                    aria-labelledby="mcp-default-route-heading"
+                  >
+                    <h4 id="mcp-default-route-heading">Default route</h4>
+                    <div className="tools-grid">
+                      <DefaultRouteCard
+                        count={instructionSkillSummary.routes[DEFAULT_MCP_ROUTE_OWNER_ID]}
+                        unavailable={skillSummaryUnavailable}
+                        onOpenSkills={openDefaultSkillsDialog}
+                      />
+                    </div>
+                  </section>
+                  <h4 id="mcp-custom-routes-heading">Custom routes</h4>
+                </>
+              )}
               <p className="field-help" style={{ marginBottom: '1rem' }}>
                 Create custom MCP endpoints that expose specific subsets of tools at custom paths
                 like <code>/mcp/my_tools</code>.
