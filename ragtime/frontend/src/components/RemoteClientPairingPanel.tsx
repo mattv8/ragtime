@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Info } from 'lucide-react';
+import { AlertTriangle, Info } from 'lucide-react';
 import { api } from '@/api';
-import type { RemotePairingCreatedResponse, RemotePairingResponse, ToolType } from '@/types';
+import type {
+  RemotePairingCreatedResponse,
+  RemotePairingResponse,
+  TunnelClientState,
+  ToolType,
+} from '@/types';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 import { NoticeDialog } from './shared/NoticeDialog';
 
@@ -11,8 +16,24 @@ const POLL_INTERVAL_MS = 2000;
 const RETRY_INTERVAL_MS = 2500;
 const TARGET_USER_FLAG = "-TargetUser 'PCNAME\\username'";
 
+type TunnelClientLineState = 'current' | 'outdated' | 'unknown';
+
+function tunnelClientLineState(client: TunnelClientState): TunnelClientLineState {
+  if (client.version === null) return 'unknown';
+  return client.outdated ? 'outdated' : 'current';
+}
+
+function tunnelClientLineText(client: TunnelClientState, state: TunnelClientLineState): string {
+  if (state === 'current') return `Tunnel client: version ${client.version}, up to date.`;
+  const cannotUpdate = 'The tunnel keeps working. Ragtime cannot update tunnel clients yet.';
+  if (state === 'unknown') {
+    return `Tunnel client: version not reported, so it is older than version ${client.current_version}. ${cannotUpdate}`;
+  }
+  return `Tunnel client: version ${client.version}; version ${client.current_version} is available. ${cannotUpdate}`;
+}
+
 interface RemoteClientPairingPanelProps {
-  toolType: Extract<ToolType, 'ssh_shell' | 'windows_shell'>;
+  toolType: Extract<ToolType, 'ssh_shell' | 'windows_shell' | 'solidworks'>;
   pairingId: string | null;
   toolId?: string;
   onPairingCreated: (pairing: RemotePairingCreatedResponse) => void;
@@ -28,12 +49,16 @@ function initialTargetOs(): TargetOs {
 function targetOsOptions(
   toolType: RemoteClientPairingPanelProps['toolType'],
 ): Array<[TargetOs, string]> {
-  return toolType === 'windows_shell'
+  return isWindowsTarget(toolType)
     ? [['windows', 'Windows']]
     : [
         ['linux', 'Linux'],
         ['mac', 'macOS'],
       ];
+}
+
+function isWindowsTarget(toolType: RemoteClientPairingPanelProps['toolType']): boolean {
+  return toolType === 'windows_shell' || toolType === 'solidworks';
 }
 
 function secondsRemaining(expiresAt: string): number {
@@ -209,6 +234,11 @@ export function RemoteClientPairingPanel({
   const command = commandFor(pairing, targetOs, connectivityMode);
   const osOptions = targetOsOptions(toolType);
   const facts = pairing.facts;
+  const tunnelClient =
+    pairing.status === 'paired' && pairing.transport === 'tunnel' && pairing.tunnel_client
+      ? pairing.tunnel_client
+      : null;
+  const tunnelClientState = tunnelClient ? tunnelClientLineState(tunnelClient) : null;
   const failureTarget = facts?.os ?? targetOs;
   const windowsEofHint =
     pairing.status === 'failed' &&
@@ -373,6 +403,12 @@ export function RemoteClientPairingPanel({
                 {expired || pairing.status === 'failed' ? 'Generate new command' : 'Generate new'}
               </button>
             </span>
+          )}
+          {tunnelClient && tunnelClientState && (
+            <p id="rc-tunnel-client" data-rc-tunnel-client={tunnelClientState}>
+              {tunnelClientState !== 'current' && <AlertTriangle size={14} aria-hidden="true" />}
+              {tunnelClientLineText(tunnelClient, tunnelClientState)}
+            </p>
           )}
         </div>
         {expired && (

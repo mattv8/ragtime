@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 
 import type { BrowseResponse, DirectoryEntry } from '@/types';
 import {
@@ -11,6 +11,12 @@ import {
 
 import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 import { Icon } from './Icon';
+
+export type PathBadge = {
+  label: string;
+  tone?: 'success' | 'info' | 'warning' | 'muted';
+  title?: string;
+};
 
 interface ConstrainedPathBrowserProps {
   currentPath: string;
@@ -25,8 +31,14 @@ interface ConstrainedPathBrowserProps {
   stagedDirectories?: string[];
   onStageDirectory?: (path: string) => void;
   canSelectPath?: (path: string) => boolean;
-  cannotSelectPathMessage?: string;
+  cannotSelectPathMessage?: string | ((path: string) => string | undefined);
   isPathDisabled?: (path: string) => string | null;
+  keepExpandedOnSelect?: boolean;
+  selectLabel?: string;
+  filterPlaceholder?: string;
+  pathBadge?: (path: string) => PathBadge | null;
+  blockDisabledNavigation?: boolean;
+  onBrowsePathChange?: (path: string) => void;
   pathDisplayMap?: BrowserPathDisplayMap;
   pathDisplayOptions?: CloudPathDisplayOptions;
 }
@@ -67,9 +79,16 @@ export function ConstrainedPathBrowser({
   canSelectPath,
   cannotSelectPathMessage,
   isPathDisabled,
+  keepExpandedOnSelect,
+  selectLabel = 'Select',
+  filterPlaceholder = 'Filter or Create...',
+  pathBadge,
+  blockDisabledNavigation,
+  onBrowsePathChange,
   pathDisplayMap,
   pathDisplayOptions,
 }: ConstrainedPathBrowserProps) {
+  const selectReasonId = useId();
   const normalizedRootPath = normalizeMountBrowserPath(rootPath || '/');
   const clampToRootPath = useCallback(
     (value: string): string => {
@@ -98,12 +117,21 @@ export function ConstrainedPathBrowser({
       (!currentPath || normalizeMountBrowserPath(currentPath) === normalizedRootPath),
   );
   const onBrowsePathRef = useRef(onBrowsePath);
+  const onBrowsePathChangeRef = useRef(onBrowsePathChange);
   const cacheRef = useRef(new Map<string, BrowseResponse>());
   const requestIdRef = useRef(0);
 
   useEffect(() => {
     onBrowsePathRef.current = onBrowsePath;
   }, [onBrowsePath]);
+
+  useEffect(() => {
+    onBrowsePathChangeRef.current = onBrowsePathChange;
+  }, [onBrowsePathChange]);
+
+  useEffect(() => {
+    onBrowsePathChangeRef.current?.(browsePath);
+  }, [browsePath]);
 
   useEffect(() => {
     cacheRef.current.clear();
@@ -191,6 +219,7 @@ export function ConstrainedPathBrowser({
   }, [browseCurrent, cacheKey, isExpanded]);
 
   const handleNavigate = (path: string) => {
+    if (blockDisabledNavigation && isPathDisabled?.(path)) return;
     setBrowsePath(clampToRootPath(path || normalizedRootPath || '/'));
     setPathInput('');
   };
@@ -209,10 +238,16 @@ export function ConstrainedPathBrowser({
       return;
     }
     onSelectPath(path);
-    setIsExpanded(false);
+    if (!keepExpandedOnSelect) setIsExpanded(false);
   };
 
   const isSelectableBrowsePath = canSelectPath ? canSelectPath(browsePath) : true;
+  const selectReason =
+    typeof cannotSelectPathMessage === 'function'
+      ? cannotSelectPathMessage(browsePath)
+      : cannotSelectPathMessage;
+  const showSelectReason =
+    !isSelectableBrowsePath && typeof cannotSelectPathMessage === 'function' && !!selectReason;
   const displayPathFor = useCallback(
     (path: string): string => {
       return resolveBrowserDisplayPath(path || '/', pathDisplayMap, pathDisplayOptions);
@@ -309,7 +344,9 @@ export function ConstrainedPathBrowser({
   const handlePathInputKeyDown = (event: React.KeyboardEvent) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
-    const firstDir = filteredDirectoryEntries[0];
+    const firstDir = filteredDirectoryEntries.find(
+      (entry) => !blockDisabledNavigation || !isPathDisabled?.(entry.path),
+    );
     if (firstDir) {
       handleNavigate(firstDir.path);
     }
@@ -372,6 +409,7 @@ export function ConstrainedPathBrowser({
           <button
             type="button"
             className="mount-header"
+            aria-expanded={isExpanded}
             onClick={() => {
               if (!isExpanded) {
                 setBrowsePath(clampToRootPath(currentPath || normalizedRootPath || '/'));
@@ -379,7 +417,9 @@ export function ConstrainedPathBrowser({
               setIsExpanded(!isExpanded);
             }}
           >
-            <span className="mount-icon">{isExpanded ? '▼' : '▶'}</span>
+            <span className="mount-icon" aria-hidden="true">
+              {isExpanded ? '▼' : '▶'}
+            </span>
             <span className="mount-path">
               {(() => {
                 const pathSegments = displayPath.split('/').filter(Boolean);
@@ -457,7 +497,8 @@ export function ConstrainedPathBrowser({
                   value={pathInput}
                   onChange={(event) => handleFilterChange(event.target.value)}
                   onKeyDown={handlePathInputKeyDown}
-                  placeholder="Filter or Create..."
+                  placeholder={filterPlaceholder}
+                  aria-label={filterPlaceholder}
                 />
                 <div className="browser-actions">
                   {onStageDirectory && (
@@ -475,12 +516,19 @@ export function ConstrainedPathBrowser({
                     className="btn btn-sm btn-primary"
                     onClick={() => handleSelect(browsePath)}
                     disabled={loading || !isSelectableBrowsePath}
-                    title={!isSelectableBrowsePath ? cannotSelectPathMessage : undefined}
+                    title={!isSelectableBrowsePath ? selectReason : undefined}
+                    aria-describedby={showSelectReason ? selectReasonId : undefined}
                   >
-                    Select
+                    {selectLabel}
                   </button>
                 </div>
               </div>
+
+              {showSelectReason && (
+                <p id={selectReasonId} className="field-help" data-browser-select-reason>
+                  {selectReason}
+                </p>
+              )}
 
               {error && <div className="browser-error">{error}</div>}
               {pendingDirectoryError && (
@@ -493,12 +541,17 @@ export function ConstrainedPathBrowser({
                 <div className="browser-entries">
                   {filteredDirectoryEntries.map((entry) => {
                     const disabledReason = isPathDisabled?.(entry.path) ?? null;
+                    const badge =
+                      !disabledReason && !entry.isPending ? pathBadge?.(entry.path) : null;
                     return (
                       <button
                         key={entry.path}
                         type="button"
                         className={`browser-entry${entry.isPending ? ' pending' : ''}${disabledReason ? ' disabled' : ''}`}
                         onClick={() => handleNavigate(entry.path)}
+                        aria-disabled={
+                          blockDisabledNavigation && !!disabledReason ? true : undefined
+                        }
                         style={disabledReason ? { opacity: 0.45, cursor: 'default' } : undefined}
                         title={disabledReason || undefined}
                       >
@@ -513,6 +566,15 @@ export function ConstrainedPathBrowser({
                         )}
                         {!disabledReason && entry.isPending && (
                           <span className="browser-entry-badge">New</span>
+                        )}
+                        {badge && (
+                          <span
+                            className="browser-entry-badge"
+                            data-tone={badge.tone}
+                            title={badge.title}
+                          >
+                            {badge.label}
+                          </span>
                         )}
                       </button>
                     );

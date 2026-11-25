@@ -2017,6 +2017,7 @@ class ToolType(str, Enum):
     FILESYSTEM_INDEXER = "filesystem_indexer"
     SOLIDWORKS_PDM = "solidworks_pdm"
     HTTP_API = "http_api"
+    SOLIDWORKS = "solidworks"
 
 
 # Tool types that support schema indexing (use for ToolType enum comparisons)
@@ -2207,6 +2208,29 @@ class SSHShellConnectionConfig(BaseModel):
         default="",
         description="Command prefix (e.g., 'cd /app && ' or 'source venv/bin/activate && ')",
     )
+
+
+class SolidworksConnectionConfig(SSHShellConnectionConfig):
+    """Connection configuration for a SolidWorks agent over SSH."""
+
+    pairing_id: str | None = Field(default=None, description="Remote client pairing ID")
+    transport: str | None = Field(default=None, description="Remote client transport")
+    host_keys: list[str] | None = Field(default=None, description="Trusted SSH host keys")
+    solidworks_version: int | None = Field(default=None, ge=2022, le=2035, description="SolidWorks release year, or newest installed")
+    instance_mode: Literal["background", "attach"] = Field(default="background", description="SolidWorks instance mode")
+    max_instances: int = Field(default=1, ge=1, le=4, description="Maximum background instances")
+    idle_shutdown_seconds: int = Field(default=900, ge=60, le=86400, description="Background instance idle shutdown time in seconds")
+    allow_scripts: bool = False
+    pdm_tool_id: str | None = None
+    pdm_approved_folders: list[str] = Field(default_factory=list)
+    auto_update_host: bool = Field(default=True, description="Update the SolidWorks agent automatically when it is idle")
+
+    @field_validator("pdm_approved_folders")
+    @classmethod
+    def _validate_pdm_approved_folders(cls, values: list[str]) -> list[str]:
+        from ragtime.solidworks.pdm_link import validate_approved_folders
+
+        return validate_approved_folders(values)
 
 
 class FilesystemConnectionConfig(BaseModel):
@@ -2566,6 +2590,9 @@ class ToolConfig(BaseModel):
     tool_type: ToolType = Field(description="Type of tool")
     group_id: Optional[str] = Field(default=None, description="Tool group ID")
     group_name: Optional[str] = Field(default=None, description="Tool group name (read-only)")
+    pdm_link: Optional[dict] = Field(default=None, description="Computed linked PDM tool metadata")
+    solidworks_host_update: Optional[dict] = Field(default=None, description="Computed SolidWorks agent auto-update state")
+    tunnel_client: Optional[dict] = Field(default=None, description="Computed tunnel client version state")
     enabled: bool = Field(default=True, description="Whether this tool is enabled")
     description: str = Field(
         default="",
@@ -2621,6 +2648,7 @@ class CreateToolConfigRequest(BaseModel):
 
     name: str = Field(description="User-friendly name for this tool instance")
     tool_type: ToolType = Field(description="Type of tool")
+    enabled: bool = Field(default=True, description="Create the tool disabled when false (setup drafts)")
     description: str = Field(default="", description="Description for RAG context")
     connection_config: dict = Field(description="Connection configuration")
     max_results: int = Field(default=100, ge=1, le=1000)
@@ -2689,6 +2717,12 @@ class ReorderToolsRequest(BaseModel):
     """Request to bulk-reorder tool configs."""
 
     tool_ids: list[str] = Field(description="Tool IDs in the desired display order; sort_order is assigned as index * 100")
+
+
+class ReorderToolGroupsRequest(BaseModel):
+    """Request to bulk-reorder tool groups."""
+
+    group_ids: list[str] = Field(description="Every tool group ID exactly once, in display order; sort_order = index * 100")
 
 
 class CreateToolGroupRequest(BaseModel):

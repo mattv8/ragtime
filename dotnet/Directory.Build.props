@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <Version>0.5.0</Version>
+    <InformationalVersion>0.5.0</InformationalVersion>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+</Project>

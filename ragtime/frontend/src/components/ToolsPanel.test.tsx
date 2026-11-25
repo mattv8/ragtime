@@ -1,537 +1,295 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { HTMLAttributes, ReactNode } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { ToolsPanel } from './ToolsPanel';
-import type { InstructionSkill, InstructionSkillOwner, ToolConfig, ToolGroup } from '@/types';
+import type { ToolConfig, ToolGroup, User } from '@/types';
 
-const apiMock = vi.hoisted(() => ({
-  listToolConfigs: vi.fn(),
-  listToolGroups: vi.fn(),
-  listUserspaceMountSources: vi.fn(),
-  getSettings: vi.fn(),
-  getToolHeartbeats: vi.fn(),
-  subscribeToolHealthEvents: vi.fn(),
-  updateToolConfig: vi.fn(),
-  deleteToolConfig: vi.fn(),
-  createToolConfig: vi.fn(),
-  reorderTools: vi.fn(),
-  clearToolUndecryptableCredentials: vi.fn(),
-  getPdmIndexStats: vi.fn(),
-  getToolAccessPolicy: vi.fn(),
-  updateToolAccessPolicy: vi.fn(),
-  listUsers: vi.fn(),
-  listUsersDirectory: vi.fn(),
-  listAuthGroups: vi.fn(),
-  getInstructionSkillSummary: vi.fn(),
-  copyToolInstructionSkills: vi.fn(),
-}));
+import {
+  apiMock,
+  toastMock,
+  toolFilterState,
+  wizardState,
+  groupedTool,
+  ungroupedTool,
+  pdmTool,
+  pairedWindowsTool,
+  linkedSolidworksTool,
+  skillFixture,
+  searchFilterBarMock,
+  setupToolsPanelTest,
+  teardownToolsPanelTest,
+  toolGroup,
+} from './ToolsPanel.testSupport';
 
-const skillsDialogMock = vi.hoisted(() => ({
-  nextSkills: [] as InstructionSkill[],
-}));
-
-const toastMock = {
-  success: vi.fn(),
-  error: vi.fn(),
-  dismiss: vi.fn(),
+type GroupApiMock = {
+  createToolGroup: Mock;
+  updateToolGroup: Mock;
+  deleteToolGroup: Mock;
+  reorderToolGroups: Mock;
 };
+const groupApiMock = apiMock as typeof apiMock & GroupApiMock;
 
-const toolFilterState = {
-  queries: [] as string[],
-  tags: [] as string[],
-  input: '',
-  debouncedInput: '',
-  hasActiveFilters: false,
-  setInput: vi.fn(),
-  setTags: vi.fn(),
-  clear: vi.fn(),
-};
+const testUser = { id: 'user-1' } as User;
 
-const resetToolFilterState = (): void => {
-  toolFilterState.queries = [];
-  toolFilterState.tags = [];
-  toolFilterState.input = '';
-  toolFilterState.debouncedInput = '';
-  toolFilterState.hasActiveFilters = false;
-};
+function clearCollapsedSectionCookies(): void {
+  for (const entry of document.cookie.split('; ')) {
+    const name = entry.split('=')[0];
+    if (name.startsWith('tools_sections_collapsed_')) {
+      document.cookie = `${name}=; path=/; max-age=0`;
+    }
+  }
+}
 
-vi.mock('@/api', () => ({ api: apiMock }));
-const contentProtectionMock = vi.hoisted(() => ({
-  getConfig: vi.fn(),
-  updateContentProtectionConfigSlice: vi.fn(),
-}));
+function sectionBody(sectionId: string): HTMLElement {
+  return document.getElementById(`tools-section-${sectionId}-body`)!;
+}
+
+async function setupGroupApis(): Promise<void> {
+  Object.assign(apiMock, {
+    createToolGroup: vi.fn(),
+    updateToolGroup: vi.fn(),
+    deleteToolGroup: vi.fn().mockResolvedValue(undefined),
+    reorderToolGroups: vi.fn().mockResolvedValue(undefined),
+  });
+  const actual = await vi.importActual<typeof import('./shared/SearchFilterBar')>(
+    './shared/SearchFilterBar',
+  );
+  // The shared mock always matches; filter tests need the real query matcher.
+  Object.assign(searchFilterBarMock, {
+    searchFilterTextMatchesQuery: actual.searchFilterTextMatchesQuery,
+  });
+}
+
+async function setupTest(): Promise<void> {
+  setupToolsPanelTest();
+  clearCollapsedSectionCookies();
+  await setupGroupApis();
+}
+
+vi.mock('@/api', async () => ({ api: (await import('./ToolsPanel.testSupport')).apiMock }));
 vi.mock('@/api/contentProtection', async () => ({
   ...(await vi.importActual<typeof import('@/api/contentProtection')>('@/api/contentProtection')),
-  contentProtectionApi: { getConfig: contentProtectionMock.getConfig },
-  updateContentProtectionConfigSlice: contentProtectionMock.updateContentProtectionConfigSlice,
-}));
-let lastToolWizardExistingTool: ToolConfig | null | undefined = undefined;
-
-vi.mock('./ToolWizard', () => ({
-  ToolWizard: (props: { existingTool: ToolConfig | null }) => {
-    lastToolWizardExistingTool = props.existingTool;
-    return null;
+  contentProtectionApi: {
+    getConfig: (await import('./ToolsPanel.testSupport')).contentProtectionMock.getConfig,
   },
+  updateContentProtectionConfigSlice: (await import('./ToolsPanel.testSupport'))
+    .contentProtectionMock.updateContentProtectionConfigSlice,
 }));
-vi.mock('./MountSourceWizard', () => ({ MountSourceWizard: () => null }));
-vi.mock('./InstructionSkillsDialog', () => ({
-  InstructionSkillsDialog: ({
-    open,
-    owner,
-    ownerName,
-    onClose,
-    onSkillsChanged,
-  }: {
-    open: boolean;
-    owner: InstructionSkillOwner;
-    ownerName: string;
-    onClose: () => void;
-    onSkillsChanged?: (skills: InstructionSkill[]) => void;
-  }) =>
-    open ? (
-      <div
-        role="dialog"
-        aria-label={`Skills · ${ownerName}`}
-        data-owner-kind={owner.kind}
-        data-owner-id={owner.id}
-      >
-        <button type="button" onClick={onClose}>
-          Close Skills Mock
-        </button>
-        <button type="button" onClick={() => onSkillsChanged?.(skillsDialogMock.nextSkills)}>
-          Save Skills Mock
-        </button>
-      </div>
-    ) : null,
-}));
-vi.mock('./ToolAccessModal', () => ({
-  ToolAccessModal: ({
-    open,
-    toolName,
-    onSave,
-  }: {
-    open: boolean;
-    toolName: string;
-    onSave: (policy: unknown) => void;
-  }) =>
-    open ? (
-      <div>
-        <h3>Tool Access {toolName}</h3>
-        <button
-          type="button"
-          onClick={() =>
-            onSave({
-              tool_id: 'tool-grouped',
-              default_chat_access: 'read',
-              default_workspace_access: 'deny',
-              users: [],
-              groups: [],
-            })
-          }
-        >
-          Save Access
-        </button>
-      </div>
-    ) : null,
-}));
-
-type MockPopoverProps = {
-  children: ReactNode;
-  content?: ReactNode;
-  position?: string;
-  show?: boolean;
-  trigger?: string;
-  disabled?: boolean;
-  openDelayMs?: number;
-  followCursor?: boolean;
-  requireHoverIdleMs?: number;
-  focusTrigger?: boolean;
-  ignoreSelector?: string;
-} & HTMLAttributes<HTMLDivElement>;
-
-vi.mock('./Popover', () => ({
-  Popover: ({
-    children,
-    content: _content,
-    position,
-    show: _show,
-    trigger: _trigger,
-    disabled: _disabled,
-    openDelayMs: _openDelayMs,
-    followCursor,
-    requireHoverIdleMs,
-    focusTrigger,
-    ignoreSelector,
-    ...rest
-  }: MockPopoverProps) => (
-    <div
-      {...rest}
-      data-follow-cursor={followCursor === undefined ? undefined : String(followCursor)}
-      data-require-hover-idle-ms={requireHoverIdleMs ?? undefined}
-      data-focus-trigger={focusTrigger === undefined ? undefined : String(focusTrigger)}
-      data-position={position}
-      data-ignore-selector={ignoreSelector}
-    >
-      {children}
-    </div>
-  ),
-}));
-vi.mock('./AnimatedCreateButton', () => ({
-  AnimatedCreateButton: ({ onClick, label }: { onClick: () => void; label: string }) => (
-    <button type="button" onClick={onClick}>
-      {label}
-    </button>
-  ),
-}));
-vi.mock('./DeleteConfirmButton', () => ({
-  DeleteConfirmButton: ({
-    onDelete,
-    className,
-    title,
-  }: {
-    onDelete: () => void;
-    className?: string;
-    title?: string;
-  }) => (
-    <button
-      type="button"
-      className={className}
-      title={title}
-      data-delete-confirm-button
-      onClick={onDelete}
-    >
-      Delete
-    </button>
-  ),
-}));
-vi.mock('./shared/Toast', () => ({
-  useToast: () => [[], toastMock],
-  ToastContainer: () => null,
-}));
-vi.mock('./shared/SearchFilterBar', () => ({
-  SearchFilterBar: () => null,
-  searchFilterTextMatchesQuery: () => true,
-  useUrlSearchFilterState: () => toolFilterState,
-}));
-
-const groupedTool: ToolConfig = {
-  id: 'tool-grouped',
-  name: 'Grouped Tool',
-  tool_type: 'ssh_shell',
-  enabled: true,
-  description: 'Grouped tool',
-  connection_config: { host: 'example.com', user: 'deploy', port: 22 },
-  max_results: 10,
-  timeout_max_seconds: 30,
-  allow_write: false,
-  sort_order: 100,
-  group_id: 'group-1',
-  group_name: 'Alpha Group',
-  undecryptable_fields: [],
-  configured_secret_fields: [],
-  last_test_at: null,
-  last_test_result: null,
-  last_test_error: null,
-  created_at: '2026-01-01T00:00:00Z',
-  updated_at: '2026-01-01T00:00:00Z',
-};
-
-const ungroupedTool: ToolConfig = {
-  id: 'tool-ungrouped',
-  name: 'Ungrouped Tool',
-  tool_type: 'ssh_shell',
-  enabled: true,
-  description: 'Ungrouped tool',
-  connection_config: { host: 'example.org', user: 'deploy', port: 22 },
-  max_results: 10,
-  timeout_max_seconds: 30,
-  allow_write: false,
-  sort_order: 200,
-  group_id: null,
-  group_name: null,
-  undecryptable_fields: [],
-  configured_secret_fields: [],
-  last_test_at: null,
-  last_test_result: null,
-  last_test_error: null,
-  created_at: '2026-01-01T00:00:00Z',
-  updated_at: '2026-01-01T00:00:00Z',
-};
-
-const pdmTool: ToolConfig = {
-  id: 'tool-pdm',
-  name: 'PDM Tool',
-  tool_type: 'solidworks_pdm',
-  enabled: true,
-  description: 'SolidWorks PDM database',
-  connection_config: {
-    host: '192.168.10.12',
-    port: 1433,
-    user: 'pdm-user',
-    password: 'secret',
-    database: 'PDM',
-  },
-  max_results: 10,
-  timeout_max_seconds: 30,
-  allow_write: false,
-  sort_order: 300,
-  group_id: null,
-  group_name: null,
-  undecryptable_fields: [],
-  configured_secret_fields: [],
-  last_test_at: null,
-  last_test_result: null,
-  last_test_error: null,
-  created_at: '2026-01-01T00:00:00Z',
-  updated_at: '2026-01-01T00:00:00Z',
-};
-
-const httpApiTool: ToolConfig = {
-  id: 'tool-http-api',
-  name: 'Orders API',
-  tool_type: 'http_api',
-  enabled: true,
-  description: 'HTTP API connection',
-  connection_config: {
-    base_url: 'https://api.example.com',
-    auth_mode: 'bearer',
-  },
-  max_results: 50,
-  timeout_max_seconds: 300,
-  allow_write: false,
-  sort_order: 400,
-  group_id: null,
-  group_name: null,
-  undecryptable_fields: [],
-  configured_secret_fields: ['bearer_token'],
-  last_test_at: null,
-  last_test_result: null,
-  last_test_error: null,
-  created_at: '2026-01-01T00:00:00Z',
-  updated_at: '2026-01-01T00:00:00Z',
-};
-
-const pairedWindowsTool: ToolConfig = {
-  ...ungroupedTool,
-  id: 'tool-windows-paired',
-  name: 'Paired Windows Tool',
-  tool_type: 'windows_shell',
-  connection_config: {
-    host: 'windows.example.org',
-    user: 'administrator',
-    port: 22,
-    pairing_id: 'a0a0a0a0-0000-4000-8000-000000000000',
-  },
-};
-
-const toolGroup: ToolGroup = {
-  id: 'group-1',
-  name: 'Alpha Group',
-  description: '',
-  sort_order: 100,
-  created_at: '2026-01-01T00:00:00Z',
-  updated_at: '2026-01-01T00:00:00Z',
-};
-
-function skillFixture(id: string, enabled: boolean): InstructionSkill {
-  return {
-    id,
-    owner_kind: 'tool',
-    owner_id: 'tool-ungrouped',
-    name: `skill-${id}`,
-    description: 'Describes the skill',
-    content: 'Skill body',
-    mode: 'on_demand',
-    enabled,
-    sort_order: 0,
-    uri: `skill://tools/tool-ungrouped/skill-${id}/SKILL.md`,
-    created_at: '2026-01-01T00:00:00Z',
-    updated_at: '2026-01-01T00:00:00Z',
-  };
-}
-
-class ResizeObserverMock {
-  observe(): void {}
-  disconnect(): void {}
-  unobserve(): void {}
-}
+vi.mock('./ToolWizard', async () => (await import('./ToolsPanel.testSupport')).toolWizardMock);
+vi.mock(
+  './MountSourceWizard',
+  async () => (await import('./ToolsPanel.testSupport')).mountSourceWizardMock,
+);
+vi.mock(
+  './InstructionSkillsDialog',
+  async () => (await import('./ToolsPanel.testSupport')).instructionSkillsDialogMock,
+);
+vi.mock(
+  './ToolAccessModal',
+  async () => (await import('./ToolsPanel.testSupport')).toolAccessModalMock,
+);
+vi.mock('./Popover', async () => (await import('./ToolsPanel.testSupport')).popoverMock);
+vi.mock(
+  './AnimatedCreateButton',
+  async () => (await import('./ToolsPanel.testSupport')).animatedCreateButtonMock,
+);
+vi.mock(
+  './DeleteConfirmButton',
+  async () => (await import('./ToolsPanel.testSupport')).deleteConfirmButtonMock,
+);
+vi.mock(
+  './shared/Toast',
+  async () => (await import('./ToolsPanel.testSupport')).toastComponentsMock,
+);
+vi.mock(
+  './shared/SearchFilterBar',
+  async () => (await import('./ToolsPanel.testSupport')).searchFilterBarMock,
+);
 
 describe('ToolsPanel', () => {
-  beforeEach(() => {
-    vi.stubGlobal('ResizeObserver', ResizeObserverMock);
-    resetToolFilterState();
-    toolFilterState.clear.mockReset();
-    toolFilterState.clear.mockImplementation(() => {
-      resetToolFilterState();
-    });
-    apiMock.listToolConfigs.mockResolvedValue([groupedTool, ungroupedTool]);
-    apiMock.listToolGroups.mockResolvedValue([toolGroup]);
-    apiMock.listUserspaceMountSources.mockResolvedValue([]);
-    apiMock.getSettings.mockResolvedValue({
-      settings: { show_tool_card_footer_actions: false },
-    });
-    apiMock.getToolHeartbeats.mockResolvedValue({ statuses: {} });
-    apiMock.subscribeToolHealthEvents.mockReturnValue({
-      addEventListener: vi.fn(),
-      close: vi.fn(),
-      onmessage: null,
-    });
-    apiMock.updateToolConfig.mockResolvedValue({ ...groupedTool, allow_write: true });
-    apiMock.deleteToolConfig.mockResolvedValue(undefined);
-    apiMock.createToolConfig.mockResolvedValue({
-      ...ungroupedTool,
-      id: 'tool-ungrouped-copy',
-      name: 'Ungrouped Tool Copy',
-      sort_order: 300,
-    });
-    apiMock.reorderTools.mockResolvedValue(undefined);
-    apiMock.getPdmIndexStats.mockResolvedValue({
-      document_count: 0,
-      embedding_count: 0,
-      last_indexed_at: null,
-    });
-    apiMock.getToolAccessPolicy.mockResolvedValue({
-      tool_id: groupedTool.id,
-      default_chat_access: 'deny',
-      default_workspace_access: 'deny',
-      users: [],
-      groups: [],
-    });
-    apiMock.updateToolAccessPolicy.mockResolvedValue({
-      tool_id: groupedTool.id,
-      default_chat_access: 'read',
-      default_workspace_access: 'deny',
-      users: [],
-      groups: [],
-    });
-    apiMock.listUsers.mockResolvedValue([]);
-    apiMock.listAuthGroups.mockResolvedValue([]);
-    apiMock.getInstructionSkillSummary.mockResolvedValue({ tools: {}, routes: {} });
-    apiMock.copyToolInstructionSkills.mockResolvedValue([]);
-    skillsDialogMock.nextSkills = [];
-    contentProtectionMock.getConfig.mockResolvedValue(null);
-  });
-
+  beforeEach(setupTest);
   afterEach(() => {
-    cleanup();
-    vi.unstubAllGlobals();
-    vi.clearAllMocks();
+    clearCollapsedSectionCookies();
+    teardownToolsPanelTest();
   });
 
-  it('keeps the selected group open when the write confirmation modal is dismissed', async () => {
-    const user = userEvent.setup();
-
+  it('renders the grouped and ungrouped tools in separate sections', async () => {
     render(<ToolsPanel />);
-
-    await screen.findByText('Ungrouped Tool');
-
-    await user.click(screen.getByText('Alpha Group'));
-
-    await waitFor(() => {
-      expect(screen.getByText('Grouped Tool')).toBeTruthy();
-      expect(screen.queryByText('Ungrouped Tool')).toBeNull();
-    });
-
-    fireEvent.contextMenu(screen.getByText('Grouped Tool'));
-    await user.click(await screen.findByRole('button', { name: 'Write Access' }));
-
-    await screen.findByRole('heading', { name: 'Enable Write Access' });
-    expect(screen.queryByRole('button', { name: 'Write Access' })).toBeNull();
-
-    await user.click(screen.getByRole('button', { name: 'Cancel' }));
-
-    await waitFor(() => {
-      expect(screen.queryByText('Enable Write Access')).toBeNull();
-      expect(screen.getByText('Grouped Tool')).toBeTruthy();
-      expect(screen.queryByText('Ungrouped Tool')).toBeNull();
-    });
+    await screen.findByText(groupedTool.name);
+    const sections = [...document.querySelectorAll('[data-tool-section]')];
+    expect(sections.map((section) => section.getAttribute('data-tool-section'))).toEqual([
+      groupedTool.group_id,
+      'ungrouped',
+    ]);
   });
 
-  it('still closes the selected group on outside mousedown when no modal is open', async () => {
-    const user = userEvent.setup();
-
+  it.each([
+    ['healthy', [pdmTool], 'PDM: PDM Tool'],
+    ['missing', [], 'PDM unavailable'],
+    ['disabled', [{ ...pdmTool, enabled: false }], 'PDM unavailable'],
+  ])('derives a %s link from loaded tools without API metadata', async (_state, targets, label) => {
+    apiMock.listToolConfigs.mockResolvedValue([linkedSolidworksTool, ...targets]);
     render(<ToolsPanel />);
-
-    await screen.findByText('Ungrouped Tool');
-
-    await user.click(screen.getByText('Alpha Group'));
-
-    await waitFor(() => {
-      expect(screen.getByText('Grouped Tool')).toBeTruthy();
-    });
-
-    fireEvent.mouseDown(document.body);
-
-    await waitFor(() => {
-      expect(screen.getByText('Ungrouped Tool')).toBeTruthy();
-      expect(screen.queryByText('Grouped Tool')).toBeNull();
-    });
+    await screen.findByRole('heading', { name: 'CAD workstation' });
+    expect(document.querySelector('[data-solidworks-pdm-badge]')?.textContent).toBe(label);
   });
 
-  it('clears typed search filters when selecting an inactive group tab but not when closing it', async () => {
-    const user = userEvent.setup();
-    toolFilterState.queries = ['ssh', 'database', 'staging'];
-    toolFilterState.tags = ['database'];
-    toolFilterState.input = 'staging';
-    toolFilterState.debouncedInput = 'staging';
-    toolFilterState.hasActiveFilters = true;
-
-    render(<ToolsPanel />);
-
-    await screen.findByText('Ungrouped Tool');
-    await user.click(screen.getByText('Alpha Group'));
-
-    expect(toolFilterState.clear).toHaveBeenCalledTimes(1);
-    expect(toolFilterState.queries).toEqual([]);
-    expect(toolFilterState.tags).toEqual([]);
-    expect(toolFilterState.input).toBe('');
-    expect(toolFilterState.hasActiveFilters).toBe(false);
-
-    await user.click(screen.getByText('Alpha Group'));
-
-    expect(toolFilterState.clear).toHaveBeenCalledTimes(1);
-  });
-
-  it('adds soft wrap opportunities only to heartbeat error tokens longer than 30 characters', async () => {
-    apiMock.getToolHeartbeats.mockResolvedValue({
-      statuses: {
-        [ungroupedTool.id]: {
-          tool_id: ungroupedTool.id,
-          alive: false,
-          latency_ms: null,
-          error: `Error: ${'a'.repeat(30)} ${'b'.repeat(31)}`,
-          checked_at: '2026-01-01T00:00:00Z',
+  it.each([
+    [
+      true,
+      ['\\Designs', '\\Parts'],
+      'Can add files, check out and check in in 2 approved vault folders',
+    ],
+    [true, [], 'No approved folders: changes are refused'],
+    [false, ['\\Designs'], null],
+  ])(
+    'shows write badge for allow_write=%s and folders=%j',
+    async (allowWrite, folders, content) => {
+      apiMock.listToolConfigs.mockResolvedValue([
+        {
+          ...linkedSolidworksTool,
+          allow_write: allowWrite,
+          connection_config: {
+            ...linkedSolidworksTool.connection_config,
+            pdm_approved_folders: folders,
+          },
         },
-      },
-    });
+        pdmTool,
+      ]);
+      render(<ToolsPanel />);
+      await screen.findByRole('heading', { name: 'CAD workstation' });
+      const badge = document.querySelector('[data-solidworks-write-badge]');
+      if (content === null) expect(badge).toBeNull();
+      else {
+        expect(badge?.textContent).toBe('Write');
+        expect(badge?.parentElement?.getAttribute('data-popover-content')).toBe(content);
+      }
+    },
+  );
 
-    const { container } = render(<ToolsPanel />);
-
-    await screen.findByText(`Error: ${'a'.repeat(30)} ${'b'.repeat(31)}`);
-
-    expect(container.querySelectorAll('.tool-card-heartbeat-error wbr')).toHaveLength(1);
+  it.each([true, false])('offers the changes kill switch only when on=%s', async (allowWrite) => {
+    apiMock.listToolConfigs.mockResolvedValue([
+      { ...linkedSolidworksTool, allow_write: allowWrite },
+      pdmTool,
+    ]);
+    apiMock.updateToolConfig.mockResolvedValue({ ...linkedSolidworksTool, allow_write: false });
+    render(<ToolsPanel />);
+    fireEvent.contextMenu(await screen.findByRole('heading', { name: 'CAD workstation' }));
+    const toggle = screen.queryByRole('button', { name: 'Allow changes' });
+    if (!allowWrite) {
+      expect(toggle).toBeNull();
+      return;
+    }
+    expect(toggle?.getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(toggle!);
+    await waitFor(() =>
+      expect(apiMock.updateToolConfig).toHaveBeenCalledWith(linkedSolidworksTool.id, {
+        allow_write: false,
+      }),
+    );
+    expect(screen.queryByRole('heading', { name: 'Enable Write Access' })).toBeNull();
   });
 
-  it('does not add soft wrap opportunities to a 30-character heartbeat error token', async () => {
-    apiMock.getToolHeartbeats.mockResolvedValue({
-      statuses: {
-        [ungroupedTool.id]: {
-          tool_id: ungroupedTool.id,
-          alive: false,
-          latency_ms: null,
-          error: `Error: ${'a'.repeat(30)}`,
-          checked_at: '2026-01-01T00:00:00Z',
-        },
+  it.each([true, false])('shows Used by only for a linked PDM tool: %s', async (linked) => {
+    apiMock.listToolConfigs.mockResolvedValue(linked ? [linkedSolidworksTool, pdmTool] : [pdmTool]);
+    render(<ToolsPanel />);
+    await screen.findByText('PDM Tool');
+    const row = screen.queryByTestId(`pdm-linked-from-${pdmTool.id}`);
+    if (linked) expect(row?.textContent).toBe('Used by:CAD workstation');
+    else expect(row).toBeNull();
+  });
+
+  it.each([true, false])(
+    'confirms linked PDM card deletion with changes on=%s',
+    async (allowWrite) => {
+      apiMock.getSettings.mockResolvedValue({ settings: { show_tool_card_footer_actions: true } });
+      apiMock.listToolConfigs.mockResolvedValue([
+        { ...linkedSolidworksTool, allow_write: allowWrite },
+        pdmTool,
+      ]);
+      render(<ToolsPanel />);
+      await screen.findByText('PDM Tool');
+      const card = document.getElementById(`tools-tool-${pdmTool.id}`)!;
+      const deleteButton = card.querySelector('[title="Delete tool"]')!;
+      expect(deleteButton.hasAttribute('data-delete-confirm-button')).toBe(false);
+      fireEvent.click(deleteButton);
+      expect(apiMock.deleteToolConfig).not.toHaveBeenCalled();
+      expect(screen.getByRole('heading', { name: 'Delete Tool' })).toBeTruthy();
+      const note = screen.getByRole('note');
+      expect(note.id).toBe('tool-delete-linked-note');
+      expect(note.textContent).toContain(
+        '“PDM Tool” is linked to the SolidWorks tool “CAD workstation”. If you delete it, that tool can no longer search the vault or open, add, check out or check in vault files until you link another PDM tool. The SolidWorks tool keeps its other settings and shows a warning.',
+      );
+      expect(note.textContent?.includes('Changes are currently on in 2 approved folders.')).toBe(
+        allowWrite,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Delete Tool' }));
+      await waitFor(() => expect(apiMock.deleteToolConfig).toHaveBeenCalledWith(pdmTool.id));
+      expect(apiMock.updateToolConfig).not.toHaveBeenCalled();
+      expect(document.querySelector('[data-solidworks-pdm-badge]')?.textContent).toBe(
+        'PDM unavailable',
+      );
+    },
+  );
+
+  it('shows every linked SolidWorks tool in the PDM row and context-menu delete note', async () => {
+    apiMock.listToolConfigs.mockResolvedValue([
+      linkedSolidworksTool,
+      { ...linkedSolidworksTool, id: 'cad-second', name: 'Second workstation', allow_write: true },
+      pdmTool,
+    ]);
+    render(<ToolsPanel />);
+    fireEvent.contextMenu(await screen.findByRole('heading', { name: 'PDM Tool' }));
+    expect(screen.getByTestId(`pdm-linked-from-${pdmTool.id}`).textContent).toBe(
+      'Used by:CAD workstation, Second workstation',
+    );
+    fireEvent.click(
+      within(document.querySelector('.userspace-tool-context-menu') as HTMLElement).getByRole(
+        'button',
+        { name: 'Delete' },
+      ),
+    );
+    const note = screen.getByRole('note');
+    expect(note.textContent).toContain('SolidWorks tool “CAD workstation”');
+    expect(note.textContent).toContain('SolidWorks tool “Second workstation”');
+    expect(note.textContent).toContain('Changes are currently on in 2 approved folders.');
+    expect(apiMock.deleteToolConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps the unlinked PDM card deletion path unchanged', async () => {
+    apiMock.getSettings.mockResolvedValue({ settings: { show_tool_card_footer_actions: true } });
+    apiMock.listToolConfigs.mockResolvedValue([pdmTool]);
+    render(<ToolsPanel />);
+    await screen.findByText('PDM Tool');
+    const deleteButton = document.querySelector('[title="Delete tool"]')!;
+    expect(deleteButton.hasAttribute('data-delete-confirm-button')).toBe(true);
+    fireEvent.click(deleteButton);
+    await waitFor(() => expect(apiMock.deleteToolConfig).toHaveBeenCalledWith(pdmTool.id));
+    expect(screen.queryByRole('heading', { name: 'Delete Tool' })).toBeNull();
+  });
+
+  it('shows linked-tool consequences after disabling PDM succeeds', async () => {
+    apiMock.listToolConfigs.mockResolvedValue([
+      {
+        ...linkedSolidworksTool,
+        pdm_link: { tool_id: pdmTool.id, tool_name: pdmTool.name, enabled: true, exists: true },
       },
-    });
-
-    const { container } = render(<ToolsPanel />);
-
-    await screen.findByText(`Error: ${'a'.repeat(30)}`);
-
-    expect(container.querySelectorAll('.tool-card-heartbeat-error wbr')).toHaveLength(0);
+      pdmTool,
+    ]);
+    apiMock.toggleToolConfig.mockResolvedValue({ enabled: false });
+    render(<ToolsPanel />);
+    fireEvent.contextMenu(await screen.findByText('PDM Tool'));
+    fireEvent.click(screen.getByRole('button', { name: 'Enabled' }));
+    await waitFor(() =>
+      expect(toastMock.info).toHaveBeenCalledWith(
+        '“PDM Tool” is disabled. The SolidWorks tool “CAD workstation” cannot search the vault until you enable it again.',
+      ),
+    );
+    expect(apiMock.toggleToolConfig).toHaveBeenCalledWith(pdmTool.id, false);
+    expect(document.querySelector('[data-solidworks-pdm-badge]')?.textContent).toBe(
+      'PDM unavailable',
+    );
   });
 
   it('duplicates a tool from the right-click card menu and keeps the copy after the original', async () => {
@@ -570,7 +328,6 @@ describe('ToolsPanel', () => {
     render(<ToolsPanel />);
 
     await screen.findByText('Ungrouped Tool');
-    await user.click(screen.getByText('Alpha Group'));
     await screen.findByText('Grouped Tool');
 
     fireEvent.contextMenu(screen.getByText('Grouped Tool'));
@@ -591,45 +348,6 @@ describe('ToolsPanel', () => {
         }),
       );
     });
-  });
-
-  it('hides card footer actions by default and exposes them in the right-click menu', async () => {
-    const user = userEvent.setup();
-
-    render(<ToolsPanel />);
-
-    await screen.findByText('Ungrouped Tool');
-
-    expect(screen.queryByRole('button', { name: /^Test$/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Edit$/ })).toBeNull();
-    expect(screen.queryAllByRole('button', { name: /^Delete$/ })).toHaveLength(1);
-
-    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
-
-    expect(await screen.findByRole('button', { name: /^Test$/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Edit$/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Duplicate$/ })).toBeTruthy();
-    expect(screen.getAllByRole('button', { name: /^Delete$/ })).toHaveLength(2);
-
-    await user.click(screen.getByRole('button', { name: /^Edit$/ }));
-
-    await waitFor(() => {
-      expect(screen.queryByRole('button', { name: /^Test$/ })).toBeNull();
-    });
-  });
-
-  it('shows card footer actions when the global legacy setting is enabled', async () => {
-    apiMock.getSettings.mockResolvedValue({
-      settings: { show_tool_card_footer_actions: true },
-    });
-
-    render(<ToolsPanel />);
-
-    await screen.findByText('Ungrouped Tool');
-
-    expect(screen.getByRole('button', { name: /^Test$/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Edit$/ })).toBeTruthy();
-    expect(screen.getAllByRole('button', { name: /^Delete$/ })).toHaveLength(2);
   });
 
   it('shows delete confirmation modal before deleting a tool', async () => {
@@ -674,91 +392,6 @@ describe('ToolsPanel', () => {
     const contextDeleteButtons = await screen.findAllByRole('button', { name: /^Delete$/ });
     await user.click(contextDeleteButtons[contextDeleteButtons.length - 1]);
     expect(await screen.findByRole('heading', { name: 'Delete paired Windows tool' })).toBeTruthy();
-  });
-
-  it('shows write badge on the card when write access is enabled', async () => {
-    const writeTool: ToolConfig = {
-      ...ungroupedTool,
-      id: 'tool-write',
-      name: 'Write Tool',
-      allow_write: true,
-      undecryptable_fields: [],
-      connection_config: { host: 'example.org', user: 'deploy', port: 22 },
-    };
-    apiMock.listToolConfigs.mockResolvedValue([writeTool]);
-
-    render(<ToolsPanel />);
-
-    await screen.findByText('Write Tool');
-    expect(screen.getByText('Write')).toBeTruthy();
-  });
-
-  it('shows a Classified badge only for required tools while protection is enabled', async () => {
-    contentProtectionMock.getConfig.mockResolvedValue({
-      revision: 1,
-      enabled: true,
-      classifier_model: null,
-      coverage_mode: 'selected_scopes',
-      profiles: [],
-      group_profiles: [],
-      requirements: [{ scope_kind: 'tool', scope_key: 'tool-ungrouped', mode: 'require' }],
-      user_overrides: [],
-    });
-
-    render(<ToolsPanel />);
-
-    expect(await screen.findByText('Classified')).toBeTruthy();
-  });
-
-  it('hides the Classified badge while content protection is disabled', async () => {
-    contentProtectionMock.getConfig.mockResolvedValue({
-      revision: 1,
-      enabled: false,
-      classifier_model: null,
-      coverage_mode: 'selected_scopes',
-      profiles: [],
-      group_profiles: [],
-      requirements: [{ scope_kind: 'tool', scope_key: 'tool-ungrouped', mode: 'require' }],
-      user_overrides: [],
-    });
-
-    render(<ToolsPanel />);
-
-    await screen.findByText('Ungrouped Tool');
-    expect(screen.queryByText('Classified')).toBeNull();
-  });
-
-  it('shows PDM index document stats on SolidWorks PDM cards', async () => {
-    apiMock.listToolConfigs.mockResolvedValue([pdmTool]);
-    apiMock.getPdmIndexStats.mockResolvedValue({
-      document_count: 1160,
-      embedding_count: 3480,
-      last_indexed_at: '2026-01-02T00:00:00Z',
-    });
-
-    render(<ToolsPanel />);
-
-    await screen.findByText('PDM Tool');
-
-    expect(apiMock.getPdmIndexStats).toHaveBeenCalledWith('tool-pdm');
-    expect(await screen.findByText('PDM Index:')).toBeTruthy();
-    expect(screen.getByText('1160 documents')).toBeTruthy();
-  });
-
-  it('shows / in the working directory badge when unset', async () => {
-    const noWdTool: ToolConfig = {
-      ...ungroupedTool,
-      id: 'tool-nowd',
-      name: 'No Work Dir Tool',
-      undecryptable_fields: [],
-      connection_config: { host: 'example.org', user: 'deploy', port: 22 },
-    };
-    apiMock.listToolConfigs.mockResolvedValue([noWdTool]);
-
-    render(<ToolsPanel />);
-
-    await screen.findByText('No Work Dir Tool');
-    expect(screen.getByText('/')).toBeTruthy();
   });
 
   it('highlights the requested tool card when navigated to a tool-specific section target', async () => {
@@ -915,7 +548,7 @@ describe('ToolsPanel', () => {
     expect(toastMock.success).toHaveBeenCalledWith(
       'Broken tool credentials cleared. Re-enter them to restore the connection.',
     );
-    expect(lastToolWizardExistingTool).toEqual(clearedTool);
+    expect(wizardState.existingTool).toEqual(clearedTool);
   });
 
   it('shows live password requirements in export modal and enables export only for a strong matching password', async () => {
@@ -956,84 +589,6 @@ describe('ToolsPanel', () => {
     await waitFor(() => expect(exportButton.disabled).toBe(false));
   });
 
-  it('uses idle-hover popovers for tool-card right-click hints', async () => {
-    render(<ToolsPanel />);
-
-    await screen.findByText('Ungrouped Tool');
-
-    const toolCardPopover = document.querySelector('.tool-card-drag-wrap') as HTMLElement;
-    expect(toolCardPopover.dataset.followCursor).toBe('true');
-    expect(toolCardPopover.dataset.requireHoverIdleMs).toBe('1000');
-    expect(toolCardPopover.dataset.focusTrigger).toBe('false');
-    expect(toolCardPopover.dataset.position).toBe('top');
-    expect(toolCardPopover.dataset.ignoreSelector).not.toContain('.editable-field-wrapper');
-    expect(toolCardPopover.dataset.ignoreSelector).toContain('button');
-    expect(toolCardPopover.dataset.ignoreSelector).toContain('input');
-    expect(toolCardPopover.dataset.ignoreSelector).toContain('textarea');
-  });
-
-  it('shows an HTTP API summary with base URL and auth mode without secrets', async () => {
-    apiMock.listToolConfigs.mockResolvedValue([httpApiTool]);
-
-    render(<ToolsPanel />);
-
-    expect(await screen.findByText('Orders API')).toBeTruthy();
-    expect(screen.getByText(/https:\/\/api\.example\.com/i)).toBeTruthy();
-    expect(screen.getByText(/bearer/i)).toBeTruthy();
-    expect(screen.queryByText(/token/i)).toBeNull();
-  });
-
-  it('hides the skills badge and footer button when the tool has no skills', async () => {
-    render(<ToolsPanel />);
-
-    await screen.findByText('Ungrouped Tool');
-    expect(document.querySelector('[data-tool-skills-badge]')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Skills' })).toBeNull();
-  });
-
-  it('shows a skill count badge whose title gives the enabled count', async () => {
-    apiMock.getInstructionSkillSummary.mockResolvedValue({
-      tools: { 'tool-ungrouped': { total: 3, enabled: 2 } },
-      routes: {},
-    });
-
-    render(<ToolsPanel />);
-
-    const badge = await screen.findByRole('button', { name: /^3 skills,/ });
-    expect(badge.getAttribute('title')).toBe('2 of 3 skills enabled');
-    expect(badge.hasAttribute('data-tool-skills-badge')).toBe(true);
-  });
-
-  it('uses the singular label for a single skill', async () => {
-    apiMock.getInstructionSkillSummary.mockResolvedValue({
-      tools: { 'tool-ungrouped': { total: 1, enabled: 0 } },
-      routes: {},
-    });
-
-    render(<ToolsPanel />);
-
-    const badge = await screen.findByRole('button', { name: /^1 skill,/ });
-    expect(badge.textContent).toBe('1 skill');
-    expect(badge.getAttribute('title')).toBe('0 of 1 skills enabled');
-  });
-
-  it('opens the skills dialog for the tool from its badge without opening the card menu', async () => {
-    const user = userEvent.setup();
-    apiMock.getInstructionSkillSummary.mockResolvedValue({
-      tools: { 'tool-ungrouped': { total: 1, enabled: 1 } },
-      routes: {},
-    });
-
-    render(<ToolsPanel />);
-
-    await user.click(await screen.findByRole('button', { name: /^1 skill,/ }));
-
-    const dialog = await screen.findByRole('dialog', { name: 'Skills · Ungrouped Tool' });
-    expect(dialog.getAttribute('data-owner-kind')).toBe('tool');
-    expect(dialog.getAttribute('data-owner-id')).toBe('tool-ungrouped');
-    expect(screen.queryByRole('button', { name: /^Duplicate$/ })).toBeNull();
-  });
-
   it('lists a Skills item after Edit Users with the attachment summary', async () => {
     const user = userEvent.setup();
     apiMock.getInstructionSkillSummary.mockResolvedValue({
@@ -1062,41 +617,6 @@ describe('ToolsPanel', () => {
 
     const item = await screen.findByRole('button', { name: /^Skills/ });
     expect(item.textContent).toContain('None yet');
-  });
-
-  it('shows a secondary Skills button in footer actions that opens the dialog', async () => {
-    const user = userEvent.setup();
-    apiMock.getSettings.mockResolvedValue({
-      settings: { show_tool_card_footer_actions: true },
-    });
-
-    render(<ToolsPanel />);
-
-    await screen.findByText('Ungrouped Tool');
-    const skillsButton = screen.getByRole('button', { name: 'Skills' });
-    expect(skillsButton.classList.contains('btn-secondary')).toBe(true);
-
-    await user.click(skillsButton);
-
-    const dialog = await screen.findByRole('dialog', { name: 'Skills · Ungrouped Tool' });
-    expect(dialog.getAttribute('data-owner-id')).toBe('tool-ungrouped');
-  });
-
-  it('updates the badge from the skills the dialog reports', async () => {
-    const user = userEvent.setup();
-    apiMock.getInstructionSkillSummary.mockResolvedValue({
-      tools: { 'tool-ungrouped': { total: 1, enabled: 1 } },
-      routes: {},
-    });
-    skillsDialogMock.nextSkills = [skillFixture('one', true), skillFixture('two', false)];
-
-    render(<ToolsPanel />);
-
-    await user.click(await screen.findByRole('button', { name: /^1 skill,/ }));
-    await user.click(await screen.findByRole('button', { name: 'Save Skills Mock' }));
-
-    const badge = await screen.findByRole('button', { name: /^2 skills,/ });
-    expect(badge.getAttribute('title')).toBe('1 of 2 skills enabled');
   });
 
   it('keeps the tool list usable when the skill summary cannot be loaded', async () => {
@@ -1208,4 +728,503 @@ describe('ToolsPanel', () => {
       expect(toastMock.error).not.toHaveBeenCalled();
     },
   );
+
+  it('orders group sections by sort order with Ungrouped last', async () => {
+    apiMock.listToolGroups.mockResolvedValue([
+      { ...toolGroup, id: 'group-late', name: 'Late group', sort_order: 300 },
+      toolGroup,
+      { ...toolGroup, id: 'group-early', name: 'Early group', sort_order: 50 },
+    ]);
+    render(<ToolsPanel />);
+    await screen.findByText(groupedTool.name);
+    const sections = [...document.querySelectorAll('[data-tool-section]')];
+    expect(sections.map((section) => section.getAttribute('data-tool-section'))).toEqual([
+      'group-early',
+      'group-1',
+      'group-late',
+      'ungrouped',
+    ]);
+  });
+
+  it('renders a plain tool grid without section chrome when there are no groups', async () => {
+    apiMock.listToolGroups.mockResolvedValue([]);
+    apiMock.listToolConfigs.mockResolvedValue([ungroupedTool]);
+    render(<ToolsPanel />);
+    await screen.findByText(ungroupedTool.name);
+    expect(document.querySelector('[data-tool-section]')).toBeNull();
+    expect(document.querySelector('#tools-toolbar .tools-toolbar-summary')?.textContent).toBe(
+      '1 tool',
+    );
+    expect(document.querySelectorAll('.tools-grid > [role="listitem"]')).toHaveLength(1);
+  });
+
+  it('collapses a section, stores the choice for the same user, and restores it on re-render', async () => {
+    const { unmount } = render(<ToolsPanel currentUser={testUser} />);
+    await screen.findByText(groupedTool.name);
+    fireEvent.click(document.getElementById('tools-section-group-1-toggle')!);
+    expect(sectionBody('group-1').hidden).toBe(true);
+    expect(document.cookie).toContain('tools_sections_collapsed_user-1=group-1');
+    unmount();
+
+    render(<ToolsPanel currentUser={testUser} />);
+    await screen.findByText(groupedTool.name);
+    expect(sectionBody('group-1').hidden).toBe(true);
+    expect(sectionBody('ungrouped').hidden).toBe(false);
+  });
+
+  it('filters sections in memory: matching sections open, others hide, and clearing restores the saved state', async () => {
+    document.cookie = 'tools_sections_collapsed_user-1=ungrouped; path=/';
+    toolFilterState.queries = ['ungrouped'];
+    toolFilterState.hasActiveFilters = true;
+    const { rerender } = render(<ToolsPanel currentUser={testUser} />);
+    await screen.findByText(ungroupedTool.name);
+    expect(document.querySelector('[data-tool-section="group-1"]')).toBeNull();
+    expect(sectionBody('ungrouped').hidden).toBe(false);
+
+    toolFilterState.queries = [];
+    toolFilterState.hasActiveFilters = false;
+    rerender(<ToolsPanel currentUser={testUser} />);
+    expect(document.querySelector('[data-tool-section="group-1"]')).not.toBeNull();
+    expect(sectionBody('ungrouped').hidden).toBe(true);
+  });
+
+  it('opens a collapsed section when a link targets one of its tools and scrolls to it', async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      value: scrollIntoView,
+      configurable: true,
+      writable: true,
+    });
+    document.cookie = 'tools_sections_collapsed_user-1=ungrouped; path=/';
+    render(<ToolsPanel currentUser={testUser} highlightSection="tool:tool-ungrouped" />);
+    const toolCard = (await screen.findByText(ungroupedTool.name)).closest('.tool-card');
+    await waitFor(() => expect(toolCard?.classList.contains('highlight-setting')).toBe(true));
+    expect(sectionBody('ungrouped').hidden).toBe(false);
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('moves a tool into a group from the card menu, updating the group and then the full order', async () => {
+    const user = userEvent.setup();
+    apiMock.updateToolConfig.mockResolvedValue({
+      ...ungroupedTool,
+      group_id: 'group-1',
+      group_name: 'Alpha Group',
+    });
+    render(<ToolsPanel />);
+    fireEvent.contextMenu(await screen.findByText(ungroupedTool.name));
+    await user.click(await screen.findByRole('button', { name: 'Move to group…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Move “Ungrouped Tool” to group' });
+    await user.click(within(dialog).getByRole('radio', { name: /Alpha Group/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Move' }));
+
+    await waitFor(() =>
+      expect(apiMock.updateToolConfig).toHaveBeenCalledWith('tool-ungrouped', {
+        group_id: 'group-1',
+      }),
+    );
+    expect(apiMock.reorderTools).toHaveBeenCalledWith({
+      tool_ids: ['tool-grouped', 'tool-ungrouped'],
+    });
+    expect(toastMock.success).toHaveBeenCalledWith('Moved “Ungrouped Tool” to “Alpha Group”');
+  });
+
+  it('moves a tool earlier or later within its section and disables the moves at the section ends', async () => {
+    const user = userEvent.setup();
+    const secondUngrouped: ToolConfig = {
+      ...ungroupedTool,
+      id: 'tool-ungrouped-2',
+      name: 'Second Ungrouped',
+      sort_order: 300,
+    };
+    apiMock.listToolConfigs.mockResolvedValue([groupedTool, ungroupedTool, secondUngrouped]);
+    render(<ToolsPanel />);
+    await screen.findByText('Second Ungrouped');
+
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+    const menu = await screen.findByRole('group', { name: 'Tool actions for Ungrouped Tool' });
+    expect(within(menu).getByRole('button', { name: 'Move earlier' }).classList).toContain(
+      'disabled',
+    );
+    await user.click(within(menu).getByRole('button', { name: 'Move later' }));
+
+    await waitFor(() =>
+      expect(apiMock.reorderTools).toHaveBeenCalledWith({
+        tool_ids: ['tool-grouped', 'tool-ungrouped-2', 'tool-ungrouped'],
+      }),
+    );
+    expect(apiMock.updateToolConfig).not.toHaveBeenCalled();
+  });
+
+  it('moves a group down with the full group order and announces its new position', async () => {
+    const user = userEvent.setup();
+    const betaGroup: ToolGroup = {
+      ...toolGroup,
+      id: 'group-beta',
+      name: 'Beta group',
+      sort_order: 200,
+    };
+    apiMock.listToolGroups.mockResolvedValue([toolGroup, betaGroup]);
+    render(<ToolsPanel />);
+    await screen.findByText(groupedTool.name);
+
+    await user.click(screen.getByRole('button', { name: 'Group actions for Alpha Group' }));
+    await user.click(await screen.findByRole('button', { name: 'Move down' }));
+
+    await waitFor(() =>
+      expect(groupApiMock.reorderToolGroups).toHaveBeenCalledWith({
+        group_ids: ['group-beta', 'group-1'],
+      }),
+    );
+    expect(await screen.findByText('Group “Alpha Group” moved to position 2 of 2.')).toBeTruthy();
+  });
+
+  it('deletes a group after confirmation and moves its tools to Ungrouped', async () => {
+    const user = userEvent.setup();
+    const betaGroup: ToolGroup = {
+      ...toolGroup,
+      id: 'group-beta',
+      name: 'Beta group',
+      sort_order: 200,
+    };
+    apiMock.listToolGroups.mockResolvedValue([toolGroup, betaGroup]);
+    render(<ToolsPanel />);
+    await screen.findByText(groupedTool.name);
+
+    await user.click(screen.getByRole('button', { name: 'Group actions for Alpha Group' }));
+    await user.click(await screen.findByRole('button', { name: 'Delete group…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete group “Alpha Group”?' });
+    expect(
+      within(dialog).getByText('The 1 tool in this group move to Ungrouped. No tools are deleted.'),
+    ).toBeTruthy();
+    await user.click(within(dialog).getByRole('button', { name: 'Delete group' }));
+
+    await waitFor(() => expect(groupApiMock.deleteToolGroup).toHaveBeenCalledWith('group-1'));
+    await waitFor(() =>
+      expect(
+        within(document.querySelector('[data-tool-section="ungrouped"]') as HTMLElement).getByText(
+          groupedTool.name,
+        ),
+      ).toBeTruthy(),
+    );
+    expect(document.querySelector('[data-tool-section="group-1"]')).toBeNull();
+  });
+
+  it('keeps a group that lost its last tool instead of deleting it', async () => {
+    const user = userEvent.setup();
+    apiMock.updateToolConfig.mockResolvedValue({
+      ...groupedTool,
+      group_id: null,
+      group_name: null,
+    });
+    render(<ToolsPanel />);
+    fireEvent.contextMenu(await screen.findByText(groupedTool.name));
+    await user.click(await screen.findByRole('button', { name: 'Move to group…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Move “Grouped Tool” to group' });
+    await user.click(within(dialog).getByRole('radio', { name: /No group \(Ungrouped\)/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Move' }));
+
+    await waitFor(() =>
+      expect(apiMock.updateToolConfig).toHaveBeenCalledWith('tool-grouped', { group_id: '' }),
+    );
+    expect(groupApiMock.deleteToolGroup).not.toHaveBeenCalled();
+    const emptyGroup = document.querySelector('[data-tool-section="group-1"]') as HTMLElement;
+    expect(within(emptyGroup).getByText(/No tools in this group yet/)).toBeTruthy();
+  });
+
+  it('creates a group after the last sort order and focuses its section toggle', async () => {
+    const user = userEvent.setup();
+    groupApiMock.createToolGroup.mockResolvedValue({
+      ...toolGroup,
+      id: 'group-new',
+      name: 'Beta',
+      description: '',
+      sort_order: 200,
+    });
+    render(<ToolsPanel />);
+    await screen.findByText(groupedTool.name);
+
+    await user.click(screen.getByRole('button', { name: 'New group' }));
+    const dialog = await screen.findByRole('dialog', { name: 'New group' });
+    await user.type(within(dialog).getByLabelText('Name'), 'Beta');
+    await user.click(within(dialog).getByRole('button', { name: 'Create group' }));
+
+    await waitFor(() =>
+      expect(groupApiMock.createToolGroup).toHaveBeenCalledWith({
+        name: 'Beta',
+        description: '',
+        sort_order: 200,
+      }),
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        document.getElementById('tools-section-group-new-toggle'),
+      ),
+    );
+  });
+
+  it('opens tool actions from the card ⋯ button with focus inside and returns focus to it on Escape', async () => {
+    const user = userEvent.setup();
+    render(<ToolsPanel />);
+    await screen.findByText(ungroupedTool.name);
+    const trigger = document.querySelector<HTMLButtonElement>(
+      '#tools-tool-tool-ungrouped [data-tool-actions-button]',
+    )!;
+
+    await user.click(trigger);
+    const menu = await screen.findByRole('group', { name: 'Tool actions for Ungrouped Tool' });
+    await waitFor(() => expect(menu.contains(document.activeElement)).toBe(true));
+
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Tool actions for Ungrouped Tool' })).toBeNull(),
+    );
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  describe('DG-5 fixes', () => {
+    const betaGroup: ToolGroup = {
+      ...toolGroup,
+      id: 'group-beta',
+      name: 'Beta group',
+      sort_order: 200,
+    };
+    const betaTool: ToolConfig = {
+      ...ungroupedTool,
+      id: 'tool-beta',
+      name: 'Beta Tool',
+      description: 'Other',
+      group_id: 'group-beta',
+      group_name: 'Beta group',
+      sort_order: 500,
+    };
+    const secondUngrouped: ToolConfig = {
+      ...ungroupedTool,
+      id: 'tool-ungrouped-2',
+      name: 'Second Ungrouped',
+      sort_order: 300,
+    };
+
+    function deferred<T = void>() {
+      let resolve!: (value: T) => void;
+      let reject!: (reason: unknown) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    async function openToolMenu(name: string) {
+      fireEvent.contextMenu(await screen.findByText(name));
+      return screen.findByRole('group', { name: `Tool actions for ${name}` });
+    }
+
+    it('blocks a second tool move until the first one settles', async () => {
+      const user = userEvent.setup();
+      apiMock.listToolConfigs.mockResolvedValue([groupedTool, ungroupedTool, secondUngrouped]);
+      const pending = deferred();
+      apiMock.reorderTools.mockReturnValueOnce(pending.promise);
+      render(<ToolsPanel />);
+      await screen.findByText('Second Ungrouped');
+
+      const firstMenu = await openToolMenu('Ungrouped Tool');
+      await user.click(within(firstMenu).getByRole('button', { name: 'Move later' }));
+      await waitFor(() => expect(apiMock.reorderTools).toHaveBeenCalledTimes(1));
+
+      expect(
+        document
+          .getElementById('tools-tool-tool-grouped')!
+          .parentElement!.getAttribute('draggable'),
+      ).toBe('false');
+      // Move later is a legal move for Second Ungrouped; only the lock disables it here.
+      const secondMenu = await openToolMenu('Second Ungrouped');
+      expect(within(secondMenu).getByRole('button', { name: 'Move later' }).classList).toContain(
+        'disabled',
+      );
+      await user.click(within(secondMenu).getByRole('button', { name: 'Move later' }));
+      expect(apiMock.reorderTools).toHaveBeenCalledTimes(1);
+
+      pending.resolve();
+      const settledMenu = await openToolMenu('Second Ungrouped');
+      await waitFor(() =>
+        expect(
+          within(settledMenu).getByRole('button', { name: 'Move later' }).classList,
+        ).not.toContain('disabled'),
+      );
+    });
+
+    it('re-enables moves after a failed reorder reloads the list', async () => {
+      const user = userEvent.setup();
+      apiMock.listToolConfigs.mockResolvedValue([groupedTool, ungroupedTool, secondUngrouped]);
+      apiMock.reorderTools.mockRejectedValueOnce(new Error('Reorder failed'));
+      render(<ToolsPanel />);
+      await screen.findByText('Second Ungrouped');
+
+      const menu = await openToolMenu('Ungrouped Tool');
+      await user.click(within(menu).getByRole('button', { name: 'Move later' }));
+      await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('Reorder failed'));
+      await waitFor(() => expect(apiMock.listToolConfigs.mock.calls.length).toBeGreaterThan(1));
+      await screen.findByText('Ungrouped Tool');
+
+      const retryMenu = await openToolMenu('Ungrouped Tool');
+      expect(within(retryMenu).getByRole('button', { name: 'Move later' }).classList).not.toContain(
+        'disabled',
+      );
+    });
+
+    it('blocks a second group move until the first one settles', async () => {
+      const user = userEvent.setup();
+      apiMock.listToolGroups.mockResolvedValue([toolGroup, betaGroup]);
+      const pending = deferred();
+      groupApiMock.reorderToolGroups.mockReturnValueOnce(pending.promise);
+      render(<ToolsPanel />);
+      await screen.findByText(groupedTool.name);
+
+      await user.click(screen.getByRole('button', { name: 'Group actions for Alpha Group' }));
+      await user.click(await screen.findByRole('button', { name: 'Move down' }));
+      await waitFor(() => expect(groupApiMock.reorderToolGroups).toHaveBeenCalledTimes(1));
+
+      await user.click(screen.getByRole('button', { name: 'Group actions for Beta group' }));
+      const moveDown = await screen.findByRole('button', { name: 'Move down' });
+      expect(moveDown.classList).toContain('disabled');
+      await user.click(moveDown);
+      expect(groupApiMock.reorderToolGroups).toHaveBeenCalledTimes(1);
+
+      pending.resolve();
+      await waitFor(() =>
+        expect(screen.getByText('Group “Alpha Group” moved to position 2 of 2.')).toBeTruthy(),
+      );
+      // The Beta menu is still open from above; read its state rather than toggling it shut.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Move down' }).classList).not.toContain(
+          'disabled',
+        ),
+      );
+    });
+
+    it('clears an active filter when a group is created so the new section takes focus', async () => {
+      const user = userEvent.setup();
+      groupApiMock.createToolGroup.mockResolvedValue({
+        ...toolGroup,
+        id: 'group-new',
+        name: 'Beta',
+        description: '',
+        sort_order: 200,
+      });
+      toolFilterState.queries = ['ungrouped'];
+      toolFilterState.hasActiveFilters = true;
+      render(<ToolsPanel />);
+      await screen.findByText(ungroupedTool.name);
+
+      await user.click(screen.getByRole('button', { name: 'New group' }));
+      const dialog = await screen.findByRole('dialog', { name: 'New group' });
+      await user.type(within(dialog).getByLabelText('Name'), 'Beta');
+      await user.click(within(dialog).getByRole('button', { name: 'Create group' }));
+
+      await waitFor(() => expect(toolFilterState.clear).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(document.activeElement).toBe(
+          document.getElementById('tools-section-group-new-toggle'),
+        ),
+      );
+    });
+
+    it('after deleting a group under a filter, focuses the next rendered section toggle', async () => {
+      const user = userEvent.setup();
+      apiMock.listToolGroups.mockResolvedValue([toolGroup, betaGroup]);
+      apiMock.listToolConfigs.mockResolvedValue([groupedTool, betaTool, ungroupedTool]);
+      toolFilterState.queries = ['group'];
+      toolFilterState.hasActiveFilters = true;
+      render(<ToolsPanel />);
+      await screen.findByText(groupedTool.name);
+
+      await user.click(screen.getByRole('button', { name: 'Group actions for Alpha Group' }));
+      await user.click(await screen.findByRole('button', { name: 'Delete group…' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Delete group “Alpha Group”?' });
+      await user.click(within(dialog).getByRole('button', { name: 'Delete group' }));
+
+      await waitFor(() => expect(groupApiMock.deleteToolGroup).toHaveBeenCalledWith('group-1'));
+      await waitFor(() =>
+        expect(document.activeElement).toBe(
+          document.getElementById('tools-section-group-beta-toggle'),
+        ),
+      );
+    });
+
+    it('after deleting a group under a filter, falls back to New group when the next section is hidden', async () => {
+      const user = userEvent.setup();
+      apiMock.listToolGroups.mockResolvedValue([toolGroup, betaGroup]);
+      apiMock.listToolConfigs.mockResolvedValue([groupedTool, betaTool, ungroupedTool]);
+      toolFilterState.queries = ['alpha group'];
+      toolFilterState.hasActiveFilters = true;
+      render(<ToolsPanel />);
+      await screen.findByText(groupedTool.name);
+
+      await user.click(screen.getByRole('button', { name: 'Group actions for Alpha Group' }));
+      await user.click(await screen.findByRole('button', { name: 'Delete group…' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Delete group “Alpha Group”?' });
+      await user.click(within(dialog).getByRole('button', { name: 'Delete group' }));
+
+      await waitFor(() => expect(groupApiMock.deleteToolGroup).toHaveBeenCalledWith('group-1'));
+      await waitFor(() =>
+        expect(document.activeElement).toBe(document.getElementById('tools-new-group-button')),
+      );
+    });
+
+    it('drops forced-open sections when the signed-in user changes', async () => {
+      document.cookie = 'tools_sections_collapsed_user-1=ungrouped; path=/';
+      document.cookie = 'tools_sections_collapsed_user-2=ungrouped; path=/';
+      const { rerender } = render(
+        <ToolsPanel currentUser={testUser} highlightSection="tool:tool-ungrouped" />,
+      );
+      await screen.findByText(ungroupedTool.name);
+      await waitFor(() => expect(sectionBody('ungrouped').hidden).toBe(false));
+
+      rerender(<ToolsPanel currentUser={{ id: 'user-2' } as User} />);
+      await waitFor(() => expect(sectionBody('ungrouped').hidden).toBe(true));
+    });
+
+    it('drops in-memory filter toggles when the signed-in user changes', async () => {
+      toolFilterState.queries = ['ungrouped'];
+      toolFilterState.hasActiveFilters = true;
+      const { rerender } = render(<ToolsPanel currentUser={testUser} />);
+      await screen.findByText(ungroupedTool.name);
+
+      fireEvent.click(document.getElementById('tools-section-ungrouped-toggle')!);
+      expect(sectionBody('ungrouped').hidden).toBe(true);
+
+      rerender(<ToolsPanel currentUser={{ id: 'user-2' } as User} />);
+      await waitFor(() => expect(sectionBody('ungrouped').hidden).toBe(false));
+    });
+
+    it('gives each section grid a stable id hook', async () => {
+      render(<ToolsPanel />);
+      await screen.findByText(groupedTool.name);
+      expect(document.getElementById('tools-section-group-1-grid')?.getAttribute('role')).toBe(
+        'list',
+      );
+      expect(document.getElementById('tools-section-ungrouped-grid')).not.toBeNull();
+    });
+
+    it('gives the plain no-groups grid the tools-grid-all hook', async () => {
+      apiMock.listToolGroups.mockResolvedValue([]);
+      apiMock.listToolConfigs.mockResolvedValue([ungroupedTool]);
+      render(<ToolsPanel />);
+      await screen.findByText(ungroupedTool.name);
+      expect(document.getElementById('tools-grid-all')?.getAttribute('role')).toBe('list');
+    });
+
+    it('shows visible-of-total counts while filtering', async () => {
+      apiMock.listToolConfigs.mockResolvedValue([
+        groupedTool,
+        { ...groupedTool, id: 'tool-grouped-2', name: 'Grouped Other', description: 'x' },
+      ]);
+      toolFilterState.queries = ['grouped tool'];
+      toolFilterState.hasActiveFilters = true;
+      render(<ToolsPanel />);
+      await screen.findByText(groupedTool.name);
+      const section = document.querySelector('[data-tool-section="group-1"]') as HTMLElement;
+      expect(within(section).getByText('1 of 2 tools')).toBeTruthy();
+    });
+  });
 });

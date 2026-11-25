@@ -2,8 +2,122 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ToolWizard } from './ToolWizard';
+import { DEFAULT_PDM_CONNECTION_CONFIG } from './pdm/pdmDefaults';
 import type { ToolConfig } from '@/types';
+import type { SolidworksConnectionConfig } from '../api/solidworks';
 import { api as clientApi } from '@/api/client';
+import type { SolidWorksHostPanelProps } from './SolidWorksHostPanel';
+import type { SolidWorksOptionsPanelProps } from './SolidWorksOptionsPanel';
+import type { SolidWorksTestResultProps } from './SolidWorksTestResult';
+import type { SolidWorksPdmLinkPanelProps } from './SolidWorksPdmLinkPanel';
+import type { RightsState } from '../utils/solidworksPdmRights';
+import { contentProtectionApi } from '../api/contentProtection';
+
+vi.mock('./SolidWorksPdmLinkPanel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./SolidWorksPdmLinkPanel')>();
+  return {
+    ...actual,
+    SolidWorksPdmLinkPanel: (
+      props: SolidWorksPdmLinkPanelProps & {
+        toolId: string | null;
+        onRightsChange?: (state: RightsState | null) => void;
+      },
+    ) => (
+      <>
+        <div data-testid="pdm-wizard-tool-id">{props.toolId}</div>
+        <button
+          type="button"
+          onClick={() =>
+            props.onRightsChange?.({
+              root: 'ok',
+              folders: {},
+              user: 'rights.user',
+              extraWriteInfo: false,
+            })
+          }
+        >
+          Publish test rights
+        </button>
+        <actual.SolidWorksPdmLinkPanel {...props} />
+      </>
+    ),
+  };
+});
+
+vi.mock('./SolidWorksHostPanel', () => ({
+  SolidWorksHostPanel: ({
+    toolId,
+    connectionReady,
+    onBusyChange,
+    onActionBusyChange,
+    onStatusChange,
+  }: SolidWorksHostPanelProps) => {
+    const hostStatus = (running: boolean) => ({
+      reachable: true,
+      installed: true,
+      running,
+      host_version: '0.1.0',
+      expected_host_version: '0.1.0',
+      update_available: false,
+      account: { name: 'HAMMERTON\\cad-agent', is_administrator: false },
+      session: { interactive: true },
+      solidworks: { installed_versions: [2024], instances: [] },
+      error: null,
+    });
+    return (
+      <div data-testid="mock-sw-host">
+        {toolId}:{String(connectionReady)}
+        <button onClick={() => onBusyChange?.(true)}>Start host check</button>
+        <button onClick={() => onBusyChange?.(false)}>Finish host check</button>
+        <button
+          onClick={() => {
+            onBusyChange?.(true);
+            onActionBusyChange?.(true);
+          }}
+        >
+          Start host action
+        </button>
+        <button
+          onClick={() => {
+            onActionBusyChange?.(false);
+            onBusyChange?.(false);
+          }}
+        >
+          Finish host action
+        </button>
+        <button onClick={() => onStatusChange?.(hostStatus(true))}>Report host running</button>
+        <button onClick={() => onStatusChange?.(hostStatus(false))}>Report host stopped</button>
+      </div>
+    );
+  },
+}));
+vi.mock('./SolidWorksOptionsPanel', () => ({
+  SolidWorksOptionsPanel: ({
+    value,
+    onChange,
+    timeoutMaxSeconds,
+    onTimeoutMaxSecondsChange,
+    disabled,
+  }: SolidWorksOptionsPanelProps) => (
+    <fieldset data-testid="mock-sw-options" disabled={disabled}>
+      <span>
+        {JSON.stringify(value)} timeout:{timeoutMaxSeconds}
+      </span>
+      <button
+        onClick={() => {
+          onChange({ ...value, solidworks_version: 2024, instance_mode: 'attach' });
+          onTimeoutMaxSecondsChange(125);
+        }}
+      >
+        Change options
+      </button>
+    </fieldset>
+  ),
+}));
+vi.mock('./SolidWorksTestResult', () => ({
+  SolidWorksTestResult: ({ result }: SolidWorksTestResultProps) =>
+    result ? <div data-testid="mock-sw-result">{result.message}</div> : null,
+}));
 
 const apiMock = vi.hoisted(() => ({
   discoverDocker: vi.fn(),
@@ -205,6 +319,13 @@ const existingHttpApiOAuthTool: ToolConfig = {
 };
 
 beforeEach(() => {
+  vi.spyOn(clientApi, 'listToolConfigs').mockResolvedValue([]);
+  vi.spyOn(clientApi, 'getPdmIndexStatus').mockResolvedValue({
+    document_count: 12,
+    embedding_count: 12,
+    last_indexed: '2026-11-20T08:00:00Z',
+    current_job: null,
+  });
   Element.prototype.scrollIntoView = vi.fn();
   apiMock.getHttpApiEditConfig.mockImplementation(async (toolId: string) => {
     switch (toolId) {
@@ -346,6 +467,11 @@ describe('ToolWizard', () => {
       }),
     );
     expect(apiMock.triggerPdmIndex).toHaveBeenCalledWith('pdm-created');
+    const savedConfig = apiMock.createToolConfig.mock.calls[0][0].connection_config;
+    expect(savedConfig.file_extensions).toEqual(DEFAULT_PDM_CONNECTION_CONFIG.file_extensions);
+    expect(savedConfig.file_extensions).not.toBe(DEFAULT_PDM_CONNECTION_CONFIG.file_extensions);
+    expect(savedConfig.variable_names).toEqual(DEFAULT_PDM_CONNECTION_CONFIG.variable_names);
+    expect(savedConfig.variable_names).not.toBe(DEFAULT_PDM_CONNECTION_CONFIG.variable_names);
   });
 
   it('does not index PDM again when saving an existing tool', async () => {
@@ -2067,5 +2193,671 @@ describe('ToolWizard', () => {
 
     expect(await screen.findByText('Max Timeout (seconds)')).toBeTruthy();
     expect(screen.queryByLabelText('Installation command')).toBeNull();
+  });
+
+  it('gates SolidWorks quick connect on pairing and shows the host step', async () => {
+    const pending = createDeferredPromise<ReturnType<typeof windowsQuickPairing>>();
+    apiMock.createRemotePairing.mockResolvedValue(windowsPendingCreation());
+    apiMock.getRemotePairing.mockReturnValue(pending.promise);
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        defaultToolType="solidworks"
+      />,
+    );
+    await waitFor(() => expect(apiMock.getRemotePairing).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(true);
+    await act(async () => pending.resolve(windowsQuickPairing('paired', null)));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect((await screen.findByTestId('mock-sw-host')).textContent).toContain('windows-tool:true');
+    expect(document.querySelector('#solidworks-step')).toBeTruthy();
+  });
+
+  it('selects SolidWorks in the picker and disables navigation during draft creation', async () => {
+    const draft = createDeferredPromise<ToolConfig>();
+    apiMock.createToolConfig.mockReturnValueOnce(draft.promise);
+    render(<ToolWizard existingTool={null} onClose={vi.fn()} onSave={vi.fn()} />);
+    const picker = document.querySelector<HTMLButtonElement>('[data-tool-type="solidworks"]');
+    expect(picker).toBeTruthy();
+    fireEvent.click(picker!);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(document.querySelector('#solidworks-connection-step')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Manual (SSH)' }));
+    fireEvent.change(screen.getByPlaceholderText('server.example.com'), {
+      target: { value: 'cad' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('ubuntu'), { target: { value: 'user' } });
+    fireEvent.change(screen.getByPlaceholderText('Enter SSH password'), {
+      target: { value: 'secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByRole('button', { name: 'Saving…' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Back' }).hasAttribute('disabled')).toBe(true);
+    await act(async () => draft.resolve({ ...postgresContainerTool, id: 'sw-draft' }));
+    expect(await screen.findByTestId('mock-sw-host')).toBeTruthy();
+  });
+
+  it('saves and reuses a manual disabled draft, persists options before testing and enables on final save', async () => {
+    apiMock.createToolConfig.mockResolvedValueOnce({ ...postgresContainerTool, id: 'sw-draft' });
+    const onSave = vi.fn();
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={onSave}
+        defaultToolType="solidworks"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Manual (SSH)' }));
+    fireEvent.change(screen.getByPlaceholderText('server.example.com'), {
+      target: { value: 'cad.example' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('ubuntu'), { target: { value: 'caduser' } });
+    fireEvent.change(screen.getByPlaceholderText('Enter SSH password'), {
+      target: { value: 'secret-value' },
+    });
+    expect(screen.queryByText('Command Prefix (optional)')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Test Connection' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByTestId('mock-sw-host');
+    expect(apiMock.createToolConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'SolidWorks (setup draft)',
+        enabled: false,
+        tool_type: 'solidworks',
+        allow_write: false,
+        connection_config: expect.objectContaining({
+          host: 'cad.example',
+          password: 'secret-value',
+          shell: 'powershell',
+          instance_mode: 'background',
+          max_instances: 1,
+          idle_shutdown_seconds: 900,
+          solidworks_version: null,
+          pdm_tool_id: null,
+          pdm_approved_folders: [],
+        }),
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByTestId('mock-sw-host');
+    expect(apiMock.createToolConfig).toHaveBeenCalledTimes(1);
+    expect(apiMock.updateToolConfig).toHaveBeenCalledWith(
+      'sw-draft',
+      expect.objectContaining({ connection_config: expect.any(Object) }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Report host running' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Change options' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    await screen.findByTestId('mock-sw-result');
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'sw-draft',
+      expect.objectContaining({
+        timeout_max_seconds: 125,
+        connection_config: expect.objectContaining({
+          solidworks_version: 2024,
+          instance_mode: 'attach',
+        }),
+      }),
+    );
+    expect(apiMock.updateToolConfig.mock.invocationCallOrder.slice(-1)[0]).toBeLessThan(
+      apiMock.testSavedToolConnection.mock.invocationCallOrder[0],
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production Database, Staging Odoo'), {
+      target: { value: 'CAD' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByText('Read model data only', { exact: false })).toBeTruthy();
+    expect(screen.getByText('SolidWorks agent: running')).toBeTruthy();
+    expect(screen.queryByText(/secret-value/)).toBeNull();
+    expect(screen.queryByText(/Max results/)).toBeNull();
+    expect(screen.queryByText(/Write operations/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'sw-draft',
+      expect.objectContaining({ enabled: true }),
+    );
+  });
+
+  it('prefills existing SolidWorks settings, preserves hidden credentials and gates navigation while busy', async () => {
+    const tool: ToolConfig = {
+      ...postgresContainerTool,
+      id: 'existing-sw',
+      tool_type: 'solidworks',
+      timeout_max_seconds: 150,
+      configured_secret_fields: ['password'],
+      connection_config: {
+        host: 'cad-host',
+        user: 'cad-user',
+        shell: 'powershell',
+        solidworks_version: 2023,
+        instance_mode: 'attach',
+        max_instances: 2,
+        idle_shutdown_seconds: 600,
+      },
+    };
+    render(<ToolWizard existingTool={tool} onClose={vi.fn()} onSave={vi.fn()} />);
+    expect(screen.getByDisplayValue('cad-host')).toBeTruthy();
+    expect(screen.queryByText('Add Description')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect((await screen.findByTestId('mock-sw-options')).textContent).toContain(
+      '"solidworks_version":2023',
+    );
+    expect(screen.getByTestId('mock-sw-options').textContent).toContain('timeout:150');
+    const config = apiMock.updateToolConfig.mock.calls[0][1].connection_config;
+    expect(config).not.toHaveProperty('password');
+    fireEvent.click(screen.getByRole('button', { name: 'Start host check' }));
+    expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Back' }).hasAttribute('disabled')).toBe(false);
+    expect(screen.getByTestId('mock-sw-options').hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Test Connection' }).hasAttribute('disabled')).toBe(
+      true,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Finish host check' }));
+    expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(false);
+    expect(screen.queryByText('Working Directory (optional)')).toBeNull();
+    expect(screen.queryByText('Allow write operations')).toBeNull();
+  });
+
+  it('stays on manual connection when the draft cannot be saved', async () => {
+    apiMock.createToolConfig.mockRejectedValueOnce(new Error('offline'));
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        defaultToolType="solidworks"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Manual (SSH)' }));
+    fireEvent.change(screen.getByPlaceholderText('server.example.com'), {
+      target: { value: 'cad' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('ubuntu'), { target: { value: 'user' } });
+    fireEvent.change(screen.getByPlaceholderText('Enter SSH password'), {
+      target: { value: 'secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByText('Could not save the connection: offline')).toBeTruthy();
+    expect(screen.queryByTestId('mock-sw-host')).toBeNull();
+  });
+
+  const savedSolidworksTool = (): ToolConfig => ({
+    ...postgresContainerTool,
+    id: 'existing-sw',
+    tool_type: 'solidworks',
+    timeout_max_seconds: 100,
+    connection_config: { host: 'cad-host', user: 'cad-user', shell: 'powershell' },
+  });
+
+  const openSolidworksStep = async (tool = savedSolidworksTool(), onSave = vi.fn()) => {
+    render(<ToolWizard existingTool={tool} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByTestId('mock-sw-options');
+  };
+
+  const vaultTool = (): ToolConfig => ({
+    ...postgresContainerTool,
+    id: 'pdm-vault',
+    name: 'Engineering vault',
+    tool_type: 'solidworks_pdm',
+    connection_config: { host: 'sql', user: 'reader', password: '', database: 'PDM' },
+  });
+  const pdmInput = (id: string) => document.getElementById(id) as HTMLInputElement;
+  const openSolidworksReview = async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByRole('button', { name: 'Save Changes' });
+  };
+
+  it('keeps published rights for Review and passes the SolidWorks tool id', async () => {
+    vi.spyOn(clientApi, 'listToolConfigs').mockResolvedValue([vaultTool()]);
+    await openSolidworksStep();
+    expect(screen.getByTestId('pdm-wizard-tool-id').textContent).toBe('existing-sw');
+    await waitFor(() => expect(document.getElementById('solidworks-pdm-tool')).toBeTruthy());
+    fireEvent.change(document.getElementById('solidworks-pdm-tool')!, {
+      target: { value: 'pdm-vault' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Publish test rights' }));
+    await openSolidworksReview();
+    expect(document.querySelector('[data-sw-review-row="pdm-user"]')?.textContent).toContain(
+      'rights.user',
+    );
+  });
+
+  it('clears published rights when the linked search index changes', async () => {
+    const other = { ...vaultTool(), id: 'pdm-other', name: 'Other vault' };
+    vi.spyOn(clientApi, 'listToolConfigs').mockResolvedValue([vaultTool(), other]);
+    await openSolidworksStep();
+    await waitFor(() => expect(document.getElementById('solidworks-pdm-tool')).toBeTruthy());
+    fireEvent.change(document.getElementById('solidworks-pdm-tool')!, {
+      target: { value: 'pdm-vault' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Publish test rights' }));
+    fireEvent.change(document.getElementById('solidworks-pdm-tool')!, {
+      target: { value: 'pdm-other' },
+    });
+    await openSolidworksReview();
+    expect(document.querySelector('[data-sw-review-row="pdm-user"]')?.textContent).toContain(
+      'not checked',
+    );
+  });
+
+  it('renders scripts after PDM and before the test even without a linked vault', async () => {
+    await openSolidworksStep();
+    const pdm = screen.getByTestId('solidworks-pdm-link-panel');
+    const scripts = screen.getByTestId('solidworks-scripts-panel');
+    const test = document.getElementById('solidworks-test-section')!;
+    expect(pdm.compareDocumentPosition(scripts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(scripts.compareDocumentPosition(test) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.getElementById('solidworks-pdm-changes')).toBeNull();
+    expect((screen.getByLabelText('Allow scripts') as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('clears a test result, shows the scripts review and saves the enabled flag independently of PDM', async () => {
+    vi.spyOn(contentProtectionApi, 'getConfig').mockResolvedValue({ enabled: false } as Awaited<
+      ReturnType<typeof contentProtectionApi.getConfig>
+    >);
+    apiMock.testSavedToolConnection.mockResolvedValue({ success: true, message: 'Passed' });
+    const onSave = vi.fn();
+    await openSolidworksStep(savedSolidworksTool(), onSave);
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    await screen.findByTestId('mock-sw-result');
+    fireEvent.click(screen.getByLabelText('Allow scripts'));
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+    await openSolidworksReview();
+    const row = document.getElementById('tool-review-solidworks-scripts')!;
+    expect(row.textContent).toContain(
+      "Scripts: Allowed. They run as the computer's Windows user and are not sandboxed.",
+    );
+    await waitFor(() =>
+      expect(row.textContent).toContain(
+        'Content protection is off, so scripts run without review.',
+      ),
+    );
+    expect(
+      screen.getByText(
+        'Access to SolidWorks: Read model data, and run scripts that can change models',
+      ),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'existing-sw',
+      expect.objectContaining({
+        allow_write: false,
+        connection_config: expect.objectContaining({ allow_scripts: true, pdm_tool_id: null }),
+      }),
+    );
+  });
+
+  it('shows scripts off in review and saves the default off value', async () => {
+    const onSave = vi.fn();
+    await openSolidworksStep(savedSolidworksTool(), onSave);
+    await openSolidworksReview();
+    expect(document.getElementById('tool-review-solidworks-scripts')?.textContent).toBe(
+      'Scripts: Off',
+    );
+    expect(screen.getByText('Access to SolidWorks: Read model data only')).toBeTruthy();
+    expect(document.querySelector('[data-sw-review-row="host-updates"]')?.textContent).toBe(
+      'Agent updates: Automatic when idle',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'existing-sw',
+      expect.objectContaining({
+        connection_config: expect.objectContaining({
+          allow_scripts: false,
+          auto_update_host: true,
+        }),
+      }),
+    );
+  });
+
+  it.each([true, false])('reviews and saves agent updates enabled=%s', async (enabled) => {
+    const tool = savedSolidworksTool();
+    tool.connection_config = {
+      ...(tool.connection_config as SolidworksConnectionConfig),
+      auto_update_host: enabled,
+    };
+    const onSave = vi.fn();
+    await openSolidworksStep(tool, onSave);
+    await openSolidworksReview();
+    expect(document.querySelector('[data-sw-review-row="host-updates"]')?.textContent).toBe(
+      `Agent updates: ${enabled ? 'Automatic when idle' : 'Manual only'}`,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'existing-sw',
+      expect.objectContaining({
+        connection_config: expect.objectContaining({ auto_update_host: enabled }),
+      }),
+    );
+  });
+
+  it('mounts the PDM section and loads an existing link and approved folders', async () => {
+    vi.mocked(clientApi.listToolConfigs).mockResolvedValue([vaultTool()]);
+    const tool = savedSolidworksTool();
+    tool.allow_write = true;
+    tool.connection_config = {
+      ...(tool.connection_config as SolidworksConnectionConfig),
+      pdm_tool_id: 'pdm-vault',
+      pdm_approved_folders: ['\\Existing'],
+    };
+    await openSolidworksStep(tool);
+    await waitFor(() =>
+      expect((document.getElementById('solidworks-pdm-tool') as HTMLSelectElement).value).toBe(
+        'pdm-vault',
+      ),
+    );
+    expect(screen.getByTestId('solidworks-pdm-link-panel')).toBeTruthy();
+    expect(screen.getByTestId('solidworks-pdm-folder-list').textContent).toContain('\\Existing');
+    expect(pdmInput('solidworks-allow-changes').checked).toBe(true);
+    expect(apiMock.updateToolConfig).toHaveBeenCalledWith(
+      'existing-sw',
+      expect.objectContaining({ allow_write: true }),
+    );
+  });
+
+  it('persists the chosen link, folders and changes switch on test, connection Continue and final save, and shows Review rows', async () => {
+    vi.mocked(clientApi.listToolConfigs).mockResolvedValue([vaultTool()]);
+    const onSave = vi.fn();
+    await openSolidworksStep(savedSolidworksTool(), onSave);
+    await waitFor(() =>
+      expect((document.getElementById('solidworks-pdm-tool') as HTMLSelectElement).disabled).toBe(
+        false,
+      ),
+    );
+    fireEvent.change(document.getElementById('solidworks-pdm-tool')!, {
+      target: { value: 'pdm-vault' },
+    });
+    fireEvent.click(pdmInput('solidworks-allow-changes'));
+    fireEvent.change(pdmInput('solidworks-pdm-folder-input'), {
+      target: { value: '\\13_Ragtime' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    const payload = expect.objectContaining({
+      allow_write: true,
+      connection_config: expect.objectContaining({
+        pdm_tool_id: 'pdm-vault',
+        pdm_approved_folders: ['\\13_Ragtime'],
+      }),
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    await screen.findByTestId('mock-sw-result');
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith('existing-sw', payload);
+    fireEvent.click(pdmInput('solidworks-allow-changes'));
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    await screen.findByTestId('mock-sw-result');
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'existing-sw',
+      expect.objectContaining({
+        allow_write: false,
+        connection_config: expect.objectContaining({
+          pdm_tool_id: 'pdm-vault',
+          pdm_approved_folders: ['\\13_Ragtime'],
+        }),
+      }),
+    );
+    fireEvent.click(pdmInput('solidworks-allow-changes'));
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByTestId('mock-sw-options');
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith('existing-sw', payload);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('solidworks-pdm-link-panel').getAttribute('data-sw-pdm-state'),
+      ).not.toBe('loading'),
+    );
+    await openSolidworksReview();
+    expect(screen.getByTestId('solidworks-review-pdm').textContent).toContain('Engineering vault');
+    expect(screen.getByTestId('solidworks-review-pdm').textContent).toContain('\\13_Ragtime');
+    expect(screen.getByText(/Access to SolidWorks: Read model data only/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith('existing-sw', payload);
+  });
+
+  it('clearing a PDM link sends no folders and turns writes off', async () => {
+    vi.mocked(clientApi.listToolConfigs).mockResolvedValue([vaultTool()]);
+    const tool = savedSolidworksTool();
+    tool.allow_write = true;
+    tool.connection_config = {
+      ...(tool.connection_config as SolidworksConnectionConfig),
+      pdm_tool_id: 'pdm-vault',
+      pdm_approved_folders: ['\\Existing'],
+    };
+    await openSolidworksStep(tool);
+    await waitFor(() =>
+      expect((document.getElementById('solidworks-pdm-tool') as HTMLSelectElement).disabled).toBe(
+        false,
+      ),
+    );
+    fireEvent.change(document.getElementById('solidworks-pdm-tool')!, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    await screen.findByTestId('mock-sw-result');
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'existing-sw',
+      expect.objectContaining({
+        allow_write: false,
+        connection_config: expect.objectContaining({ pdm_tool_id: null, pdm_approved_folders: [] }),
+      }),
+    );
+    await openSolidworksReview();
+    expect(screen.getByTestId('solidworks-review-pdm').textContent).toContain('Not linked');
+  });
+
+  it('blocks Continue, Back and step navigation while PDM setup is busy', async () => {
+    const discovery =
+      createDeferredPromise<Awaited<ReturnType<typeof clientApi.discoverMssqlDatabases>>>();
+    vi.spyOn(clientApi, 'discoverMssqlDatabases').mockReturnValue(discovery.promise);
+    await openSolidworksStep();
+    await screen.findByRole('button', { name: 'Set up a search index' });
+    fireEvent.click(document.getElementById('solidworks-pdm-setup-open')!);
+    for (const [field, value] of [
+      ['host', 'sql'],
+      ['user', 'reader'],
+      ['password', 'secret'],
+    ]) {
+      fireEvent.change(pdmInput(`solidworks-pdm-setup-${field}`), { target: { value } });
+    }
+    fireEvent.click(document.getElementById('solidworks-pdm-setup-discover')!);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(true),
+    );
+    expect(screen.getByRole('button', { name: 'Back' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Test Connection' }).hasAttribute('disabled')).toBe(
+      true,
+    );
+    await act(async () => discovery.resolve({ success: true, databases: ['PDM'] }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(false),
+    );
+    expect(screen.getByRole('button', { name: 'Back' }).hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Test Connection' }).hasAttribute('disabled')).toBe(
+      false,
+    );
+  });
+
+  it('invalidates a passed connection test when the PDM link, folders or Allow changes change', async () => {
+    vi.mocked(clientApi.listToolConfigs).mockResolvedValue([vaultTool()]);
+    apiMock.testSavedToolConnection.mockResolvedValue({ success: true, message: 'Passed' });
+    await openSolidworksStep();
+    await waitFor(() =>
+      expect((document.getElementById('solidworks-pdm-tool') as HTMLSelectElement).disabled).toBe(
+        false,
+      ),
+    );
+    const pass = async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+      expect((await screen.findByTestId('mock-sw-result')).textContent).toBe('Passed');
+    };
+    await pass();
+    fireEvent.change(document.getElementById('solidworks-pdm-tool')!, {
+      target: { value: 'pdm-vault' },
+    });
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+    await pass();
+    fireEvent.click(pdmInput('solidworks-allow-changes'));
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+    await pass();
+    fireEvent.change(pdmInput('solidworks-pdm-folder-input'), { target: { value: '\\Approved' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+    await pass();
+    fireEvent.click(pdmInput('solidworks-allow-changes'));
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+    await pass();
+    fireEvent.change(document.getElementById('solidworks-pdm-tool')!, { target: { value: '' } });
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+  });
+
+  it('does not call an unresolved existing PDM link deleted on Review', async () => {
+    const tools = createDeferredPromise<ToolConfig[]>();
+    vi.mocked(clientApi.listToolConfigs).mockReturnValue(tools.promise);
+    const tool = savedSolidworksTool();
+    tool.connection_config = {
+      ...(tool.connection_config as SolidworksConnectionConfig),
+      pdm_tool_id: 'pdm-vault',
+    };
+    await openSolidworksStep(tool);
+    await openSolidworksReview();
+    expect(screen.getByTestId('solidworks-review-pdm').textContent).not.toContain(
+      'no longer exists',
+    );
+    expect(screen.getByTestId('solidworks-review-pdm').textContent).toMatch(/loading/i);
+    await act(async () => tools.resolve([vaultTool()]));
+  });
+
+  it('fails closed when an existing unlinked tool contains stale writes and folders', async () => {
+    const tool = savedSolidworksTool();
+    tool.allow_write = true;
+    tool.connection_config = {
+      ...(tool.connection_config as SolidworksConnectionConfig),
+      pdm_tool_id: null,
+      pdm_approved_folders: ['\\Stale'],
+    };
+    await openSolidworksStep(tool);
+    expect(apiMock.updateToolConfig).toHaveBeenLastCalledWith(
+      'existing-sw',
+      expect.objectContaining({
+        allow_write: false,
+        connection_config: expect.objectContaining({ pdm_tool_id: null, pdm_approved_folders: [] }),
+      }),
+    );
+  });
+
+  it('clears the test result on option, timeout or host status changes, but keeps it for an identical status', async () => {
+    apiMock.testSavedToolConnection.mockResolvedValue({ success: true, message: 'Host ready.' });
+    await openSolidworksStep();
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    expect(await screen.findByTestId('mock-sw-result')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Test again' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Report host running' }));
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    expect(await screen.findByTestId('mock-sw-result')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Report host running' }));
+    expect(screen.getByTestId('mock-sw-result')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Report host stopped' }));
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    expect(await screen.findByTestId('mock-sw-result')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Change options' }));
+    expect(screen.queryByTestId('mock-sw-result')).toBeNull();
+  });
+
+  it('shows a thrown SolidWorks test error as a failed result, not the top banner', async () => {
+    apiMock.testSavedToolConnection.mockRejectedValueOnce(new Error('Network down'));
+    await openSolidworksStep();
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }));
+    expect((await screen.findByTestId('mock-sw-result')).textContent).toBe('Network down');
+    expect(document.querySelector('.error-banner')).toBeNull();
+  });
+
+  it('blocks Back and the options only while an action runs; a status check blocks Continue and the test', async () => {
+    await openSolidworksStep();
+    fireEvent.click(screen.getByRole('button', { name: 'Start host action' }));
+    expect(screen.getByRole('button', { name: 'Back' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByTestId('mock-sw-options').hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Finish host action' }));
+    expect(screen.getByRole('button', { name: 'Back' }).hasAttribute('disabled')).toBe(false);
+    expect(screen.getByTestId('mock-sw-options').hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('detaches a SolidWorks draft when another tool type is picked, so the save creates that type', async () => {
+    apiMock.createRemotePairing.mockReturnValueOnce(new Promise(() => undefined));
+    apiMock.createToolConfig
+      .mockResolvedValueOnce({ ...postgresContainerTool, id: 'sw-draft' })
+      .mockResolvedValueOnce({ ...postgresContainerTool, id: 'ssh-tool' });
+    const onSave = vi.fn();
+    render(<ToolWizard existingTool={null} onClose={vi.fn()} onSave={onSave} />);
+
+    fireEvent.click(document.querySelector<HTMLButtonElement>('[data-tool-type="solidworks"]')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Manual (SSH)' }));
+    fireEvent.change(screen.getByPlaceholderText('server.example.com'), {
+      target: { value: 'cad.example' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('ubuntu'), { target: { value: 'caduser' } });
+    fireEvent.change(screen.getByPlaceholderText('Enter SSH password'), {
+      target: { value: 'secret-value' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByTestId('mock-sw-host');
+    expect(apiMock.createToolConfig).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click(document.querySelector<HTMLButtonElement>('[data-tool-type="ssh_shell"]')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Manual (SSH)' }));
+    for (let step = 0; step < 6 && !screen.queryByRole('button', { name: 'Create Tool' }); step++) {
+      const nameField = screen.queryByPlaceholderText('e.g., Production Database, Staging Odoo');
+      if (nameField) fireEvent.change(nameField, { target: { value: 'Shell' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(apiMock.createToolConfig).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tool_type: 'ssh_shell' }),
+    );
+    expect(apiMock.updateToolConfig).not.toHaveBeenCalledWith('sw-draft', expect.anything());
+  });
+
+  it('warns on Review with the warning icon when the agent is not running, and stays plain when it is running', async () => {
+    await openSolidworksStep();
+    fireEvent.click(screen.getByRole('button', { name: 'Report host stopped' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Continue' }).hasAttribute('disabled')).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save Changes' })).toBeTruthy());
+
+    const line = screen.getByText(/SolidWorks agent: not running yet\./);
+    expect(line.closest('.sw-message')?.getAttribute('data-tone')).toBe('warning');
+    expect(screen.queryByText('SolidWorks agent: running')).toBeNull();
   });
 });

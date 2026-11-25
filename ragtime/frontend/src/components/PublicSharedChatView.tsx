@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
 import { AlertCircle, Info } from 'lucide-react';
 
 import { api } from '@/api';
 import { formatPublicErrorDetail } from '@/api/publicErrorDetail';
+import { getFocusableElements, useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 import type {
   AuthStatus,
   ChatTask,
@@ -38,6 +39,7 @@ import { ContextUsagePie } from './shared/ContextUsagePie';
 import { DenialNotice } from './shared/DenialNotice';
 import { UserMenu } from './UserMenu';
 import { UserSpaceSharedView } from './UserSpaceSharedView';
+import { ModelArtifactModalHost } from './ModelArtifactModalHost';
 import { isDenialOnlyMessage } from '@/utils/denialNotices';
 
 const SHARED_CHAT_POLL_INTERVAL_MS = 30000;
@@ -55,6 +57,58 @@ interface PublicSharedChatViewProps {
   serverName?: string;
   onLoginSuccess: (user: User) => void;
   onLogout: () => void;
+}
+
+function SharedLoginDialog({
+  authStatus,
+  serverName,
+  onLoginSuccess,
+  onClose,
+  returnFocusRef,
+}: {
+  authStatus: AuthStatus;
+  serverName: string;
+  onLoginSuccess: (user: User) => void;
+  onClose: () => void;
+  returnFocusRef: RefObject<HTMLElement | null>;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const initialFocusRef = useRef<HTMLElement | null>(null);
+  // Capture the dialog field before the trap's StrictMode cleanup restores focus.
+  useEffect(() => {
+    initialFocusRef.current = getFocusableElements(dialogRef.current)[0] ?? null;
+  }, []);
+  useDialogFocusTrap(dialogRef, initialFocusRef, { onEscape: onClose, returnFocusRef });
+
+  return (
+    <div
+      id="public-shared-login-overlay"
+      className="shared-login-modal-overlay"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        id="public-shared-login-dialog"
+        className="shared-login-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Sign in"
+      >
+        <LoginCard
+          authStatus={authStatus}
+          onLoginSuccess={onLoginSuccess}
+          serverName={serverName}
+        />
+        <div className="shared-login-modal-footer">
+          <button type="button" className="btn btn-link" onClick={onClose}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function SharedChatSurface({
@@ -85,6 +139,7 @@ function SharedChatSurface({
   const [inputAreaHeight, setInputAreaHeight] = useState(SHARED_CHAT_MIN_INPUT_HEIGHT);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const signInButtonRef = useRef<HTMLButtonElement>(null);
   const sendingRef = useRef(false);
   const showLoginRef = useRef(false);
 
@@ -429,13 +484,21 @@ function SharedChatSurface({
   }, []);
 
   const showLoginModal = showLogin && !currentUser && Boolean(authStatus);
+  const sharedChatState = loading
+    ? 'loading'
+    : passwordRequired
+      ? 'password'
+      : conversation
+        ? 'conversation'
+        : 'unavailable';
+  const showPasswordError = Boolean(submittedSharePassword && error);
 
   return (
     <div id="public-shared-chat-view" className="app-shell app-shell-locked chat-workbench-shell">
       <div
         className={showLoginModal ? 'shared-blur-host shared-blur-host-active' : 'shared-blur-host'}
       >
-        <nav className="topnav chat-workbench-topnav">
+        <nav id="public-shared-topnav" className="topnav chat-workbench-topnav">
           <span className="topnav-brand">
             <BrandName name={serverName} />
           </span>
@@ -466,7 +529,13 @@ function SharedChatSurface({
                 />
               </>
             ) : (
-              <button className="topnav-link" onClick={() => setShowLogin((previous) => !previous)}>
+              <button
+                type="button"
+                ref={signInButtonRef}
+                className="topnav-link"
+                aria-haspopup="dialog"
+                onClick={() => setShowLogin(true)}
+              >
                 Sign In
               </button>
             )}
@@ -476,7 +545,7 @@ function SharedChatSurface({
         <div className="container chat-page-container">
           <div id="public-shared-chat-panel" className="chat-panel chat-panel-shared">
             <div className="chat-main">
-              <div className="chat-header chat-header-shared">
+              <div id="public-shared-chat-header" className="chat-header chat-header-shared">
                 <div className="chat-header-info">
                   <div className="chat-header-title-row">
                     <h2 className="chat-shared-title">
@@ -525,267 +594,307 @@ function SharedChatSurface({
                     </h2>
                   </div>
                 </div>
-                <div className="chat-shared-header-right">
-                  <div className="chat-shared-owner-col" aria-label="Shared by">
-                    <span className="chat-shared-owner-label">Shared by</span>
-                    <span className="chat-shared-owner-value" title={ownerLabel}>
-                      {ownerLabel}
-                    </span>
+                {conversation && (
+                  <div className="chat-shared-header-right">
+                    <div className="chat-shared-owner-col" aria-label="Shared by">
+                      <span className="chat-shared-owner-label">Shared by</span>
+                      <span className="chat-shared-owner-value" title={ownerLabel}>
+                        {ownerLabel}
+                      </span>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
-              {error && !passwordRequired && !loading && (
+              {error && conversation && !passwordRequired && !loading && (
                 <div className="chat-error" role="alert">
                   {error}
                 </div>
               )}
 
-              {loading ? (
-                <div className="chat-messages chat-messages-skeleton">
-                  <div className="chat-loading">Loading shared conversation...</div>
-                </div>
-              ) : passwordRequired ? (
-                <div className="chat-messages">
-                  <div
-                    className="chat-welcome"
-                    style={{ maxWidth: 420, margin: '40px auto', textAlign: 'left' }}
-                  >
-                    <h3>Password required</h3>
-                    <p className="chat-welcome-subtitle" style={{ marginTop: 8 }}>
-                      The owner protected this shared chat with a password.
-                    </p>
-                    <input
-                      type="password"
-                      className="chat-input"
-                      value={sharePasswordDraft}
-                      onChange={(event) => setSharePasswordDraft(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
+              <div
+                id="public-shared-chat-messages"
+                className="chat-message-region"
+                data-shared-chat-state={sharedChatState}
+              >
+                {loading ? (
+                  <div className="chat-messages chat-messages-skeleton">
+                    <div className="chat-loading">Loading shared conversation...</div>
+                  </div>
+                ) : passwordRequired ? (
+                  <div className="chat-messages">
+                    <div
+                      className="chat-welcome"
+                      style={{ maxWidth: 420, margin: '40px auto', textAlign: 'left' }}
+                    >
+                      <h3>Password required</h3>
+                      <p className="chat-welcome-subtitle" style={{ marginTop: 8 }}>
+                        The owner protected this shared chat with a password.
+                      </p>
+                      <form
+                        id="public-shared-password-form"
+                        onSubmit={(event) => {
                           event.preventDefault();
-                          setSubmittedSharePassword(sharePasswordDraft || undefined);
-                        }
-                      }}
-                      placeholder="Enter share password"
-                      style={{ marginTop: 16 }}
-                    />
-                    <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        onClick={() => setSubmittedSharePassword(sharePasswordDraft || undefined)}
-                        disabled={!sharePasswordDraft}
+                          const password = sharePasswordDraft || undefined;
+                          if (password === submittedSharePassword) {
+                            void loadSharedConversation();
+                          } else {
+                            setSubmittedSharePassword(password);
+                          }
+                        }}
                       >
-                        Unlock
-                      </button>
+                        <div className="form-group" style={{ marginTop: 16 }}>
+                          <label htmlFor="public-shared-password-input">Share password</label>
+                          <input
+                            id="public-shared-password-input"
+                            className="form-input"
+                            type="password"
+                            aria-invalid={showPasswordError}
+                            aria-describedby={
+                              showPasswordError ? 'public-shared-password-error' : undefined
+                            }
+                            value={sharePasswordDraft}
+                            onChange={(event) => setSharePasswordDraft(event.target.value)}
+                            placeholder="Enter share password"
+                          />
+                        </div>
+                        {showPasswordError && (
+                          <div
+                            id="public-shared-password-error"
+                            className="status-message error"
+                            role="alert"
+                          >
+                            {error}
+                          </div>
+                        )}
+                        <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                          <button
+                            type="submit"
+                            className="btn btn-primary"
+                            disabled={!sharePasswordDraft}
+                          >
+                            Unlock
+                          </button>
+                        </div>
+                      </form>
                     </div>
                   </div>
-                </div>
-              ) : conversation ? (
-                <div className="chat-messages">
-                  {visibleMessages.length === 0 ? (
-                    <div className="chat-welcome">
-                      <h3>No messages yet</h3>
-                      <p>This shared chat doesn&apos;t have any messages yet.</p>
-                    </div>
-                  ) : (
-                    visibleMessages.map((msg, idx) => {
-                      const { text, attachments } = parseMessageContent(msg.content);
-                      const isUser = msg.role === 'user';
-                      const siblingEvents = msg.events?.map((event) =>
-                        event.type === 'tool'
-                          ? { type: 'tool', tool: event.tool, output: event.output }
-                          : { type: event.type },
-                      );
-                      const fallbackToolCalls =
-                        !msg.events || msg.events.length === 0 ? (msg.tool_calls ?? []) : [];
+                ) : conversation ? (
+                  <div className="chat-messages">
+                    {visibleMessages.length === 0 ? (
+                      <div className="chat-welcome">
+                        <h3>No messages yet</h3>
+                        <p>This shared chat doesn&apos;t have any messages yet.</p>
+                      </div>
+                    ) : (
+                      visibleMessages.map((msg, idx) => {
+                        const { text, attachments } = parseMessageContent(msg.content);
+                        const isUser = msg.role === 'user';
+                        const siblingEvents = msg.events?.map((event) =>
+                          event.type === 'tool'
+                            ? { type: 'tool', tool: event.tool, output: event.output }
+                            : { type: event.type },
+                        );
+                        const fallbackToolCalls =
+                          !msg.events || msg.events.length === 0 ? (msg.tool_calls ?? []) : [];
 
-                      return (
-                        <div
-                          key={`shared-msg-${idx}-${msg.timestamp || idx}`}
-                          className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}`}
-                        >
-                          <div className={`chat-message chat-message-${msg.role}`}>
-                            <div className="chat-message-content">
-                              {isUser ? (
-                                <>
-                                  {attachments.length > 0 && (
-                                    <MessageAttachments attachments={attachments} />
-                                  )}
-                                  {text && (
-                                    <div className="chat-message-text chat-message-user-text">
-                                      <LinkifiedText text={text} />
-                                    </div>
-                                  )}
-                                </>
-                              ) : (
-                                <>
-                                  {isDenialOnlyMessage(msg) ? (
-                                    (() => {
-                                      const denial = msg.events?.[0];
-                                      return denial?.type === 'content_protection_denial' ? (
-                                        <DenialNotice
-                                          reason={denial.public_reason}
-                                          timestamp={denial.timestamp || msg.timestamp}
-                                          requestId={denial.request_id}
-                                          messageId={msg.message_id}
-                                        />
-                                      ) : null;
-                                    })()
-                                  ) : msg.events && msg.events.length > 0 ? (
-                                    (() => {
-                                      const result: React.ReactNode[] = [];
-                                      let pendingReasoning = '';
-                                      let pendingReasoningParts: ReasoningPart[] = [];
-                                      let pendingReasoningDurationSeconds: number | undefined;
-                                      let reasoningBlockCount = 0;
+                        return (
+                          <div
+                            key={`shared-msg-${idx}-${msg.timestamp || idx}`}
+                            className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}`}
+                          >
+                            <div className={`chat-message chat-message-${msg.role}`}>
+                              <div className="chat-message-content">
+                                {isUser ? (
+                                  <>
+                                    {attachments.length > 0 && (
+                                      <MessageAttachments attachments={attachments} />
+                                    )}
+                                    {text && (
+                                      <div className="chat-message-text chat-message-user-text">
+                                        <LinkifiedText text={text} />
+                                      </div>
+                                    )}
+                                  </>
+                                ) : (
+                                  <>
+                                    {isDenialOnlyMessage(msg) ? (
+                                      (() => {
+                                        const denial = msg.events?.[0];
+                                        return denial?.type === 'content_protection_denial' ? (
+                                          <DenialNotice
+                                            reason={denial.public_reason}
+                                            timestamp={denial.timestamp || msg.timestamp}
+                                            requestId={denial.request_id}
+                                            messageId={msg.message_id}
+                                          />
+                                        ) : null;
+                                      })()
+                                    ) : msg.events && msg.events.length > 0 ? (
+                                      (() => {
+                                        const result: React.ReactNode[] = [];
+                                        let pendingReasoning = '';
+                                        let pendingReasoningParts: ReasoningPart[] = [];
+                                        let pendingReasoningDurationSeconds: number | undefined;
+                                        let reasoningBlockCount = 0;
 
-                                      const flushReasoning = () => {
-                                        if (!pendingReasoning) return;
-                                        reasoningBlockCount++;
-                                        result.push(
-                                          <div
-                                            key={`shared-reasoning-wrapper-${idx}-${reasoningBlockCount}`}
-                                            className="chat-reasoning-container"
-                                          >
-                                            <ReasoningDisplay
-                                              content={pendingReasoning}
-                                              isComplete={true}
-                                              parts={
-                                                pendingReasoningParts.length > 0
-                                                  ? pendingReasoningParts
-                                                  : undefined
+                                        const flushReasoning = () => {
+                                          if (!pendingReasoning) return;
+                                          reasoningBlockCount++;
+                                          result.push(
+                                            <div
+                                              key={`shared-reasoning-wrapper-${idx}-${reasoningBlockCount}`}
+                                              className="chat-reasoning-container"
+                                            >
+                                              <ReasoningDisplay
+                                                content={pendingReasoning}
+                                                isComplete={true}
+                                                parts={
+                                                  pendingReasoningParts.length > 0
+                                                    ? pendingReasoningParts
+                                                    : undefined
+                                                }
+                                                durationSeconds={pendingReasoningDurationSeconds}
+                                                showToolCalls={true}
+                                              />
+                                            </div>,
+                                          );
+                                          pendingReasoning = '';
+                                          pendingReasoningParts = [];
+                                          pendingReasoningDurationSeconds = undefined;
+                                        };
+
+                                        msg.events?.forEach(
+                                          (event: MessageEvent, eventIdx: number) => {
+                                            if (event.type === 'reasoning') {
+                                              pendingReasoning += event.content;
+                                              const lastPart =
+                                                pendingReasoningParts[
+                                                  pendingReasoningParts.length - 1
+                                                ];
+                                              if (lastPart && lastPart.type === 'text') {
+                                                lastPart.text =
+                                                  (lastPart.text || '') + event.content;
+                                              } else {
+                                                pendingReasoningParts.push({
+                                                  type: 'text',
+                                                  text: event.content,
+                                                });
                                               }
-                                              durationSeconds={pendingReasoningDurationSeconds}
-                                              showToolCalls={true}
-                                            />
-                                          </div>,
-                                        );
-                                        pendingReasoning = '';
-                                        pendingReasoningParts = [];
-                                        pendingReasoningDurationSeconds = undefined;
-                                      };
-
-                                      msg.events?.forEach(
-                                        (event: MessageEvent, eventIdx: number) => {
-                                          if (event.type === 'reasoning') {
-                                            pendingReasoning += event.content;
-                                            const lastPart =
-                                              pendingReasoningParts[
-                                                pendingReasoningParts.length - 1
-                                              ];
-                                            if (lastPart && lastPart.type === 'text') {
-                                              lastPart.text = (lastPart.text || '') + event.content;
-                                            } else {
-                                              pendingReasoningParts.push({
-                                                type: 'text',
-                                                text: event.content,
-                                              });
-                                            }
-                                            if (event.duration_seconds !== undefined) {
-                                              pendingReasoningDurationSeconds =
-                                                event.duration_seconds;
-                                            }
-                                          } else if (event.type === 'content') {
-                                            flushReasoning();
-                                            result.push(
-                                              <div
-                                                key={`shared-content-${idx}-${eventIdx}`}
-                                                className="chat-message-text markdown-content"
-                                              >
-                                                <MemoizedMarkdown content={event.content} />
-                                              </div>,
-                                            );
-                                          } else if (event.type === 'error') {
-                                            flushReasoning();
-                                            result.push(
-                                              <div
-                                                key={`shared-error-${idx}-${eventIdx}`}
-                                                className="chat-message-generation-error"
-                                                role="status"
-                                              >
-                                                <AlertCircle size={14} aria-hidden="true" />
-                                                <span>
-                                                  Generation failed:{' '}
-                                                  {formatPublicErrorDetail(event, event.content)}
-                                                </span>
-                                              </div>,
-                                            );
-                                          } else if (event.type === 'tool') {
-                                            const toolCall: ActiveToolCall = {
-                                              tool: event.tool,
-                                              input: event.input,
-                                              output: event.output,
-                                              presentation: event.presentation,
-                                              connection: event.connection,
-                                              mcp: event.mcp,
-                                              status:
-                                                event.output === undefined ? 'running' : 'complete',
-                                            };
-                                            if (pendingReasoning) {
-                                              // Embed tool in reasoning if it fits chronologically
-                                              pendingReasoningParts.push({
-                                                type: 'tool',
-                                                toolCall,
-                                              });
-                                            } else {
-                                              flushReasoning(); // Just in case, though it should be empty
+                                              if (event.duration_seconds !== undefined) {
+                                                pendingReasoningDurationSeconds =
+                                                  event.duration_seconds;
+                                              }
+                                            } else if (event.type === 'content') {
+                                              flushReasoning();
                                               result.push(
                                                 <div
-                                                  key={`shared-tool-${idx}-${eventIdx}`}
-                                                  className="chat-tool-calls"
+                                                  key={`shared-content-${idx}-${eventIdx}`}
+                                                  className="chat-message-text markdown-content"
                                                 >
-                                                  <ToolCallDisplay
-                                                    toolCall={toolCall}
-                                                    defaultExpanded={false}
-                                                    siblingEvents={siblingEvents}
-                                                    allowRerun={false}
-                                                  />
+                                                  <MemoizedMarkdown content={event.content} />
                                                 </div>,
                                               );
+                                            } else if (event.type === 'error') {
+                                              flushReasoning();
+                                              result.push(
+                                                <div
+                                                  key={`shared-error-${idx}-${eventIdx}`}
+                                                  className="chat-message-generation-error"
+                                                  role="status"
+                                                >
+                                                  <AlertCircle size={14} aria-hidden="true" />
+                                                  <span>
+                                                    Generation failed:{' '}
+                                                    {formatPublicErrorDetail(event, event.content)}
+                                                  </span>
+                                                </div>,
+                                              );
+                                            } else if (event.type === 'tool') {
+                                              const toolCall: ActiveToolCall = {
+                                                tool: event.tool,
+                                                input: event.input,
+                                                output: event.output,
+                                                presentation: event.presentation,
+                                                connection: event.connection,
+                                                mcp: event.mcp,
+                                                status:
+                                                  event.output === undefined
+                                                    ? 'running'
+                                                    : 'complete',
+                                              };
+                                              if (pendingReasoning) {
+                                                // Embed tool in reasoning if it fits chronologically
+                                                pendingReasoningParts.push({
+                                                  type: 'tool',
+                                                  toolCall,
+                                                });
+                                              } else {
+                                                flushReasoning(); // Just in case, though it should be empty
+                                                result.push(
+                                                  <div
+                                                    key={`shared-tool-${idx}-${eventIdx}`}
+                                                    className="chat-tool-calls"
+                                                  >
+                                                    <ToolCallDisplay
+                                                      toolCall={toolCall}
+                                                      defaultExpanded={false}
+                                                      siblingEvents={siblingEvents}
+                                                      allowRerun={false}
+                                                    />
+                                                  </div>,
+                                                );
+                                              }
                                             }
-                                          }
-                                        },
-                                      );
+                                          },
+                                        );
 
-                                      flushReasoning();
-                                      return result;
-                                    })()
-                                  ) : (
-                                    <div className="chat-message-text markdown-content">
-                                      <MemoizedMarkdown content={text} />
-                                    </div>
-                                  )}
-                                  {fallbackToolCalls.length > 0 && (
-                                    <div className="chat-tool-calls">
-                                      {fallbackToolCalls.map((toolCall, toolIdx) => (
-                                        <ToolCallDisplay
-                                          key={`shared-legacy-tool-${idx}-${toolIdx}`}
-                                          toolCall={{ ...toolCall, status: 'complete' }}
-                                          defaultExpanded={false}
-                                          allowRerun={false}
-                                        />
-                                      ))}
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                              {!isDenialOnlyMessage(msg) && (
-                                <div className="chat-message-footer">
-                                  <span className="chat-message-time">
-                                    {formatChatTimestamp(msg.timestamp)}
-                                  </span>
-                                </div>
-                              )}
+                                        flushReasoning();
+                                        return result;
+                                      })()
+                                    ) : (
+                                      <div className="chat-message-text markdown-content">
+                                        <MemoizedMarkdown content={text} />
+                                      </div>
+                                    )}
+                                    {fallbackToolCalls.length > 0 && (
+                                      <div className="chat-tool-calls">
+                                        {fallbackToolCalls.map((toolCall, toolIdx) => (
+                                          <ToolCallDisplay
+                                            key={`shared-legacy-tool-${idx}-${toolIdx}`}
+                                            toolCall={{ ...toolCall, status: 'complete' }}
+                                            defaultExpanded={false}
+                                            allowRerun={false}
+                                          />
+                                        ))}
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                                {!isDenialOnlyMessage(msg) && (
+                                  <div className="chat-message-footer">
+                                    <span className="chat-message-time">
+                                      {formatChatTimestamp(msg.timestamp)}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      );
-                    })
-                  )}
-                  <div ref={messagesEndRef} />
-                </div>
-              ) : null}
+                        );
+                      })
+                    )}
+                    <div ref={messagesEndRef} />
+                  </div>
+                ) : (
+                  <div className="chat-messages">
+                    <div className="chat-welcome">
+                      <p>This shared chat could not be loaded.</p>
+                      {error && <p role="alert">{error}</p>}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {!loading && !passwordRequired && conversation && canEdit && (
                 <>
@@ -859,28 +968,14 @@ function SharedChatSurface({
         </div>
       </div>
 
-      {showLoginModal && (
-        <div
-          className="shared-login-modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setShowLogin(false);
-          }}
-        >
-          <div className="shared-login-modal-card">
-            <LoginCard
-              authStatus={authStatus!}
-              onLoginSuccess={onLoginSuccess}
-              serverName={serverName}
-            />
-            <div className="shared-login-modal-footer">
-              <button type="button" className="btn btn-link" onClick={() => setShowLogin(false)}>
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
+      {showLoginModal && authStatus && (
+        <SharedLoginDialog
+          authStatus={authStatus}
+          onLoginSuccess={onLoginSuccess}
+          serverName={serverName}
+          onClose={() => setShowLogin(false)}
+          returnFocusRef={signInButtonRef}
+        />
       )}
     </div>
   );
@@ -954,5 +1049,10 @@ export function PublicSharedChatView(props: PublicSharedChatViewProps) {
     );
   }
 
-  return <SharedChatSurface {...props} />;
+  return (
+    <>
+      <ModelArtifactModalHost />
+      <SharedChatSurface {...props} />
+    </>
+  );
 }

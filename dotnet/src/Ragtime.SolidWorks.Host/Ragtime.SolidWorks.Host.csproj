@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>ragtime-solidworks-host</AssemblyName>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Ragtime.SolidWorks.Runtime/Internal/RunningObjectTable.cs" Link="ScriptWorker/RunningObjectTable.cs" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <ProjectReference Include="../Ragtime.SolidWorks.Core/Ragtime.SolidWorks.Core.csproj" />
+    <ProjectReference Include="../Ragtime.SolidWorks.Runtime/Ragtime.SolidWorks.Runtime.csproj" />
+    <ProjectReference Include="../Ragtime.SolidWorks.Readers/Ragtime.SolidWorks.Readers.csproj" />
+    <ProjectReference Include="../Ragtime.SolidWorks.Pdm/Ragtime.SolidWorks.Pdm.csproj" />
+    <ProjectReference Include="../Ragtime.SolidWorks.Scripting/Ragtime.SolidWorks.Scripting.csproj" />
+  </ItemGroup>
+</Project>

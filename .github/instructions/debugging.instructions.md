@@ -12,9 +12,14 @@ curl -s http://localhost:8000/health | jq .
 # Service logs
 docker logs -f ragtime-dev
 docker logs -f ragtime-db-dev
+docker logs -f runtime-dev      # User Space runtime manager/worker
 ```
 
 If `/health` shows `status=initializing`, check for startup failures in `ragtime/main.py` lifecycle (DB connect, `rag.initialize()`, index recovery/cleanup).
+
+The dev stack is shared between worktrees and serves one checkout at a time. Before trusting what these commands show, confirm it is serving your checkout; switch it only with `scripts/switch-dev-worktree.sh` (see `.agents/dev-worktree-switching.md`), never with a bare `docker compose` command.
+
+The OpenAPI UI at `/docs` is served only when `DEBUG_MODE=true`.
 
 ## Database Access (Prisma/Postgres)
 
@@ -100,8 +105,22 @@ In this repo, do not rely on `db push` for production-like behavior; migrations 
 ## MCP Route Debugging
 
 ```bash
-# MCP debug endpoints (admin auth required)
-curl -s http://localhost:8000/mcp-debug/status -H "Cookie: ragtime_session=$TOKEN" | jq .
+# MCP debug endpoints (admin auth required): list the MCP tools
+curl -s http://localhost:8000/mcp-debug/tools -H "Cookie: ragtime_session=$TOKEN" | jq .
+
+# Include tools that are failing their health check
+curl -s "http://localhost:8000/mcp-debug/tools?include_unhealthy=true" -H "Cookie: ragtime_session=$TOKEN" | jq .
 ```
 
+`POST /mcp-debug/tools/{tool_name}/call` runs one tool directly, with the same admin auth.
+
 When MCP routes behave differently from chat API, check per-route auth/filter settings and cached route servers in `ragtime/mcp/routes.py`.
+
+When a client reports a missing tool, establish its connector URL and caller identity first and check `mcp_request_logs.auth_method`. A list of only `workspace_development*` tools is a development-only connection, not a broken one. Read `.agents/mcp-byoh-vs-custom-routes.md` before changing route auth or recommending a connector URL.
+
+## Area-Specific Procedures
+
+- Chat history or branch failures: `.agents/chat-branch-debugging.md`.
+- User Space runtime, workspace files, mounts, or preview proxies: `.agents/userspace-runtime.md`.
+- Durable workspace SQLite capture and restore: `.agents/userspace-sqlite-history.md`.
+- Slow requests: "Request timing diagnostics" in `CONTRIBUTING.md`.

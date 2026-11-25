@@ -111,6 +111,19 @@ RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
 # Source assembly and CI gates. A selected external CI base already contains a
 # generated client for the same schema hash, so this path never regenerates it.
 # =============================================================================
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS solidworks-host-build
+WORKDIR /dotnet
+COPY dotnet/ ./
+RUN --mount=type=cache,id=ragtime-sw-nuget,target=/root/.nuget/packages,sharing=locked \
+    dotnet restore RagtimeSolidWorks.sln --locked-mode && \
+    dotnet build RagtimeSolidWorks.sln -c Release --no-restore && \
+    bash build-host-zip.sh /solidworks-artifacts
+
+FROM solidworks-host-build AS solidworks-host-test
+RUN --mount=type=cache,id=ragtime-sw-nuget,target=/root/.nuget/packages,sharing=locked \
+    dotnet restore RagtimeSolidWorks.sln --locked-mode && \
+    dotnet test RagtimeSolidWorks.sln -c Release --no-restore
+
 FROM ${FRONTEND_DEPS_IMAGE} AS frontend-base
 COPY ragtime/frontend/ ./
 
@@ -150,6 +163,8 @@ COPY typings/ /ragtime/typings/
 COPY ragtime/ /ragtime/ragtime/
 COPY runtime/ /ragtime/runtime/
 COPY tests/ /ragtime/tests/
+# tests/test_solidworks_protocol.py checks the host's request limit against Ragtime's.
+COPY dotnet/src/Ragtime.SolidWorks.Core/Wire/CallRequestArgument.cs /ragtime/dotnet/src/Ragtime.SolidWorks.Core/Wire/
 COPY .github/actions/ /ragtime/.github/actions/
 COPY .github/workflows/ /ragtime/.github/workflows/
 
@@ -213,6 +228,7 @@ COPY --chown=ragtime:ragtime ragtime/ /ragtime/ragtime/
 COPY --chown=ragtime:ragtime runtime/ /ragtime/runtime/
 COPY --chown=ragtime:ragtime scripts/chat_branch_fixture.py /ragtime/scripts/chat_branch_fixture.py
 COPY --from=frontend-builder --chown=ragtime:ragtime /frontend/dist /ragtime/ragtime/frontend/dist/
+COPY --from=solidworks-host-build --chown=ragtime:ragtime /solidworks-artifacts/ /opt/ragtime/solidworks-host/
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/scripts/backup-restore.sh /docker-scripts/backup-restore.sh
 COPY docker/scripts/init-pgvector.sh /docker-scripts/init-pgvector.sh

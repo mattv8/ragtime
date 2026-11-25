@@ -43,6 +43,12 @@ from ragtime.rag.components import (
     search_http_api_catalog_entries,
     serialize_knowledge_search_payload,
 )
+from ragtime.solidworks.service import resolve_timeout_cap as resolve_solidworks_timeout_cap
+from ragtime.solidworks.tool import (
+    SOLIDWORKS_TOOL_INPUT_SCHEMA,
+    build_solidworks_tool_description,
+    build_solidworks_tool_name,
+)
 from ragtime.tools.git_history import search_git_history
 from ragtime.tools.ssh_transfer import SSHTransferInput, build_ssh_transfer_tool, normalized_ssh_name, parse_endpoint
 
@@ -83,6 +89,7 @@ async def _run_mcp_faiss_search(
 # Tool input schemas for MCP (JSON Schema format)
 # These define the parameters each tool type accepts
 TOOL_INPUT_SCHEMAS: dict[str, dict] = {
+    "solidworks": SOLIDWORKS_TOOL_INPUT_SCHEMA,
     "postgres": {
         "type": "object",
         "properties": {
@@ -522,6 +529,13 @@ class MCPToolAdapter:
         health_status = await self._check_heartbeats(tool_configs)
 
         for config in tool_configs:
+            if config.get("tool_type") == "solidworks":
+                from ragtime.indexer.repository import repository
+
+                linked_id = (config.get("connection_config") or {}).get("pdm_tool_id")
+                linked = await repository.get_tool_config(linked_id) if linked_id else None
+                link_name = linked.name if linked and linked.tool_type == "solidworks_pdm" and linked.enabled else None
+                config = {**config, "pdm_link_name": link_name}
             tool_id = config.get("id", "")
             tool_type = config.get("tool_type", "")
             enabled = config.get("enabled", True)
@@ -803,12 +817,16 @@ class MCPToolAdapter:
 
     async def _execute_tool_definition(self, tool_def: MCPToolDefinition, arguments: dict[str, Any]) -> str:
         unavailable_reason = self._get_tool_unavailable_reason(tool_def.tool_config)
+        timeout_max_seconds = tool_def.tool_config.get("timeout_max_seconds")
+        if tool_def.tool_config.get("tool_type") == "solidworks":
+            # A zero or missing maximum would leave the outer deadline unlimited; use the service cap.
+            timeout_max_seconds = resolve_solidworks_timeout_cap(tool_def.tool_config)
         try:
             result = await self._execute_with_timeout(
                 tool_def.name,
                 tool_def.execute_fn,
                 arguments,
-                timeout_max_seconds=tool_def.tool_config.get("timeout_max_seconds"),
+                timeout_max_seconds=timeout_max_seconds,
                 input_schema=tool_def.input_schema,
             )
         except Exception as exc:
@@ -1055,6 +1073,8 @@ class MCPToolAdapter:
         # Tool-safe name: lowercase and replace any non-alphanumeric sequence with underscore
         raw_name = (config.get("name", "") or "").strip()
         name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
+        if tool_type == "solidworks":
+            return build_solidworks_tool_name(name)
 
         # Prefix based on tool type
         prefixes = {
@@ -1242,6 +1262,8 @@ class MCPToolAdapter:
     def _build_tool_description(self, config: dict) -> str:
         """Build tool description for MCP."""
         tool_type = config.get("tool_type", "")
+        if tool_type == "solidworks":
+            return build_solidworks_tool_description(config)
         name = config.get("name", "Unknown")
         description = config.get("description", "")
 
@@ -1286,7 +1308,7 @@ class MCPToolAdapter:
         tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", (config.get("name", "") or "").strip()).strip("_").lower()
         tool_id = config.get("id", "")
 
-        if tool_type == "http_api":
+        if tool_type in {"http_api", "solidworks"}:
             tool = await rag_temp.build_primary_runtime_tool_from_config(config)
         elif tool_type == "postgres":
             tool = await rag_temp._create_postgres_tool(config, tool_name, tool_id, include_metadata=False)  # pyright: ignore[reportPrivateUsage]

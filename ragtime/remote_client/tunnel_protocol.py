@@ -7,6 +7,14 @@ from enum import IntEnum
 HEADER_SIZE = 5
 MAX_DATA_PAYLOAD = 64 * 1024
 MAX_CONTROL_PAYLOAD = 1024
+TUNNEL_CLIENT_VERSION = 2
+TUNNEL_CLIENT_VERSION_HEADER = "X-Ragtime-Tunnel-Client-Version"
+
+
+def parse_tunnel_client_version(value: str | None) -> int | None:
+    if value is None or not 1 <= len(value) <= 6 or not value.isascii() or not value.isdigit():
+        return None
+    return int(value)
 
 
 class TunnelMessageType(IntEnum):

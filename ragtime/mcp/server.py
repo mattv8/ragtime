@@ -20,8 +20,8 @@ import json
 import logging
 import sys
 import weakref
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, cast
 
 from mcp.server import NotificationOptions, Server
@@ -30,6 +30,7 @@ from mcp.server.session import ServerSession
 from mcp.types import CallToolResult, Resource, TextContent, Tool, ToolAnnotations
 from pydantic import AnyUrl
 
+from ragtime.content_protection import classification_required
 from ragtime.content_protection.external import (
     authorize_external_content,
     external_protection_context,
@@ -39,10 +40,22 @@ from ragtime.core.app_settings import get_app_settings, invalidate_settings_cach
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.utils import safe_tool_name
-from ragtime.mcp.skills import read_skill_description, route_instructions, visible_skills
+from ragtime.mcp.artifact_content import build_artifact_content
+from ragtime.mcp.guide import default_route_instructions
+from ragtime.mcp.skills import RouteSkillSet, read_skill_description, route_instructions, visible_skills
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
 from ragtime.rag import rag
-from ragtime.skills.contract import READ_SKILL_TOOL_NAME, SKILL_MARKDOWN_MIME_TYPE, SKILL_OWNER_TOOL, SkillRecord, parse_skill_uri, render_skill_markdown
+from ragtime.skills.contract import (
+    DEFAULT_ROUTE_OWNER_ID,
+    READ_SKILL_TOOL_NAME,
+    SKILL_MARKDOWN_MIME_TYPE,
+    SKILL_OWNER_ROUTE,
+    SKILL_OWNER_TOOL,
+    SkillRecord,
+    parse_skill_uri,
+    render_skill_markdown,
+)
+from ragtime.skills.repository import enabled_skill_records, list_enabled_skill_records
 from ragtime.tools.ssh_transfer import build_workspace_file_callbacks
 from ragtime.userspace.development_accounts import (
     AccountWorkspaceCreateRequest,
@@ -561,6 +574,44 @@ _active_sessions: weakref.WeakSet[ServerSession] = weakref.WeakSet()
 
 # Callbacks invoked when tools/routes change (used by HTTP transport layer caches)
 _tools_changed_callbacks: list[Callable[[], None]] = []
+_default_route_skills: list[SkillRecord] | None = None
+_default_route_skills_generation = 0
+_default_route_skill_set: contextvars.ContextVar[RouteSkillSet | None] = contextvars.ContextVar("default_route_skill_set", default=None)
+
+
+async def get_default_route_skills() -> list[SkillRecord]:
+    global _default_route_skills
+    if _default_route_skills is None:
+        generation = _default_route_skills_generation
+        try:
+            records = await list_enabled_skill_records(SKILL_OWNER_ROUTE, DEFAULT_ROUTE_OWNER_ID)
+        except Exception:
+            logger.exception("Failed to load default route instruction skills")
+            return []
+        if generation == _default_route_skills_generation:
+            _default_route_skills = records
+        return records
+    return _default_route_skills
+
+
+@asynccontextmanager
+async def default_route_skills_context() -> AsyncIterator[None]:
+    records = await get_default_route_skills()
+    inline_always = False
+    if records and _general_tools_allowed(get_request_development_principal()):
+        try:
+            inline_always = not await classification_required()
+        except Exception:
+            logger.exception("Failed to resolve content protection for default route skills")
+    token = _default_route_skill_set.set(RouteSkillSet(records, inline_always))
+    try:
+        yield
+    finally:
+        _default_route_skill_set.reset(token)
+
+
+async def _load_default_route_skill_set() -> RouteSkillSet:
+    return _default_route_skill_set.get() or RouteSkillSet([], False)
 
 
 def _to_mcp_server_id(server_name: str | None) -> str:
@@ -574,7 +625,8 @@ def _create_server(server_id: str) -> Server:
     """Create a new MCP server instance with default handlers registered."""
     server = Server(server_id)
     _enable_dynamic_tool_refresh(server)
-    _register_handlers(server, development_tools=True)
+    _enable_default_route_instructions(server, development_tools=True)
+    _register_handlers(server, development_tools=True, route_id=DEFAULT_ROUTE_OWNER_ID, route_skills_loader=_load_default_route_skill_set)
     return server
 
 
@@ -597,6 +649,29 @@ def _enable_dynamic_tool_refresh(server: Server) -> None:
 
     server_any = cast(Any, server)
     server_any.create_initialization_options = create_initialization_options_with_tool_refresh
+
+
+def _enable_default_route_instructions(server: Server, *, development_tools: bool) -> None:
+    original = server.create_initialization_options
+
+    def create_initialization_options_with_guidance(
+        notification_options: NotificationOptions | None = None,
+        experimental_capabilities: dict[str, dict[str, Any]] | None = None,
+    ):
+        options = original(notification_options=notification_options, experimental_capabilities=experimental_capabilities)
+        if not _request_context_bound.get():
+            general, workspace, skill_set = True, development_tools, RouteSkillSet([], False)
+        else:
+            principal = get_request_development_principal()
+            general = _general_tools_allowed(principal)
+            workspace = principal is not None and development_tools
+            skill_set = (_default_route_skill_set.get() or RouteSkillSet([], False)) if general else RouteSkillSet([], False)
+        instructions = default_route_instructions(
+            general_tools=general, workspace_tools=workspace, route_skills=skill_set.records, inline_always=skill_set.inline_always
+        )
+        return options.model_copy(update={"instructions": instructions})
+
+    cast(Any, server).create_initialization_options = create_initialization_options_with_guidance
 
 
 def register_tools_changed_callback(callback: Callable[[], None]) -> None:
@@ -662,6 +737,9 @@ def notify_tools_changed() -> None:
     # Drop the shared tool-config cache so the next rebuild reads fresh
     # ToolConfig rows (e.g. an updated allow_write flag). This keeps the
     # signal self-contained for callers that do not separately invalidate it.
+    global _default_route_skills, _default_route_skills_generation
+    _default_route_skills = None
+    _default_route_skills_generation += 1
     invalidate_settings_cache()
     mcp_tool_adapter.invalidate_cache()
     # Also invalidate all custom route adapters
@@ -701,19 +779,19 @@ def _register_handlers(
     *,
     development_tools: bool = True,
     route_id: str | None = None,
-    route_skills: list[SkillRecord] | None = None,
+    route_skills_loader: Callable[[], Awaitable[RouteSkillSet]] | None = None,
 ) -> None:
     """Register MCP protocol handlers on the server instance."""
 
     # Use provided adapter or default
     tool_adapter = adapter if adapter else mcp_tool_adapter
-    route_instruction_skills = route_skills or []
 
     async def skill_catalog() -> tuple[list[Any], dict[str, tuple[SkillRecord, str]]]:
         if not _general_tools_allowed(get_request_development_principal()):
             return [], {}
         definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
-        return definitions, visible_skills(definitions, route_id, route_instruction_skills)
+        route_skills = await route_skills_loader() if route_skills_loader else RouteSkillSet([], False)
+        return definitions, visible_skills(definitions, route_id, route_skills.records)
 
     def skill_tool_id(uri: str) -> str | None:
         owner = parse_skill_uri(uri)
@@ -739,7 +817,8 @@ def _register_handlers(
             if _general_tools_allowed(principal):
                 tool_definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
                 timeout_limit = await tool_adapter.get_http_call_timeout_limit() if tool_adapter.http_call_limit_enabled else None
-                skills = visible_skills(tool_definitions, route_id, route_instruction_skills)
+                route_skills = await route_skills_loader() if route_skills_loader else RouteSkillSet([], False)
+                skills = visible_skills(tool_definitions, route_id, route_skills.records)
                 collision = any(definition.name == READ_SKILL_TOOL_NAME for definition in tool_definitions)
                 if collision and skills:
                     logger.warning("Skipping built-in read_skill: a configured tool already uses that name")
@@ -762,6 +841,22 @@ def _register_handlers(
                                 name=tool_def.name,
                                 description=description,
                                 inputSchema=input_schema,
+                                annotations=(
+                                    ToolAnnotations(
+                                        readOnlyHint=not (
+                                            destructive := bool(
+                                                (
+                                                    tool_def.tool_config.get("allow_write")
+                                                    and (tool_def.tool_config.get("connection_config") or {}).get("pdm_approved_folders")
+                                                )
+                                                or (tool_def.tool_config.get("connection_config") or {}).get("allow_scripts")
+                                            )
+                                        ),
+                                        destructiveHint=destructive,
+                                    )
+                                    if tool_def.tool_config.get("tool_type") == "solidworks"
+                                    else None
+                                ),
                             )
                         )
 
@@ -769,7 +864,7 @@ def _register_handlers(
                     tools.append(
                         Tool(
                             name=READ_SKILL_TOOL_NAME,
-                            description=read_skill_description(skills),
+                            description=read_skill_description(skills, inline_route_always=route_skills.inline_always),
                             inputSchema={"type": "object", "properties": {"uri": {"type": "string"}}, "required": ["uri"]},
                         )
                     )
@@ -891,7 +986,15 @@ def _register_handlers(
                 execution_completed=True,
             )
 
-            return [TextContent(type="text", text=result)]
+            content = [TextContent(type="text", text=result)]
+            tool_def = tool_adapter._tool_definitions.get(name)
+            if not synthetic_transfer and tool_def and tool_def.tool_config.get("tool_type") == "solidworks":
+                try:
+                    extras = await build_artifact_content(result)
+                    return CallToolResult(content=[*content, *extras])
+                except Exception:
+                    logger.debug("Unable to build SolidWorks artifact content")
+            return content
 
         except Exception as e:
             detail = public_error_detail(e)
@@ -994,15 +1097,14 @@ async def get_custom_route_server(
     route_server_name = f"{server_name}-{route_path}"
 
     route_rows = getattr(route, "instructionSkills", None)
-    route_skills: list[SkillRecord] = [
-        {"id": str(skill.id), "name": skill.name, "description": skill.description, "content": skill.content, "mode": skill.mode, "sort_order": skill.sortOrder}
-        for skill in (route_rows if isinstance(route_rows, list) else [])
-        if skill.enabled
-    ]
-    route_skills.sort(key=lambda skill: (skill["sort_order"], skill["name"]))
+    route_skills = enabled_skill_records(route_rows if isinstance(route_rows, list) else [])
+
+    async def load_route_skills() -> RouteSkillSet:
+        return RouteSkillSet(route_skills, True)
+
     server = Server(route_server_name, instructions=route_instructions(str(route.id), route_skills))
     _enable_dynamic_tool_refresh(server)
-    _register_handlers(server, adapter, route_filter, development_tools=False, route_id=str(route.id), route_skills=route_skills)
+    _register_handlers(server, adapter, route_filter, development_tools=False, route_id=str(route.id), route_skills_loader=load_route_skills)
     _custom_route_servers[route_path] = server
 
     logger.info(f"Created custom MCP server for route: /mcp/{route_path}")
@@ -1072,7 +1174,10 @@ async def get_default_route_filtered_server(
 
     server = Server(filter_server_name)
     _enable_dynamic_tool_refresh(server)
-    _register_handlers(server, adapter, route_filter, development_tools=True)
+    _enable_default_route_instructions(server, development_tools=True)
+    _register_handlers(
+        server, adapter, route_filter, development_tools=True, route_id=DEFAULT_ROUTE_OWNER_ID, route_skills_loader=_load_default_route_skill_set
+    )
     _default_filter_servers[filter_id] = server
 
     logger.info(f"Created filtered MCP server for default route filter: {f.name}")

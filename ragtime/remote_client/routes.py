@@ -26,6 +26,8 @@ from ragtime.remote_client.models import (
 from ragtime.remote_client.relay import relay_manager
 from ragtime.remote_client.repository import remote_pairing_repository
 from ragtime.remote_client.service import remote_pairing_service
+from ragtime.remote_client.tunnel_protocol import TUNNEL_CLIENT_VERSION_HEADER, parse_tunnel_client_version
+from ragtime.remote_client.tunnel_versions import tunnel_client_summary
 
 router = APIRouter(prefix="/indexes/remote", tags=["remote-client"])
 _MAX_ENROLLMENT_BODY_BYTES = 64 * 1024
@@ -88,6 +90,7 @@ async def _response(pairing: dict[str, Any]) -> PairingResponse:
         transport=pairing.get("transport"),
         error=pairing.get("error"),
         connection_config=connection_config,
+        tunnel_client=tunnel_client_summary({"pairing_id": str(pairing["id"]), "transport": pairing.get("transport")}),
     )
 
 
@@ -222,7 +225,8 @@ async def remote_tunnel(websocket: WebSocket) -> None:
         return
     await websocket.accept(subprotocol="ragtime-tunnel-v1")
     pairing_id = str(pairing["id"])
-    relay_task = asyncio.create_task(relay_manager.attach(pairing_id, websocket))
+    client_version = parse_tunnel_client_version(websocket.headers.get(TUNNEL_CLIENT_VERSION_HEADER))
+    relay_task = asyncio.create_task(relay_manager.attach(pairing_id, websocket, client_version=client_version))
     try:
         for _ in range(20):
             if relay_manager.endpoint_for(pairing_id):

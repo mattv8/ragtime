@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { api } from '@/api';
 import type { DockerContainer, DockerNetwork, DockerSSHConfig } from '@/api';
 import type {
@@ -44,6 +45,26 @@ import { PdmWebhookSettings } from './PdmWebhookSettings';
 import { DirectoryBrowser } from './DirectoryBrowser';
 import { HttpApiConnectionPanel } from './HttpApiConnectionPanel';
 import { RemoteClientPairingPanel } from './RemoteClientPairingPanel';
+import { SolidWorksHostPanel } from './SolidWorksHostPanel';
+import { SolidWorksOptionsPanel } from './SolidWorksOptionsPanel';
+import {
+  SolidWorksPdmLinkPanel,
+  type PdmLinkValue,
+  type PdmTarget,
+} from './SolidWorksPdmLinkPanel';
+import { SolidWorksPdmReview } from './SolidWorksPdmReview';
+import type { RightsState } from '../utils/solidworksPdmRights';
+import { SolidWorksScriptsPanel, SolidWorksScriptsReview } from './SolidWorksScriptsPanel';
+import { DEFAULT_PDM_CONNECTION_CONFIG } from './pdm/pdmDefaults';
+import { SolidWorksTestResult } from './SolidWorksTestResult';
+import {
+  SOLIDWORKS_DEFAULT_OPTIONS,
+  SOLIDWORKS_DEFAULT_TIMEOUT_SECONDS,
+  type SolidworksOptions,
+  type SolidworksConnectionConfig,
+  type SolidworksHostStatus,
+} from '@/api/solidworks';
+import type { ToolTestResponse } from '@/types';
 import {
   ToolAccessEditor,
   type ToolAccessGroupOption,
@@ -2196,6 +2217,7 @@ interface ToolWizardProps {
 type WizardStep =
   | 'type'
   | 'connection'
+  | 'solidworks'
   | 'authentication'
   | 'api_details'
   | 'pdm_filtering'
@@ -2243,6 +2265,14 @@ const SSH_WIZARD_STEPS: WizardStep[] = [
   'access',
   'review',
 ];
+const SOLIDWORKS_WIZARD_STEPS: WizardStep[] = [
+  'type',
+  'connection',
+  'solidworks',
+  'description',
+  'access',
+  'review',
+];
 // Odoo tools show options before description for logical flow
 const ODOO_WIZARD_STEPS: WizardStep[] = [
   'type',
@@ -2286,6 +2316,8 @@ function getStepTitle(step: WizardStep): string {
       return 'Select Tool Type';
     case 'connection':
       return 'Configure Connection';
+    case 'solidworks':
+      return 'SolidWorks';
     case 'authentication':
       return 'Configure Authentication';
     case 'api_details':
@@ -2327,6 +2359,7 @@ export function ToolWizard({
     let steps = BASE_WIZARD_STEPS;
     if (toolType === 'http_api') steps = HTTP_API_WIZARD_STEPS;
     else if (toolType === 'solidworks_pdm') steps = PDM_WIZARD_STEPS;
+    else if (toolType === 'solidworks') steps = SOLIDWORKS_WIZARD_STEPS;
     else if (toolType === 'ssh_shell' || toolType === 'windows_shell') steps = SSH_WIZARD_STEPS;
     else if (toolType === 'odoo_shell') steps = ODOO_WIZARD_STEPS;
     else if (toolType === 'filesystem_indexer')
@@ -2346,11 +2379,7 @@ export function ToolWizard({
   );
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{
-    success: boolean;
-    message: string;
-    details?: unknown;
-  } | null>(null);
+  const [testResult, setTestResult] = useState<ToolTestResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // SQL tools dropdown state
@@ -2381,9 +2410,49 @@ export function ToolWizard({
   const [description, setDescription] = useState(existingTool?.description || '');
   const [maxResults, setMaxResults] = useState(existingTool?.max_results || 100);
   const [timeoutMaxSeconds, setTimeoutMaxSeconds] = useState(
-    existingTool?.timeout_max_seconds ?? 300,
+    existingTool?.timeout_max_seconds ??
+      (toolType === 'solidworks' ? SOLIDWORKS_DEFAULT_TIMEOUT_SECONDS : 300),
   );
   const [allowWrite, setAllowWrite] = useState(existingTool?.allow_write || false);
+  const [pdmLink, setPdmLink] = useState<PdmLinkValue>(() => {
+    const config =
+      existingTool?.tool_type === 'solidworks'
+        ? (existingTool.connection_config as SolidworksConnectionConfig)
+        : null;
+    return {
+      pdm_tool_id: config?.pdm_tool_id ?? null,
+      approved_folders: config?.pdm_approved_folders ?? [],
+    };
+  });
+  const [pdmTarget, setPdmTarget] = useState<PdmTarget | null>(null);
+  const [pdmRights, setPdmRights] = useState<RightsState | null>(null);
+  const [pdmResolution, setPdmResolution] = useState<'loading' | 'failed' | 'missing' | 'ready'>(
+    'loading',
+  );
+  const [pdmBusy, setPdmBusy] = useState(false);
+  const effectiveAllowWrite =
+    allowWrite && (toolType !== 'solidworks' || pdmLink.pdm_tool_id !== null);
+  const [solidworksOptions, setSolidworksOptions] = useState<SolidworksOptions>(() => {
+    const config =
+      existingTool?.tool_type === 'solidworks'
+        ? (existingTool.connection_config as SolidworksOptions)
+        : {};
+    return {
+      solidworks_version:
+        config.solidworks_version ?? SOLIDWORKS_DEFAULT_OPTIONS.solidworks_version,
+      instance_mode: config.instance_mode ?? SOLIDWORKS_DEFAULT_OPTIONS.instance_mode,
+      max_instances: config.max_instances ?? SOLIDWORKS_DEFAULT_OPTIONS.max_instances,
+      idle_shutdown_seconds:
+        config.idle_shutdown_seconds ?? SOLIDWORKS_DEFAULT_OPTIONS.idle_shutdown_seconds,
+      allow_scripts: config.allow_scripts ?? false,
+      auto_update_host: config.auto_update_host !== false,
+    };
+  });
+  const [solidworksHostStatus, setSolidworksHostStatus] = useState<SolidworksHostStatus | null>(
+    null,
+  );
+  const [solidworksHostBusy, setSolidworksHostBusy] = useState(false);
+  const [solidworksActionBusy, setSolidworksActionBusy] = useState(false);
   const [accessPolicy, setAccessPolicy] = useState<ToolAccessPolicy>(() =>
     createDefaultToolAccessPolicy(existingTool?.id ?? ''),
   );
@@ -2531,7 +2600,9 @@ export function ToolWizard({
   );
 
   const [sshConfig, setSshConfig] = useState<SSHShellConnectionConfig>(
-    existingTool?.tool_type === 'ssh_shell' || existingTool?.tool_type === 'windows_shell'
+    existingTool?.tool_type === 'ssh_shell' ||
+      existingTool?.tool_type === 'windows_shell' ||
+      existingTool?.tool_type === 'solidworks'
       ? (existingTool.connection_config as SSHShellConnectionConfig)
       : {
           host: '',
@@ -2543,11 +2614,13 @@ export function ToolWizard({
           key_passphrase: '',
           password: '',
           command_prefix: '',
-          shell: toolType === 'windows_shell' ? 'powershell' : 'posix',
+          shell: toolType === 'windows_shell' || toolType === 'solidworks' ? 'powershell' : 'posix',
         },
   );
   const [connectionMode, setConnectionMode] = useState<'quick' | 'manual'>(
-    existingTool?.tool_type === 'ssh_shell' || existingTool?.tool_type === 'windows_shell'
+    existingTool?.tool_type === 'ssh_shell' ||
+      existingTool?.tool_type === 'windows_shell' ||
+      existingTool?.tool_type === 'solidworks'
       ? sshConfig.pairing_id
         ? 'quick'
         : 'manual'
@@ -2561,6 +2634,9 @@ export function ToolWizard({
   >(null);
   // Track the created tool ID for new tools that get auto-saved during analysis or pairing.
   const [createdToolId, setCreatedToolId] = useState<string | null>(null);
+  const [solidworksManualSaved, setSolidworksManualSaved] = useState(
+    existingTool?.tool_type === 'solidworks' && !sshConfig.pairing_id,
+  );
 
   // Filesystem Indexer config state
   const [filesystemConfig, setFilesystemConfig] = useState<FilesystemConnectionConfig>(() => {
@@ -2710,22 +2786,9 @@ export function ToolWizard({
     existingTool?.tool_type === 'solidworks_pdm'
       ? (existingTool.connection_config as SolidworksPdmConnectionConfig)
       : {
-          host: '',
-          port: 1433,
-          user: '',
-          password: '',
-          database: '',
-          file_extensions: ['.SLDPRT', '.SLDASM', '.SLDDRW'],
-          exclude_deleted: true,
-          variable_names: ['Description', 'Material', 'Revision', 'Status'],
-          include_bom: true,
-          include_folder_path: true,
-          include_configurations: true,
-          max_documents: null,
-          reindex_interval_hours: 0,
-          reindex_start_minute: null,
-          reindex_timezone: null,
-          last_indexed_at: null,
+          ...DEFAULT_PDM_CONNECTION_CONFIG,
+          file_extensions: [...(DEFAULT_PDM_CONNECTION_CONFIG.file_extensions ?? [])],
+          variable_names: [...(DEFAULT_PDM_CONNECTION_CONFIG.variable_names ?? [])],
         },
   );
   const [configurePdmWebhookAfterCreate, setConfigurePdmWebhookAfterCreate] = useState(false);
@@ -3044,7 +3107,14 @@ export function ToolWizard({
       case 'odoo_shell':
         return { ...odooConfig, mode: odooConnectionMode };
       case 'ssh_shell':
+      case 'solidworks':
       case 'windows_shell': {
+        const solidworksConfig = {
+          ...solidworksOptions,
+          pdm_tool_id: pdmLink.pdm_tool_id,
+          pdm_approved_folders: pdmLink.pdm_tool_id ? pdmLink.approved_folders : [],
+          shell: 'powershell',
+        };
         if (connectionMode === 'quick') {
           const pairedConfig = { ...sshConfig };
           delete pairedConfig.key_path;
@@ -3052,13 +3122,23 @@ export function ToolWizard({
           delete pairedConfig.public_key;
           delete pairedConfig.key_passphrase;
           delete pairedConfig.password;
-          return pairedConfig;
+          return toolType === 'solidworks'
+            ? { ...pairedConfig, ...solidworksConfig }
+            : pairedConfig;
         }
         const manualConfig = { ...sshConfig };
         delete manualConfig.pairing_id;
         delete manualConfig.transport;
         delete manualConfig.host_keys;
-        return manualConfig;
+        if (toolType === 'solidworks' && (existingTool || createdToolId)) {
+          manualConfig.pairing_id = null;
+          manualConfig.transport = null;
+          manualConfig.host_keys = null;
+          for (const field of ['password', 'key_content', 'key_passphrase'] as const) {
+            if (!manualConfig[field]) delete manualConfig[field];
+          }
+        }
+        return toolType === 'solidworks' ? { ...manualConfig, ...solidworksConfig } : manualConfig;
       }
       case 'filesystem_indexer':
         // Use the tool name as the index_name (Step 3 Name field)
@@ -3453,7 +3533,11 @@ export function ToolWizard({
           ssh_key_path: '', // Clear path when using content
           // Keep the passphrase that was set before generation
         });
-      } else if (toolType === 'ssh_shell' || toolType === 'windows_shell') {
+      } else if (
+        toolType === 'ssh_shell' ||
+        toolType === 'windows_shell' ||
+        toolType === 'solidworks'
+      ) {
         setSshConfig({
           ...sshConfig,
           key_content: result.private_key,
@@ -3601,6 +3685,8 @@ export function ToolWizard({
   const getCurrentStepIndex = () => wizardSteps.indexOf(currentStep);
 
   const canNavigateToStep = (stepIndex: number): boolean => {
+    if (toolType === 'solidworks' && (saving || testing || solidworksActionBusy || pdmBusy))
+      return false;
     // Can always go back to previous steps
     if (stepIndex <= getCurrentStepIndex()) return true;
     if (requiresHttpApiEditHydration && httpApiHydrationStatus !== 'loaded') return false;
@@ -3612,13 +3698,51 @@ export function ToolWizard({
   const goToStep = (step: WizardStep) => {
     const stepIndex = wizardSteps.indexOf(step);
     if (canNavigateToStep(stepIndex)) {
+      if (
+        toolType === 'solidworks' &&
+        currentStep === 'connection' &&
+        stepIndex > getCurrentStepIndex()
+      ) {
+        void goToNextStep();
+        return;
+      }
       setCurrentStep(step);
       setTestResult(null);
       setError(null);
     }
   };
 
-  const goToNextStep = () => {
+  const goToNextStep = async () => {
+    if (toolType === 'solidworks' && currentStep === 'connection' && connectionMode === 'manual') {
+      setSaving(true);
+      try {
+        const toolId = existingTool?.id ?? createdToolId;
+        if (toolId) {
+          await api.updateToolConfig(toolId, {
+            connection_config: getConnectionConfig(),
+            allow_write: effectiveAllowWrite,
+          });
+        } else {
+          const draft = await api.createToolConfig({
+            name: 'SolidWorks (setup draft)',
+            description: 'SolidWorks setup draft',
+            tool_type: 'solidworks',
+            connection_config: getConnectionConfig(),
+            allow_write: effectiveAllowWrite,
+            enabled: false,
+          });
+          setCreatedToolId(draft.id);
+        }
+        setSolidworksManualSaved(true);
+      } catch (err) {
+        setError(
+          `Could not save the connection: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        );
+        return;
+      } finally {
+        setSaving(false);
+      }
+    }
     const currentIndex = getCurrentStepIndex();
     if (currentIndex < wizardSteps.length - 1) {
       setCurrentStep(wizardSteps[currentIndex + 1]);
@@ -3641,12 +3765,85 @@ export function ToolWizard({
     }
   };
 
+  /** A failed SolidWorks test is shown as a result next to the button, not as the top-of-card banner. */
+  const testSolidworksConnection = async (): Promise<ToolTestResponse> => {
+    try {
+      const toolId = existingTool?.id ?? createdToolId;
+      if (!toolId) throw new Error('Save the connection first');
+      await api.updateToolConfig(toolId, {
+        connection_config: getConnectionConfig(),
+        timeout_max_seconds: timeoutMaxSeconds,
+        allow_write: effectiveAllowWrite,
+      });
+      return await api.testSavedToolConnection(toolId);
+    } catch (err) {
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : 'Test failed',
+        details: {},
+      };
+    }
+  };
+
+  // A result describes the current setup: any change to it, or to the host status, clears it.
+  const handleSolidworksHostStatus = (next: SolidworksHostStatus | null) => {
+    if (JSON.stringify(next) !== JSON.stringify(solidworksHostStatus)) setTestResult(null);
+    setSolidworksHostStatus(next);
+  };
+  const handleSolidworksOptionsChange = (next: SolidworksOptions) => {
+    setSolidworksOptions(next);
+    setTestResult(null);
+  };
+  const handleSolidworksScriptsChange = (allow_scripts: boolean) => {
+    handleSolidworksOptionsChange({ ...solidworksOptions, allow_scripts });
+  };
+  const handlePdmLinkChange = (next: PdmLinkValue) => {
+    if (next.pdm_tool_id !== pdmLink.pdm_tool_id) {
+      setPdmResolution('loading');
+      setPdmTarget(null);
+      setPdmRights(null);
+    }
+    setPdmLink(next);
+    setTestResult(null);
+  };
+  const handlePdmAllowChangesChange = (next: boolean) => {
+    setAllowWrite(next);
+    setTestResult(null);
+  };
+  const handleSolidworksTimeoutChange = (seconds: number) => {
+    setTimeoutMaxSeconds(seconds);
+    setTestResult(null);
+  };
+  /**
+   * Changing the tool type to or from SolidWorks detaches the draft (left disabled in the list),
+   * so the final save creates the newly selected type instead of updating the SolidWorks record.
+   */
+  const detachSolidworksDraft = () => {
+    setCreatedToolId(null);
+    setRemotePairingId(null);
+    setRemotePairingStatus(null);
+    setSshConfig((current) => ({ ...current, pairing_id: null }));
+    setSolidworksManualSaved(false);
+    setSolidworksHostStatus(null);
+    setPdmLink({ pdm_tool_id: null, approved_folders: [] });
+    setPdmTarget(null);
+    setPdmRights(null);
+    setPdmResolution('loading');
+    setPdmBusy(false);
+    setAllowWrite(false);
+    setTestResult(null);
+  };
+
   const handleTestConnection = async () => {
     setTesting(true);
     setTestResult(null);
     setError(null);
 
     try {
+      if (toolType === 'solidworks') {
+        setTestResult(await testSolidworksConnection());
+        return;
+      }
       const savedRemoteToolId =
         (toolType === 'ssh_shell' || toolType === 'windows_shell') &&
         connectionMode === 'quick' &&
@@ -3850,8 +4047,10 @@ export function ToolWizard({
           connection_config: connectionConfig,
           max_results: maxResults,
           timeout_max_seconds: timeoutMaxSeconds,
-          allow_write: allowWrite,
-          ...(remotePairingId && { enabled: true }),
+          allow_write: effectiveAllowWrite,
+          ...((remotePairingId || createdToolId) && {
+            enabled: true,
+          }),
         });
       } else {
         const request: CreateToolConfigRequest = {
@@ -3861,7 +4060,7 @@ export function ToolWizard({
           connection_config: connectionConfig,
           max_results: maxResults,
           timeout_max_seconds: timeoutMaxSeconds,
-          allow_write: allowWrite,
+          allow_write: effectiveAllowWrite,
           ...(mountOnly && { skip_indexing: true }),
         };
         const created = await api.createToolConfig(request);
@@ -3926,6 +4125,9 @@ export function ToolWizard({
   };
 
   const canProceed = (): boolean => {
+    // A status check blocks Continue too; Back and the options only wait for actions.
+    if (toolType === 'solidworks' && (saving || testing || solidworksHostBusy || pdmBusy))
+      return false;
     if (requiresHttpApiEditHydration && httpApiHydrationStatus !== 'loaded') {
       return false;
     }
@@ -3935,6 +4137,8 @@ export function ToolWizard({
         return true;
       case 'connection':
         return validateConnection();
+      case 'solidworks':
+        return true;
       case 'authentication':
         return validateHttpApiAuthentication();
       case 'api_details':
@@ -4170,10 +4374,14 @@ export function ToolWizard({
           return false;
         return Boolean(odooConfig.container);
       case 'ssh_shell':
+      case 'solidworks':
       case 'windows_shell': {
         if (connectionMode === 'quick') return remotePairingStatus === 'paired';
         const hasSshAuth = Boolean(
-          sshConfig.key_content || sshConfig.key_path || sshConfig.password,
+          sshConfig.key_content ||
+          sshConfig.key_path ||
+          sshConfig.password ||
+          (toolType === 'solidworks' && solidworksManualSaved),
         );
         return Boolean(sshConfig.host && sshConfig.user && hasSshAuth);
       }
@@ -4234,21 +4442,30 @@ export function ToolWizard({
     };
     const handleToolTypeSelect = (type: ToolType) => {
       clearSqlToolsExpandTimeout();
+      if (type !== toolType && (toolType === 'solidworks' || type === 'solidworks')) {
+        detachSolidworksDraft();
+      }
       setToolType(type);
-      if (type === 'ssh_shell' || type === 'windows_shell') {
+      if (type === 'ssh_shell' || type === 'windows_shell' || type === 'solidworks') {
         setConnectionMode('quick');
         setRemotePairingId(null);
         setRemotePairingStatus(null);
         setSshConfig((current) => ({
           ...current,
-          shell: type === 'windows_shell' ? 'powershell' : 'posix',
+          shell: type === 'windows_shell' || type === 'solidworks' ? 'powershell' : 'posix',
         }));
+        if (type === 'solidworks') {
+          setSolidworksOptions(SOLIDWORKS_DEFAULT_OPTIONS);
+          setTimeoutMaxSeconds(SOLIDWORKS_DEFAULT_TIMEOUT_SECONDS);
+          setAllowWrite(false);
+        }
       }
     };
     const renderToolTypeOption = ([type, info]: ToolTypeInfoEntry, nested = false) => (
       <button
         key={type}
         type="button"
+        data-tool-type={type}
         className={`tool-type-option${nested ? ' tool-type-option-nested' : ''} ${toolType === type ? 'selected' : ''}`}
         onClick={() => handleToolTypeSelect(type)}
       >
@@ -6315,8 +6532,18 @@ export function ToolWizard({
   );
 
   const renderSSHConnection = () => (
-    <div className="wizard-content">
-      <p className="wizard-help">Connect to a remote server via SSH to run shell commands.</p>
+    <div
+      className="wizard-content"
+      id={toolType === 'solidworks' ? 'solidworks-connection-step' : undefined}
+      data-tool-type={toolType === 'solidworks' ? 'solidworks' : undefined}
+    >
+      <p className="wizard-help">
+        {toolType === 'solidworks'
+          ? connectionMode === 'quick'
+            ? 'Connect to the Windows machine that has SolidWorks installed. Run the command as the Windows account that works in SolidWorks. The next step installs the SolidWorks agent, a small Ragtime program, for that account. To pair a different account, use the (i) button.'
+            : 'Connect to the Windows machine that has SolidWorks installed with your own SSH details. The next step installs the SolidWorks agent, a small Ragtime program, for that account.'
+          : 'Connect to a remote server via SSH to run shell commands.'}
+      </p>
       <div className="connection-tabs" role="group" aria-label="Connection method">
         <button
           type="button"
@@ -6338,9 +6565,11 @@ export function ToolWizard({
 
       {connectionMode === 'quick' ? (
         <RemoteClientPairingPanel
-          toolType={toolType as 'ssh_shell' | 'windows_shell'}
+          toolType={toolType as 'ssh_shell' | 'windows_shell' | 'solidworks'}
           pairingId={remotePairingId}
-          toolId={existingTool?.id}
+          toolId={
+            existingTool?.id ?? (toolType === 'solidworks' ? createdToolId : null) ?? undefined
+          }
           onPairingCreated={handleRemotePairingCreated}
           onPairingUpdated={applyRemotePairing}
         />
@@ -6413,18 +6642,20 @@ export function ToolWizard({
             showHostPort={false}
           />
 
-          <div className="form-group" style={{ marginTop: '1rem' }}>
-            <label>Command Prefix (optional)</label>
-            <input
-              type="text"
-              value={sshConfig.command_prefix || ''}
-              onChange={(e) => setSshConfig({ ...sshConfig, command_prefix: e.target.value })}
-              placeholder="cd /app && source venv/bin/activate && "
-            />
-            <p className="field-help">
-              Commands to run before each tool command (e.g., activate virtualenv).
-            </p>
-          </div>
+          {toolType !== 'solidworks' && (
+            <div className="form-group" style={{ marginTop: '1rem' }}>
+              <label>Command Prefix (optional)</label>
+              <input
+                type="text"
+                value={sshConfig.command_prefix || ''}
+                onChange={(e) => setSshConfig({ ...sshConfig, command_prefix: e.target.value })}
+                placeholder="cd /app && source venv/bin/activate && "
+              />
+              <p className="field-help">
+                Commands to run before each tool command (e.g., activate virtualenv).
+              </p>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -6904,6 +7135,7 @@ export function ToolWizard({
         case 'odoo_shell':
           return renderOdooConnection();
         case 'ssh_shell':
+        case 'solidworks':
         case 'windows_shell':
           return renderSSHConnection();
         case 'filesystem_indexer':
@@ -6918,6 +7150,7 @@ export function ToolWizard({
         {content}
         {/* Only show test button for tools that need connection testing (not filesystem) */}
         {toolType !== 'filesystem_indexer' &&
+          toolType !== 'solidworks' &&
           toolType !== 'http_api' &&
           ((toolType !== 'ssh_shell' && toolType !== 'windows_shell') ||
             connectionMode !== 'quick' ||
@@ -7413,15 +7646,75 @@ export function ToolWizard({
 
         <div className="review-section">
           <h4>Connection</h4>
-          <pre className="review-config">{JSON.stringify(reviewConnectionConfig, null, 2)}</pre>
+          {toolType === 'solidworks' ? (
+            <>
+              <p>
+                {connectionMode === 'quick'
+                  ? `Paired machine ${sshConfig.host}`
+                  : `${sshConfig.user}@${sshConfig.host}:${sshConfig.port || 22}`}
+              </p>
+              {solidworksHostStatus?.running === true && <p>SolidWorks agent: running</p>}
+              {solidworksHostStatus?.running === false && (
+                <p className="sw-message" data-tone="warning">
+                  <AlertTriangle className="sw-message-icon" size={14} aria-hidden="true" />
+                  <span>
+                    SolidWorks agent: not running yet. Calls fail until the agent is installed and
+                    the account is logged in.
+                  </span>
+                </p>
+              )}
+              <p>
+                SolidWorks version:{' '}
+                {solidworksOptions.solidworks_version
+                  ? `SolidWorks ${solidworksOptions.solidworks_version}`
+                  : 'Any installed version'}
+              </p>
+              <p>
+                Instance:{' '}
+                {solidworksOptions.instance_mode === 'attach'
+                  ? 'Attach to open SolidWorks'
+                  : `Background instance, up to ${solidworksOptions.max_instances} at a time, closed after ${(solidworksOptions.idle_shutdown_seconds ?? 900) / 60} minutes idle`}
+              </p>
+              <p data-sw-review-row="host-updates">
+                Agent updates:{' '}
+                {solidworksOptions.auto_update_host !== false
+                  ? 'Automatic when idle'
+                  : 'Manual only'}
+              </p>
+            </>
+          ) : (
+            <pre className="review-config">{JSON.stringify(reviewConnectionConfig, null, 2)}</pre>
+          )}
         </div>
 
+        {toolType === 'solidworks' && (
+          <SolidWorksPdmReview
+            link={pdmLink}
+            allowChanges={allowWrite}
+            target={pdmTarget}
+            hostStatus={solidworksHostStatus}
+            resolution={pdmResolution}
+            rights={pdmRights}
+          />
+        )}
         <div className="review-section">
           <h4>Options</h4>
           <ul>
-            <li>Max results: {maxResults}</li>
+            {toolType !== 'solidworks' && <li>Max results: {maxResults}</li>}
             <li>Max timeout: {timeoutMaxSeconds === 0 ? 'No timeout' : `${timeoutMaxSeconds}s`}</li>
-            <li>Write operations: {allowWrite ? 'Enabled' : 'Disabled'}</li>
+            {toolType === 'solidworks' ? (
+              <>
+                <li>
+                  Access to SolidWorks:{' '}
+                  {solidworksOptions.allow_scripts
+                    ? 'Read model data, and run scripts that can change models'
+                    : 'Read model data only'}
+                </li>
+                <SolidWorksScriptsReview allowed={solidworksOptions.allow_scripts === true} />
+              </>
+            ) : (
+              <li>Write operations: {allowWrite ? 'Enabled' : 'Disabled'}</li>
+            )}
           </ul>
         </div>
 
@@ -7444,6 +7737,70 @@ export function ToolWizard({
         return renderTypeSelection();
       case 'connection':
         return renderConnectionConfig();
+      case 'solidworks':
+        return (
+          <div
+            id="solidworks-step"
+            data-wizard-step="solidworks"
+            className="wizard-content sw-step"
+          >
+            <p className="wizard-help">
+              Install the agent, choose how SolidWorks starts, then test.
+            </p>
+            <SolidWorksHostPanel
+              toolId={existingTool?.id ?? createdToolId}
+              connectionReady={validateConnection()}
+              onStatusChange={handleSolidworksHostStatus}
+              onBusyChange={setSolidworksHostBusy}
+              onActionBusyChange={setSolidworksActionBusy}
+            />
+            <SolidWorksOptionsPanel
+              value={solidworksOptions}
+              onChange={handleSolidworksOptionsChange}
+              hostStatus={solidworksHostStatus}
+              timeoutMaxSeconds={timeoutMaxSeconds}
+              onTimeoutMaxSecondsChange={handleSolidworksTimeoutChange}
+              disabled={saving || testing || solidworksActionBusy}
+            />
+            <SolidWorksPdmLinkPanel
+              toolId={existingTool?.id ?? createdToolId}
+              value={pdmLink}
+              onChange={handlePdmLinkChange}
+              allowChanges={allowWrite}
+              onAllowChangesChange={handlePdmAllowChangesChange}
+              hostStatus={solidworksHostStatus}
+              disabled={saving || testing}
+              onBusyChange={setPdmBusy}
+              onTargetChange={setPdmTarget}
+              onResolutionChange={setPdmResolution}
+              onRightsChange={setPdmRights}
+            />
+            <SolidWorksScriptsPanel
+              value={solidworksOptions.allow_scripts === true}
+              onChange={handleSolidworksScriptsChange}
+              instanceMode={solidworksOptions.instance_mode ?? 'background'}
+              disabled={saving || testing || solidworksActionBusy}
+            />
+            <div id="solidworks-test-section" className="wizard-test-section">
+              <button
+                id="solidworks-test-button"
+                type="button"
+                className="btn"
+                onClick={handleTestConnection}
+                disabled={
+                  testing ||
+                  saving ||
+                  solidworksHostBusy ||
+                  pdmBusy ||
+                  !(existingTool?.id ?? createdToolId)
+                }
+              >
+                {testing ? 'Testing...' : testResult ? 'Test again' : 'Test Connection'}
+              </button>
+              <SolidWorksTestResult result={testResult} />
+            </div>
+          </div>
+        );
       case 'authentication':
         return renderHttpApiAuthentication();
       case 'api_details':
@@ -7552,6 +7909,9 @@ export function ToolWizard({
               ? onClose
               : goToPreviousStep
           }
+          disabled={
+            toolType === 'solidworks' && (saving || testing || solidworksActionBusy || pdmBusy)
+          }
         >
           {getCurrentStepIndex() === 0 || (isEditing && currentStep === 'connection')
             ? 'Cancel'
@@ -7564,7 +7924,9 @@ export function ToolWizard({
           </button>
         ) : (
           <button type="button" className="btn" onClick={goToNextStep} disabled={!canProceed()}>
-            Continue
+            {saving && toolType === 'solidworks' && currentStep === 'connection'
+              ? 'Saving…'
+              : 'Continue'}
           </button>
         )}
       </div>

@@ -24,7 +24,7 @@ from pydantic import AnyUrl
 import ragtime.mcp.server as mcp_server
 from ragtime.content_protection import service as protection_service
 from ragtime.content_protection.models import ClassifierConfig, ContentProtectionConfig, ContentProtectionError, Requirement
-from ragtime.mcp.skills import read_skill_description, route_instructions
+from ragtime.mcp.skills import RouteSkillSet, read_skill_description, route_instructions
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, MCPToolDefinition
 from ragtime.skills.contract import SkillMode, SkillRecord, build_skill_uri
 
@@ -152,7 +152,7 @@ class InstructionSkillsMcpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_route_skill_outbound_has_no_tool_owner(self):
         server = Server("route")
-        mcp_server._register_handlers(server, self.adapter, route_id="route-1", route_skills=[skill()])
+        mcp_server._register_handlers(server, self.adapter, route_id="route-1", route_skills_loader=mock.AsyncMock(return_value=RouteSkillSet([skill()], True)))
         uri = build_skill_uri("route", "route-1", "example")
         with mock.patch.object(mcp_server, "authorize_external_content", new=mock.AsyncMock()) as guard:
             await list_tools(server)
@@ -160,6 +160,115 @@ class InstructionSkillsMcpTests(unittest.IsolatedAsyncioTestCase):
             await read_resource_text(server, uri)
         outbound = [call.kwargs for call in guard.await_args_list if call.kwargs.get("direction") == "outbound"]
         self.assertEqual([call["tool_id"] for call in outbound], [None, None])
+
+    async def test_default_and_filtered_route_skill_surfaces(self):
+        default = mcp_server._create_server("default-test")
+        filter_row = SimpleNamespace(
+            enabled=True,
+            toolSelections=[],
+            includeKnowledgeSearch=False,
+            includeGitHistory=False,
+            selectedDocumentIndexes=[],
+            selectedFilesystemIndexes=[],
+            selectedSchemaIndexes=[],
+            name="test",
+        )
+        db = SimpleNamespace(mcpdefaultroutefilter=SimpleNamespace(find_unique=mock.AsyncMock(return_value=filter_row)))
+        with (
+            mock.patch.object(mcp_server, "get_db", mock.AsyncMock(return_value=db)),
+            mock.patch.object(mcp_server, "get_app_settings", mock.AsyncMock(return_value={})),
+            mock.patch.object(mcp_server, "get_default_route_skills", mock.AsyncMock(return_value=[skill()])),
+            mock.patch.object(mcp_server, "classification_required", mock.AsyncMock(return_value=False)),
+            mock.patch.object(mcp_server, "authorize_external_content", mock.AsyncMock()),
+            mock.patch.object(mcp_server, "_development_tools_for_principal", mock.AsyncMock(return_value=[])),
+            mock.patch.object(mcp_server, "_default_filter_servers", {}),
+            mock.patch.object(mcp_server, "_default_filter_adapters", {}),
+        ):
+            # The default factory retains its loader reference, so supply its cache.
+            with mock.patch.object(mcp_server, "_default_route_skills", [skill()]):
+                filtered_result = await mcp_server.get_default_route_filtered_server("filter-test")
+                assert filtered_result is not None
+                filtered, adapter = filtered_result
+                adapter.get_available_tools = mock.AsyncMock(return_value=[])
+                adapter.resolve_canonical_tool_id = mock.AsyncMock(return_value=None)
+                with (
+                    mock.patch.object(mcp_server.mcp_tool_adapter, "get_available_tools", mock.AsyncMock(return_value=[])),
+                    mock.patch.object(mcp_server.mcp_tool_adapter, "resolve_canonical_tool_id", mock.AsyncMock(return_value=None)),
+                ):
+                    uri = "skill://routes/default/example/SKILL.md"
+                    for instance in (default, filtered):
+                        self.assertNotIn(uri, " ".join(tool.description or "" for tool in await list_tools(instance)))
+                        self.assertTrue((await call_read_skill(instance, uri)).isError)
+                        self.assertEqual(await list_resources(instance), [])
+                        with self.assertRaises(ValueError):
+                            await read_resource_text(instance, uri)
+                        self.assertNotIn("Follow these instructions.", instance.create_initialization_options().instructions or "")
+                        with mcp_server.mcp_request_context(None):
+                            async with mcp_server.default_route_skills_context():
+                                tools = await list_tools(instance)
+                                description = next(tool.description or "" for tool in tools if tool.name == "read_skill")
+                                self.assertIn(uri, description)
+                                self.assertIn("Follow these instructions.", first_text(await call_read_skill(instance, uri)))
+                                self.assertIn(uri, [str(resource.uri) for resource in await list_resources(instance)])
+                                self.assertIn("Follow these instructions.", await read_resource_text(instance, uri))
+                        with mcp_server.mcp_request_context(SimpleNamespace(general_tools_allowed=False)):
+                            async with mcp_server.default_route_skills_context():
+                                self.assertNotIn("read_skill", [tool.name for tool in await list_tools(instance)])
+                                self.assertEqual(await list_resources(instance), [])
+                                self.assertTrue((await call_read_skill(instance, uri)).isError)
+                                with self.assertRaises(ValueError):
+                                    await read_resource_text(instance, uri)
+
+    async def test_protected_default_route_skills_are_only_released_by_authorized_read(self):
+        instance = mcp_server._create_server("protected")
+        marker = "protected-route-marker"
+        uri = "skill://routes/default/example/SKILL.md"
+        for policy in (True, RuntimeError("policy unavailable"), False):
+            with (
+                self.subTest(policy=policy),
+                mock.patch.object(mcp_server, "get_default_route_skills", mock.AsyncMock(return_value=[skill("always", marker)])),
+                mock.patch.object(
+                    mcp_server, "classification_required", mock.AsyncMock(side_effect=policy if isinstance(policy, Exception) else None, return_value=policy)
+                ),
+                mock.patch.object(mcp_server.mcp_tool_adapter, "get_available_tools", mock.AsyncMock(return_value=[])),
+                mock.patch.object(mcp_server.mcp_tool_adapter, "resolve_canonical_tool_id", mock.AsyncMock(return_value=None)),
+                mock.patch.object(mcp_server, "authorize_external_content", mock.AsyncMock()) as guard,
+                mcp_server.mcp_request_context(None),
+            ):
+                async with mcp_server.default_route_skills_context():
+                    instructions = instance.create_initialization_options().instructions or ""
+                    description = next(tool.description or "" for tool in await list_tools(instance) if tool.name == "read_skill")
+                    inline = policy is False
+                    self.assertEqual(marker in instructions, inline)
+                    self.assertEqual(marker in description, inline)
+                    if not inline:
+                        self.assertIn(uri, instructions)
+                        self.assertIn("Load it with read_skill", instructions)
+                        self.assertIn(uri, description)
+                        self.assertIn("load it before", description)
+                    self.assertIn(marker, first_text(await call_read_skill(instance, uri)))
+                    self.assertIn(marker, await read_resource_text(instance, uri))
+                    self.assertTrue(
+                        any(call.kwargs.get("operation") == "tools/call" and call.kwargs.get("direction") == "outbound" for call in guard.await_args_list)
+                    )
+
+    async def test_unbound_tool_skill_description_omits_default_route_skills(self):
+        instance = mcp_server._create_server("unbound")
+        uri = "skill://routes/default/example/SKILL.md"
+        with (
+            mock.patch.object(mcp_server, "_default_route_skills", [skill("always", "private route text")]),
+            mock.patch.object(mcp_server.mcp_tool_adapter, "get_available_tools", mock.AsyncMock(return_value=[self.definition])),
+            mock.patch.object(mcp_server.mcp_tool_adapter, "resolve_canonical_tool_id", mock.AsyncMock(return_value=None)),
+            mock.patch.object(mcp_server, "authorize_external_content", mock.AsyncMock()),
+        ):
+            description = next(tool.description or "" for tool in await list_tools(instance) if tool.name == "read_skill")
+            self.assertIn(self.uri, description)
+            self.assertNotIn(uri, description)
+            self.assertNotIn("private route text", description)
+            self.assertTrue((await call_read_skill(instance, uri)).isError)
+            self.assertNotIn(uri, [str(resource.uri) for resource in await list_resources(instance)])
+            with self.assertRaises(ValueError):
+                await read_resource_text(instance, uri)
 
     async def test_no_skills_and_collision(self):
         self.config["skills"] = []

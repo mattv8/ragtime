@@ -15,9 +15,18 @@ export function getFocusableElements(container: HTMLElement | null): HTMLElement
 export function useDialogFocusTrap(
   containerRef: RefObject<HTMLDivElement | null>,
   initialFocusRef: RefObject<HTMLElement | null>,
-  { disableEscape, onEscape }: { disableEscape?: boolean; onEscape?: () => void } = {},
+  {
+    disableEscape,
+    onEscape,
+    returnFocusRef,
+  }: {
+    disableEscape?: boolean;
+    onEscape?: () => void;
+    returnFocusRef?: RefObject<HTMLElement | null>;
+  } = {},
 ) {
-  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  const returnFocusOptionRef = useRef(returnFocusRef);
   const disableEscapeRef = useRef(disableEscape);
   const onEscapeRef = useRef(onEscape);
 
@@ -30,7 +39,11 @@ export function useDialogFocusTrap(
   }, [onEscape]);
 
   useEffect(() => {
-    returnFocusRef.current =
+    returnFocusOptionRef.current = returnFocusRef;
+  }, [returnFocusRef]);
+
+  useEffect(() => {
+    previouslyFocusedRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const focusTimer = window.setTimeout(() => {
       initialFocusRef.current?.focus();
@@ -76,7 +89,12 @@ export function useDialogFocusTrap(
     return () => {
       window.clearTimeout(focusTimer);
       document.removeEventListener('keydown', handleKeyDown);
-      returnFocusRef.current?.focus();
+      const target = returnFocusOptionRef.current?.current;
+      if (target?.isConnected) {
+        target.focus();
+      } else if (previouslyFocusedRef.current?.isConnected) {
+        previouslyFocusedRef.current.focus();
+      }
     };
   }, [containerRef, initialFocusRef, disableEscapeRef, onEscapeRef]);
 }

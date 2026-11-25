@@ -2995,6 +2995,31 @@ class IndexerRepository:
         except Exception:
             return False
 
+    async def reorder_tool_groups(self, group_ids: list[str]) -> None:
+        """Assign sort_order to every group in the given order."""
+        if len(set(group_ids)) != len(group_ids):
+            raise ValueError("Tool group IDs must be unique")
+
+        db = await self._get_db()
+        existing = await db.toolgroup.find_many()
+        existing_ids = {group.id for group in existing}
+        unknown_ids = [group_id for group_id in group_ids if group_id not in existing_ids]
+        if unknown_ids:
+            raise ValueError(f"Unknown tool group IDs: {', '.join(unknown_ids)}")
+        missing_ids = sorted(existing_ids - set(group_ids))
+        if missing_ids:
+            raise ValueError(f"Missing tool group IDs: {', '.join(missing_ids)}")
+        if not group_ids:
+            return
+
+        updates_json = json.dumps([{"id": group_id, "sort_order": idx * 100} for idx, group_id in enumerate(group_ids)]).replace("'", "''")
+        await db.execute_raw(f"""
+            UPDATE tool_groups AS t
+            SET sort_order = v.sort_order
+            FROM jsonb_to_recordset('{updates_json}'::jsonb) AS v(id text, sort_order int)
+            WHERE t.id = v.id
+            """)
+
     async def get_tool_ids_for_groups(self, group_ids: list[str]) -> list[str]:
         """Return enabled tool config IDs that belong to any of the given groups."""
         if not group_ids:
@@ -5909,15 +5934,16 @@ class IndexerRepository:
         # Sanitize user message for PostgreSQL storage (remove null bytes)
         user_message = _sanitize_for_postgres(user_message)
 
-        prisma_task = await db.chattask.create(
-            data={  # type: ignore[arg-type]
-                "id": str(uuid.uuid4()),
-                "conversation": {"connect": {"id": conversation_id}},
-                "status": _to_prisma_task_status(ChatTaskStatus.pending),
-                "userMessage": user_message,
-                "executionPolicy": Json(_sanitize_json_for_postgres(execution_policy)) if execution_policy is not None else None,
-            }
-        )
+        create_data: dict[str, Any] = {
+            "id": str(uuid.uuid4()),
+            "conversation": {"connect": {"id": conversation_id}},
+            "status": _to_prisma_task_status(ChatTaskStatus.pending),
+            "userMessage": user_message,
+        }
+        # Prisma rejects null for nullable Json fields, so omit the key.
+        if execution_policy is not None:
+            create_data["executionPolicy"] = Json(_sanitize_json_for_postgres(execution_policy))
+        prisma_task = await db.chattask.create(data=cast(Any, create_data))
 
         # Update conversation to track active task
         await db.conversation.update(where={"id": conversation_id}, data={"activeTaskId": prisma_task.id})

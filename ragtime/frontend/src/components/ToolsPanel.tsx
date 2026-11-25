@@ -1,16 +1,9 @@
-import {
-  Fragment,
-  useState,
-  useEffect,
-  useCallback,
-  useRef,
-  useMemo,
-  useLayoutEffect,
-} from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, type RefObject } from 'react';
 import { api } from '@/api';
 import type {
   ToolConfig,
   ToolGroup,
+  User,
   HeartbeatStatus,
   SchemaIndexStats,
   SchemaIndexJob,
@@ -27,13 +20,19 @@ import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
 import { InstructionSkillsDialog } from './InstructionSkillsDialog';
 import { MountSourceWizard } from './MountSourceWizard';
-import { Icon, getToolIconType } from './Icon';
-import { DeleteConfirmButton } from './DeleteConfirmButton';
+import { Icon } from './Icon';
+import { ToolCard } from './ToolCard';
+import { ToolGroupSection } from './ToolGroupSection';
+import { ToolGroupDialog } from './ToolGroupDialog';
+import { ToolGroupDeleteDialog } from './ToolGroupDeleteDialog';
+import { MoveToGroupDialog, type MoveToGroupTarget } from './MoveToGroupDialog';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
-import { IndexingPill } from './IndexingPill';
 import { useToast, ToastContainer } from './shared/Toast';
-import { ContextMenu } from './shared/ContextMenu';
-import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import {
+  ContextMenu,
+  type ContextMenuAnchorRect,
+  type ContextMenuPlacement,
+} from './shared/ContextMenu';
 import {
   SearchFilterBar,
   searchFilterTextMatchesQuery,
@@ -42,7 +41,6 @@ import {
 import { HardDrive, Trash2, Pencil, X, Upload } from 'lucide-react';
 import { resolveSourceDisplayPath } from '@/utils/mountPaths';
 import { toToolAccessGroupOptions, toToolAccessUserOptions } from '@/utils/toolAccessOptions';
-import { useIsTruncated } from '@/utils/useIsTruncated';
 import {
   EMPTY_INSTRUCTION_SKILL_SUMMARY,
   countInstructionSkills,
@@ -54,52 +52,31 @@ import {
   type ExportPasswordPolicy,
 } from '@/utils/exportPasswordPolicy';
 import { PasswordRequirementsChecklist } from './shared/PasswordRequirementsChecklist';
-import { Popover } from './Popover';
 import { ToolAccessModal } from './ToolAccessModal';
 import { ToolDeleteDialog } from './ToolDeleteDialog';
 import type { ToolAccessPolicy } from '@/types';
 import { contentProtectionApi, type ContentProtectionConfig } from '@/api/contentProtection';
-
-// Inline field being edited
-type EditingField = 'name' | 'description' | null;
+import { getPdmLinkRelations } from '@/utils/solidworksPdmLink';
+import {
+  getToolConnectionSummary,
+  hasSchemaIndexingEnabled,
+  isPairedWindowsTool,
+} from '@/utils/toolConfigDisplay';
+import {
+  UNGROUPED_SECTION_ID,
+  buildToolSections,
+  computeToolMove,
+  moveToolWithinSection,
+  type ToolSection,
+} from '@/utils/toolGroupSections';
+import { summarizeToolGroupHealth } from '@/utils/toolGroupHealth';
+import { getCollapsedToolSections, setCollapsedToolSections } from '@/utils/toolSectionPreferences';
 
 const DRAG_REORDER_PREVIEW_DELAY_MS = 80;
-const HEARTBEAT_ERROR_SOFT_WRAP_LENGTH = 30;
-const HEARTBEAT_ERROR_LONG_TOKEN_PATTERN = new RegExp(
-  `(\\S{${HEARTBEAT_ERROR_SOFT_WRAP_LENGTH + 1},})`,
-);
-const HEARTBEAT_ERROR_CHUNK_PATTERN = new RegExp(`.{1,${HEARTBEAT_ERROR_SOFT_WRAP_LENGTH}}`, 'g');
 type DragPreviewTarget = { toolId: string; insertBefore: boolean };
 
 interface ToolHealthEventPayload {
   statuses?: Record<string, HeartbeatStatus>;
-}
-
-function hasSchemaIndexingEnabled(tool: ToolConfig): boolean {
-  return (
-    (tool.tool_type === 'postgres' || tool.tool_type === 'mssql' || tool.tool_type === 'mysql') &&
-    (tool.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true
-  );
-}
-
-function getToolWorkingDirectory(tool: ToolConfig): string | null {
-  if (
-    tool.tool_type !== 'ssh_shell' &&
-    tool.tool_type !== 'windows_shell' &&
-    tool.tool_type !== 'odoo_shell'
-  ) {
-    return null;
-  }
-
-  return (tool.connection_config as { working_directory?: string })?.working_directory || null;
-}
-
-function isPairedWindowsTool(tool: ToolConfig): boolean {
-  return (
-    tool.tool_type === 'windows_shell' &&
-    typeof (tool.connection_config as { pairing_id?: unknown }).pairing_id === 'string' &&
-    (tool.connection_config as { pairing_id: string }).pairing_id.length > 0
-  );
 }
 
 function formatMountSourceInterval(seconds: number): string {
@@ -117,14 +94,6 @@ function formatMountSourceInterval(seconds: number): string {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   return h > 0 ? `${d}d ${h}h` : `${d}d`;
-}
-
-function formatPdmSchedule(tool: ToolConfig): string | null {
-  if (tool.tool_type !== 'solidworks_pdm') return null;
-  const hours = (tool.connection_config as { reindex_interval_hours?: number })
-    .reindex_interval_hours;
-  if (!hours) return 'Manual only';
-  return hours === 1 ? 'Every hour' : `Every ${hours} hours`;
 }
 
 function isAutoSyncMountSource(source: UserspaceMountSource): boolean {
@@ -157,29 +126,118 @@ function pickLatestConnectedCloudAccount(
   return sorted[0] ?? null;
 }
 
-function getSuggestedGroupName(tool: ToolConfig | null | undefined): string {
-  if (!tool) {
-    return 'New Group';
-  }
+const SORT_ORDER_STEP = 100;
+const UNGROUPED_LABEL = 'Ungrouped';
+const UNGROUPED_DROP_TITLE = 'Ungrouped — drop to remove from group';
+const NEW_GROUP_BUTTON_ID = 'tools-new-group-button';
+const GROUP_EMPTY_MESSAGE =
+  "No tools in this group yet. Drag a tool here, or choose Move to group… from a tool's actions.";
 
-  const toolTypeName = TOOL_TYPE_INFO[tool.tool_type]?.name ?? 'Tool';
-  return `${tool.name} ${toolTypeName}`;
+type GroupDialogState = { mode: 'create' } | { mode: 'edit'; group: ToolGroup };
+type SectionDropHandlers = Pick<
+  React.HTMLAttributes<HTMLElement>,
+  'onDragOver' | 'onDragLeave' | 'onDrop'
+>;
+interface VisibleToolSection {
+  section: ToolSection;
+  shownTools: ToolConfig[];
 }
 
-function getUniqueGroupName(baseName: string, groups: ToolGroup[]): string {
-  const existingNames = new Set(groups.map((group) => group.name.trim().toLowerCase()));
-  if (!existingNames.has(baseName.trim().toLowerCase())) {
-    return baseName;
-  }
-
-  for (let suffix = 2; ; suffix += 1) {
-    const candidate = `${baseName} ${suffix}`;
-    if (!existingNames.has(candidate.toLowerCase())) {
-      return candidate;
-    }
-  }
+interface PendingFocus {
+  elementId: string;
+  /** The group whose element is requested; when it no longer exists the request is dropped. */
+  groupId: string | null;
 }
 
+/** Copies the rect's edges; DOMRect itself is not a plain placement value. */
+function toAnchorRect(rect: DOMRect): ContextMenuAnchorRect {
+  return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
+}
+
+function sectionToggleId(sectionId: string): string {
+  return `tools-section-${sectionId}-toggle`;
+}
+
+function toolMatchesFilter(tool: ToolConfig, groupName: string, queries: string[]): boolean {
+  return searchFilterTextMatchesQuery(`${getToolSearchText(tool)} ${groupName}`, queries);
+}
+
+function withSetMembers(
+  current: ReadonlySet<string>,
+  ids: Iterable<string>,
+  present: boolean,
+): Set<string> {
+  const next = new Set(current);
+  for (const id of ids) {
+    if (present) next.add(id);
+    else next.delete(id);
+  }
+  return next;
+}
+
+function pluralize(count: number, singular: string): string {
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+function getToolsSummaryText(input: {
+  toolCount: number;
+  matchedCount: number;
+  groupCount: number;
+  filtering: boolean;
+}): string {
+  if (input.filtering) return `${input.matchedCount} of ${pluralize(input.toolCount, 'tool')}`;
+  const toolsText = pluralize(input.toolCount, 'tool');
+  return input.groupCount > 0
+    ? `${toolsText} in ${pluralize(input.groupCount, 'group')}`
+    : toolsText;
+}
+
+// Drop position within a card: before when the pointer is in its left half.
+function isPointerBeforeMidpoint(event: React.DragEvent<HTMLElement>): boolean {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return rect.width > 0 ? event.clientX - rect.left < rect.width / 2 : true;
+}
+
+// Brief highlight on a collapsed section header that received a drop.
+function flashSectionHeader(sectionId: string): void {
+  const header = document
+    .getElementById(`tools-section-${sectionId}`)
+    ?.querySelector<HTMLElement>('.tools-section-header');
+  if (!header) return;
+  header.classList.add('tools-section-flash');
+  window.setTimeout(() => header.classList.remove('tools-section-flash'), 1000);
+}
+
+// Closes an open menu on outside pointer press or Escape; the trigger itself is not "outside".
+function useMenuDismissal({
+  open,
+  menuRef,
+  triggerRef,
+  onDismiss,
+}: {
+  open: boolean;
+  menuRef: RefObject<HTMLElement | null>;
+  triggerRef: RefObject<HTMLElement | null>;
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      onDismiss();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onDismiss();
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open, menuRef, triggerRef, onDismiss]);
+}
 function getDuplicateToolName(originalName: string, tools: ToolConfig[]): string {
   const existingNames = new Set(tools.map((tool) => tool.name.trim()));
   const candidate = `${originalName} Copy`;
@@ -208,573 +266,9 @@ function getToolSearchText(tool: ToolConfig): string {
     .join(' ');
 }
 
-function getToolConnectionSummary(tool: ToolConfig): string {
-  const config = tool.connection_config;
-  switch (tool.tool_type) {
-    case 'postgres':
-    case 'mysql':
-      if ('host' in config && config.host) {
-        const port = 'port' in config ? config.port : tool.tool_type === 'mysql' ? 3306 : 5432;
-        const database = 'database' in config ? config.database : '';
-        return `${config.host}:${port}/${database}`;
-      }
-      return `Container: ${'container' in config ? config.container : 'N/A'}`;
-    case 'mssql':
-    case 'solidworks_pdm':
-      if ('host' in config && config.host) {
-        const port = 'port' in config ? config.port : 1433;
-        const database = 'database' in config ? config.database : '';
-        return `${config.host}:${port}/${database}`;
-      }
-      return 'MSSQL connection';
-    case 'influxdb':
-      if ('host' in config && config.host) {
-        const port = 'port' in config ? config.port : 8086;
-        const scheme = 'use_https' in config && config.use_https ? 'https' : 'http';
-        const bucket = 'bucket' in config && config.bucket ? config.bucket : '(no bucket)';
-        return `${scheme}://${config.host}:${port}/${bucket}`;
-      }
-      return 'InfluxDB connection';
-    case 'odoo_shell':
-      if ('mode' in config && config.mode === 'ssh') {
-        if ('ssh_host' in config && 'ssh_user' in config) {
-          const port = 'ssh_port' in config ? config.ssh_port : 22;
-          return `${config.ssh_user}@${config.ssh_host}:${port}`;
-        }
-        return 'SSH connection';
-      }
-      return `Container: ${'container' in config ? config.container : 'N/A'}`;
-    case 'ssh_shell':
-    case 'windows_shell':
-      if ('host' in config && 'user' in config) {
-        const port = 'port' in config ? config.port : 22;
-        return `${config.user}@${config.host}:${port}`;
-      }
-      return 'SSH connection';
-    case 'filesystem_indexer':
-      if ('paths' in config && Array.isArray(config.paths)) {
-        return `${config.paths.length} path(s)`;
-      }
-      return 'Filesystem indexer';
-    case 'http_api': {
-      const baseUrl = 'base_url' in config && config.base_url ? config.base_url : 'HTTP API';
-      const authMode = 'auth_mode' in config && config.auth_mode ? config.auth_mode : 'none';
-      return `${baseUrl} (${authMode})`;
-    }
-    default:
-      return 'Unknown';
-  }
-}
-
-function addHeartbeatErrorSoftWraps(error: string) {
-  return error.split(HEARTBEAT_ERROR_LONG_TOKEN_PATTERN).map((part, partIndex) => {
-    if (!HEARTBEAT_ERROR_LONG_TOKEN_PATTERN.test(part)) {
-      return part;
-    }
-
-    const chunks = part.match(HEARTBEAT_ERROR_CHUNK_PATTERN);
-    if (!chunks) {
-      return part;
-    }
-
-    return chunks.map((chunk, chunkIndex) => (
-      <Fragment key={`${partIndex}-${chunkIndex}`}>
-        {chunk}
-        {chunkIndex < chunks.length - 1 && <wbr />}
-      </Fragment>
-    ));
-  });
-}
-
-interface ToolCardProps {
-  tool: ToolConfig;
-  targetId?: string;
-  heartbeat: HeartbeatStatus | null;
-  showFooterActions: boolean;
-  onEdit: (tool: ToolConfig) => void;
-  onDelete: (tool: ToolConfig) => void;
-  onTest: (toolId: string) => void;
-  testing: boolean;
-  onPdmReindex?: (toolId: string, fullReindex: boolean) => void;
-  pdmIndexing?: boolean;
-  pdmStats?: PdmIndexStats | null;
-  onSchemaReindex?: (toolId: string, fullReindex: boolean) => void;
-  schemaIndexing?: boolean;
-  activeSchemaJob?: SchemaIndexJob | null;
-  schemaStats?: SchemaIndexStats | null;
-  onInlineUpdate?: (
-    toolId: string,
-    updates: { name?: string; description?: string },
-  ) => Promise<void>;
-  classified?: boolean;
-  skillCount?: InstructionSkillCount;
-  onOpenSkills: (tool: ToolConfig) => void;
-}
-
-function formatInstructionSkillCount(count: InstructionSkillCount): string {
-  return count.total === 1 ? '1 skill' : `${count.total} skills`;
-}
-
 function describeInstructionSkillCount(count: InstructionSkillCount | undefined): string {
   if (!count || count.total === 0) return 'None yet';
   return `${count.total} attached, ${count.enabled} enabled`;
-}
-
-function ToolCard({
-  tool,
-  targetId,
-  heartbeat,
-  showFooterActions,
-  onEdit,
-  onDelete,
-  onTest,
-  testing,
-  onPdmReindex,
-  pdmIndexing,
-  pdmStats,
-  onSchemaReindex,
-  schemaIndexing,
-  activeSchemaJob,
-  schemaStats,
-  onInlineUpdate,
-  classified = false,
-  skillCount,
-  onOpenSkills,
-}: ToolCardProps) {
-  const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
-  const hasSchemaIndexing = hasSchemaIndexingEnabled(tool);
-  const workingDirectory = getToolWorkingDirectory(tool);
-  const hasActiveIndexingJob = Boolean(
-    activeSchemaJob && ['pending', 'processing', 'indexing'].includes(activeSchemaJob.status),
-  );
-  const toolSupportsWorkingDir =
-    tool.tool_type === 'ssh_shell' ||
-    tool.tool_type === 'windows_shell' ||
-    tool.tool_type === 'odoo_shell';
-  const pdmSchedule = formatPdmSchedule(tool);
-
-  // Inline editing state
-  const [editingField, setEditingField] = useState<EditingField>(null);
-  const [editName, setEditName] = useState(tool.name);
-  const [editDescription, setEditDescription] = useState(tool.description || '');
-  const [saving, setSaving] = useState(false);
-  const nameInputRef = useRef<HTMLInputElement>(null);
-  const descTextareaRef = useRef<HTMLTextAreaElement>(null);
-  // Only show the title popover when the name is actually clipped by the
-  // responsive tool card (otherwise it would just repeat visible text).
-  const [titleRef, isTitleTruncated] = useIsTruncated<HTMLHeadingElement>(tool.name);
-
-  // Format memory size for display
-  const formatMemory = (mb: number): string => {
-    if (mb < 1) return `${Math.round(mb * 1024)} KB`;
-    if (mb < 1024) return `${mb.toFixed(1)} MB`;
-    return `${(mb / 1024).toFixed(2)} GB`;
-  };
-
-  // Determine heartbeat display status
-  const getHeartbeatDisplay = () => {
-    if (testing) {
-      return {
-        status: 'checking',
-        label: 'Testing...',
-        node: <MiniLoadingSpinner variant="css" />,
-      };
-    }
-    if (!tool.enabled) {
-      return { status: 'disabled', label: 'Disabled', node: <span className="status-dot" /> };
-    }
-    if (!heartbeat) {
-      return { status: 'checking', label: 'Checking...', node: <span className="status-dot" /> };
-    }
-    if (heartbeat.alive) {
-      const latency = heartbeat.latency_ms ? `${Math.round(heartbeat.latency_ms)}ms` : '';
-      return {
-        status: 'alive',
-        label: latency || 'Connected',
-        node: <span className="status-dot" />,
-      };
-    }
-    return {
-      status: 'dead',
-      label: heartbeat.error || 'Disconnected',
-      node: <span className="status-dot" />,
-    };
-  };
-
-  const heartbeatDisplay = getHeartbeatDisplay();
-
-  // Focus input/textarea when entering edit mode
-  useEffect(() => {
-    if (editingField === 'name' && nameInputRef.current) {
-      nameInputRef.current.focus();
-      nameInputRef.current.select();
-    } else if (editingField === 'description' && descTextareaRef.current) {
-      descTextareaRef.current.focus();
-      descTextareaRef.current.select();
-    }
-  }, [editingField]);
-
-  // Sync local state when tool prop changes
-  useEffect(() => {
-    setEditName(tool.name);
-    setEditDescription(tool.description || '');
-  }, [tool.name, tool.description]);
-
-  const handleStartEdit = (field: EditingField) => {
-    setEditingField(field);
-    if (field === 'name') {
-      setEditName(tool.name);
-    } else if (field === 'description') {
-      setEditDescription(tool.description || '');
-    }
-  };
-
-  const handleCancelEdit = () => {
-    setEditingField(null);
-    setEditName(tool.name);
-    setEditDescription(tool.description || '');
-  };
-
-  const handleSaveEdit = async () => {
-    if (!onInlineUpdate || saving) return;
-
-    const updates: { name?: string; description?: string } = {};
-
-    if (editingField === 'name' && editName.trim() !== tool.name) {
-      if (!editName.trim()) {
-        // Don't allow empty names
-        handleCancelEdit();
-        return;
-      }
-      updates.name = editName.trim();
-    } else if (editingField === 'description' && editDescription !== (tool.description || '')) {
-      updates.description = editDescription;
-    }
-
-    if (Object.keys(updates).length === 0) {
-      setEditingField(null);
-      return;
-    }
-
-    setSaving(true);
-    try {
-      await onInlineUpdate(tool.id, updates);
-      setEditingField(null);
-    } catch (err) {
-      console.error('Failed to save:', err);
-      // Keep edit mode open on error
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      handleCancelEdit();
-    } else if (e.key === 'Enter' && (editingField === 'name' || e.ctrlKey)) {
-      e.preventDefault();
-      handleSaveEdit();
-    }
-  };
-
-  return (
-    <div id={targetId} tabIndex={-1} className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}>
-      <div className="tool-card-header">
-        <div className="tool-card-icon">
-          <Icon name={getToolIconType(typeInfo?.icon)} size={28} />
-        </div>
-        <div className="tool-card-header-content">
-          <div className="tool-card-header-main">
-            {editingField === 'name' ? (
-              <div className="tool-card-title inline-edit-field">
-                <input
-                  ref={nameInputRef}
-                  type="text"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  onBlur={handleSaveEdit}
-                  disabled={saving}
-                  className="inline-edit-input"
-                />
-              </div>
-            ) : (
-              <div
-                className="tool-card-title editable-field-wrapper name-wrapper"
-                onClick={() => handleStartEdit('name')}
-              >
-                <Popover
-                  className="tool-title-popover"
-                  content={tool.name}
-                  position="top"
-                  trigger="hover"
-                  disabled={!isTitleTruncated}
-                >
-                  <h3 ref={titleRef}>{tool.name}</h3>
-                </Popover>
-                <button
-                  type="button"
-                  className="inline-edit-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleStartEdit('name');
-                  }}
-                  title="Edit name"
-                >
-                  <Icon name="pencil" size={14} />
-                </button>
-              </div>
-            )}
-            <div className="tool-card-heartbeat">
-              <Popover
-                content={heartbeatDisplay.label}
-                position="top"
-                style={{ display: 'inline-flex' }}
-              >
-                <span className={`heartbeat-indicator ${heartbeatDisplay.status}`}>
-                  {heartbeatDisplay.node}
-                </span>
-              </Popover>
-            </div>
-          </div>
-          <div className="tool-card-meta-row">
-            <code className="tool-card-connection-sub">{getToolConnectionSummary(tool)}</code>
-            <div className="tool-card-badges">
-              {hasActiveIndexingJob && (
-                <IndexingPill activeJob={activeSchemaJob} progressLabelPrefix="Indexing" />
-              )}
-              {toolSupportsWorkingDir && (
-                <Popover
-                  content={
-                    workingDirectory
-                      ? `Constrained to ${workingDirectory}`
-                      : 'Working directory not set'
-                  }
-                  position="top"
-                  style={{ display: 'inline-flex' }}
-                >
-                  <span className="tool-badge">
-                    <Icon name="folder" size={12} />
-                    <span className="path-text">{workingDirectory || '/'}</span>
-                  </span>
-                </Popover>
-              )}
-              {tool.allow_write && (
-                <Popover
-                  content="Write access enabled"
-                  position="top"
-                  style={{ display: 'inline-flex' }}
-                >
-                  <span className="tool-badge badge-warning">
-                    <Icon name="alert-triangle" size={12} />
-                    <span className="path-text">Write</span>
-                  </span>
-                </Popover>
-              )}
-              {skillCount && skillCount.total > 0 && (
-                <button
-                  type="button"
-                  className="tool-badge tool-skills-badge"
-                  data-tool-skills-badge
-                  title={`${skillCount.enabled} of ${skillCount.total} skills enabled`}
-                  aria-label={`${formatInstructionSkillCount(skillCount)}, ${skillCount.enabled} enabled. Open skills.`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onOpenSkills(tool);
-                  }}
-                >
-                  <Icon name="book" size={12} />
-                  <span className="path-text">{formatInstructionSkillCount(skillCount)}</span>
-                </button>
-              )}
-              {classified && (
-                <span className="tool-badge" data-tool-classified-badge>
-                  Classified
-                </span>
-              )}
-              {tool.undecryptable_fields.length > 0 && (
-                <Popover
-                  content={`Credential ${tool.undecryptable_fields.length === 1 ? 'field' : 'fields'} ${tool.undecryptable_fields.join(', ')} cannot be decrypted with the current server key.`}
-                  position="top"
-                  style={{ display: 'inline-flex' }}
-                >
-                  <span
-                    className="tool-badge badge-warning"
-                    title="Some credentials cannot be decrypted with the current server key."
-                  >
-                    <Icon name="alert-circle" size={12} />
-                    <span className="path-text">Key Mismatch</span>
-                  </span>
-                </Popover>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {editingField === 'description' ? (
-        <div className="inline-edit-field description-edit">
-          <textarea
-            ref={descTextareaRef}
-            value={editDescription}
-            onChange={(e) => setEditDescription(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onBlur={handleSaveEdit}
-            disabled={saving}
-            className="inline-edit-textarea"
-            rows={1}
-            placeholder="Description for AI..."
-          />
-        </div>
-      ) : (
-        <div
-          className="editable-field-wrapper description-wrapper"
-          onClick={() => handleStartEdit('description')}
-        >
-          {tool.description ? (
-            <p className="tool-card-description">{tool.description}</p>
-          ) : (
-            <p className="tool-card-description placeholder">Add description for AI...</p>
-          )}
-          <button
-            type="button"
-            className="inline-edit-btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleStartEdit('description');
-            }}
-            title="Edit description"
-          >
-            <Icon name="pencil" size={14} />
-          </button>
-        </div>
-      )}
-
-      {/* Show heartbeat error if connection failed */}
-      {heartbeat && !heartbeat.alive && (
-        <div
-          className="tool-card-heartbeat-error"
-          style={{ visibility: tool.enabled && !testing ? 'visible' : 'hidden' }}
-        >
-          <span className="error-icon">
-            <Icon name="alert-circle" size={16} />
-          </span>
-          <span>{addHeartbeatErrorSoftWraps(heartbeat.error || 'Connection failed')}</span>
-        </div>
-      )}
-
-      {/* Schema index stats */}
-      {hasSchemaIndexing && schemaStats && schemaStats.embedding_count > 0 && (
-        <div className="tool-card-schema-stats">
-          <span className="schema-stats-label">Schema Index:</span>
-          <span className="schema-stats-value">
-            {schemaStats.embedding_count} tables
-            {schemaStats.estimated_memory_mb != null && (
-              <span className="schema-stats-memory" title="Estimated pgvector storage size">
-                ({formatMemory(schemaStats.estimated_memory_mb)})
-              </span>
-            )}
-          </span>
-        </div>
-      )}
-
-      {/* PDM index stats */}
-      {tool.tool_type === 'solidworks_pdm' && pdmStats && pdmStats.document_count > 0 && (
-        <div className="tool-card-schema-stats">
-          <span className="schema-stats-label">PDM Index:</span>
-          <span className="schema-stats-value">{pdmStats.document_count} documents</span>
-        </div>
-      )}
-
-      {tool.tool_type === 'solidworks_pdm' && (
-        <div className="tool-card-schema-stats" data-testid={`pdm-tool-summary-${tool.id}`}>
-          <span className="schema-stats-label">PDM schedule:</span>
-          <span className="schema-stats-value">{pdmSchedule}</span>
-          {pdmStats?.last_indexed_at && (
-            <span className="schema-stats-memory">
-              Last success: {new Date(pdmStats.last_indexed_at).toLocaleString()}
-            </span>
-          )}
-        </div>
-      )}
-
-      {showFooterActions && (
-        <div className="tool-card-footer">
-          <div className="tool-card-actions">
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => onTest(tool.id)}
-              disabled={testing}
-            >
-              {testing ? 'Testing...' : 'Test'}
-            </button>
-            {tool.tool_type === 'solidworks_pdm' && onPdmReindex && (
-              <>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => onPdmReindex(tool.id, false)}
-                  disabled={pdmIndexing}
-                  title="Index new and changed documents"
-                >
-                  {pdmIndexing ? 'Indexing...' : 'Index'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => onPdmReindex(tool.id, true)}
-                  disabled={pdmIndexing}
-                  title="Re-index all documents from scratch"
-                >
-                  Full Re-index
-                </button>
-              </>
-            )}
-            {hasSchemaIndexing && onSchemaReindex && (
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => onSchemaReindex(tool.id, true)}
-                disabled={schemaIndexing}
-                title="Re-index database schema"
-              >
-                {schemaIndexing ? 'Indexing...' : 'Re-index Schema'}
-              </button>
-            )}
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              data-tool-skills-button
-              onClick={() => onOpenSkills(tool)}
-            >
-              <Icon name="book" size={14} />
-              Skills
-            </button>
-            <button type="button" className="btn btn-sm" onClick={() => onEdit(tool)}>
-              Edit
-            </button>
-            {isPairedWindowsTool(tool) ? (
-              <button
-                type="button"
-                className="btn btn-sm btn-danger"
-                onClick={() => onDelete(tool)}
-                title="Delete tool"
-              >
-                Delete
-              </button>
-            ) : (
-              <DeleteConfirmButton
-                onDelete={() => onDelete(tool)}
-                className="btn btn-sm btn-danger"
-                title="Delete tool"
-              />
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
 }
 
 interface ToolsPanelProps {
@@ -782,6 +276,7 @@ interface ToolsPanelProps {
   schemaJobs?: SchemaIndexJob[];
   highlightSection?: string | null;
   onHighlightComplete?: () => void;
+  currentUser?: User | null;
 }
 
 export function ToolsPanel({
@@ -789,6 +284,7 @@ export function ToolsPanel({
   schemaJobs = [],
   highlightSection,
   onHighlightComplete,
+  currentUser,
 }: ToolsPanelProps) {
   const resolveHighlightTargetId = useCallback((section: string) => {
     if (section.startsWith('tool:')) {
@@ -798,6 +294,7 @@ export function ToolsPanel({
   }, []);
 
   const [tools, setTools] = useState<ToolConfig[]>([]);
+  const pdmLinkRelations = useMemo(() => getPdmLinkRelations(tools), [tools]);
   const [groups, setGroups] = useState<ToolGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [toasts, toast] = useToast();
@@ -825,9 +322,6 @@ export function ToolsPanel({
     [contentProtectionConfig],
   );
 
-  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
-  const [editingGroupName, setEditingGroupName] = useState('');
-
   // Mount source state
   const [mountSources, setMountSources] = useState<UserspaceMountSource[]>([]);
   const [mountSourceDeletingId, setMountSourceDeletingId] = useState<string | null>(null);
@@ -849,13 +343,7 @@ export function ToolsPanel({
   const [deleteConfirmTool, setDeleteConfirmTool] = useState<ToolConfig | null>(null);
   const [windowsDeleteTool, setWindowsDeleteTool] = useState<ToolConfig | null>(null);
   const [clearConfirmTool, setClearConfirmTool] = useState<ToolConfig | null>(null);
-  const [toolContextMenu, setToolContextMenu] = useState<{
-    toolId: string;
-    x: number;
-    y: number;
-  } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const toolContextMenuRef = useRef<HTMLDivElement>(null);
   const [toolAccessModalTool, setToolAccessModalTool] = useState<ToolConfig | null>(null);
   const [toolAccessPolicy, setToolAccessPolicy] = useState<ToolAccessPolicy | null>(null);
   const [toolAccessUserOptions, setToolAccessUserOptions] = useState<
@@ -887,43 +375,46 @@ export function ToolsPanel({
   );
   const importFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Selected group tab (null = show ungrouped / all)
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  const groupContentRef = useRef<HTMLDivElement>(null);
+  // Tool sections: in-memory filter/reveal overrides, persisted collapse state, dialogs and menus
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() =>
+    getCollapsedToolSections(currentUser?.id),
+  );
+  const [groupsLoaded, setGroupsLoaded] = useState(false);
+  const [filterCollapsedIds, setFilterCollapsedIds] = useState<Set<string>>(() => new Set());
+  const [forcedOpenIds, setForcedOpenIds] = useState<Set<string>>(() => new Set());
+  const [groupDialog, setGroupDialog] = useState<GroupDialogState | null>(null);
+  const [deleteGroupTarget, setDeleteGroupTarget] = useState<ToolGroup | null>(null);
+  const [moveDialogToolId, setMoveDialogToolId] = useState<string | null>(null);
+  const [toolMenu, setToolMenu] = useState<{
+    toolId: string;
+    placement: ContextMenuPlacement;
+  } | null>(null);
+  const [groupMenu, setGroupMenu] = useState<{
+    sectionId: string;
+    placement: ContextMenuPlacement;
+  } | null>(null);
+  const [highlightRequest, setHighlightRequest] = useState<{ elementId: string } | null>(null);
+  const [announcement, setAnnouncement] = useState('');
+  const toolMenuRef = useRef<HTMLDivElement>(null);
+  const toolMenuTriggerRef = useRef<HTMLElement | null>(null);
+  const groupMenuRef = useRef<HTMLDivElement>(null);
+  const groupMenuTriggerRef = useRef<HTMLElement | null>(null);
+  const pendingFocusRef = useRef<PendingFocus | null>(null);
+  // Serialises ordering writes: a second move starts only after the first settles.
+  const orderLockRef = useRef(false);
+  const [orderPending, setOrderPending] = useState(false);
+  const handledHighlightRef = useRef<string | null>(null);
   const toolFilter = useUrlSearchFilterState();
   const toolFilterInputRef = useRef<HTMLInputElement | null>(null);
-  const hasBlockingModalOpen = Boolean(
-    disableConfirmation ||
-    writeConfirmTool ||
-    deleteConfirmTool ||
-    windowsDeleteTool ||
-    clearConfirmTool ||
-    toolPasswordModal ||
-    toolAccessModalTool,
-  );
 
-  // Group the tools for display — include ALL groups (even empty) as drop targets
-  const { allGroups, ungroupedTools } = useMemo(() => {
-    const grouped = new Map<string, { group: ToolGroup; tools: ToolConfig[] }>();
-    const ungrouped: ToolConfig[] = [];
-
-    for (const g of groups) {
-      grouped.set(g.id, { group: g, tools: [] });
-    }
-
-    for (const tool of tools) {
-      if (tool.group_id && grouped.has(tool.group_id)) {
-        grouped.get(tool.group_id)!.tools.push(tool);
-      } else {
-        ungrouped.push(tool);
-      }
-    }
-
-    return {
-      allGroups: Array.from(grouped.values()),
-      ungroupedTools: ungrouped,
-    };
-  }, [tools, groups]);
+  // Drag-and-drop state
+  const [dragToolId, setDragToolId] = useState<string | null>(null);
+  const [dragOverToolId, setDragOverToolId] = useState<string | null>(null);
+  const [dragInsertBefore, setDragInsertBefore] = useState(true);
+  const [bodyDropSectionId, setBodyDropSectionId] = useState<string | null>(null);
+  const [headerDropSectionId, setHeaderDropSectionId] = useState<string | null>(null);
+  const dragPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDragPreviewRef = useRef<DragPreviewTarget | null>(null);
 
   const activeSchemaJobsByToolId = useMemo(() => {
     const jobsByToolId: Record<string, SchemaIndexJob> = {};
@@ -940,98 +431,119 @@ export function ToolsPanel({
     return jobsByToolId;
   }, [schemaJobs]);
 
-  const selectedGroup = useMemo(() => {
-    if (!selectedGroupId) {
-      return null;
-    }
-
-    return allGroups.find(({ group }) => group.id === selectedGroupId) || null;
-  }, [allGroups, selectedGroupId]);
-
-  const updateSelectedGroupNotch = useCallback(() => {
-    const groupContent = groupContentRef.current;
-    if (!groupContent) {
-      return;
-    }
-
-    if (!selectedGroupId) {
-      groupContent.style.removeProperty('--tool-group-notch-left');
-      groupContent.style.removeProperty('--tool-group-notch-width');
-      groupContent.style.removeProperty('--tool-group-notch-depth');
-      return;
-    }
-
-    const tabsRow = groupContent.querySelector<HTMLElement>('.tool-group-tabs');
-    const activeTab = groupContent.querySelector<HTMLElement>('.tool-group-tab.active');
-    const activePanel = groupContent.querySelector<HTMLElement>('.tool-group-active-panel');
-    if (!tabsRow || !activeTab || !activePanel) {
-      return;
-    }
-
-    const activePanelRect = activePanel.getBoundingClientRect();
-    const activeTabRect = activeTab.getBoundingClientRect();
-    const notchLeft = Math.max(0, activeTabRect.left - activePanelRect.left);
-    const notchWidth = activeTabRect.width;
-    const notchDepth = Math.max(0, activePanelRect.top - activeTabRect.bottom + 2);
-
-    groupContent.style.setProperty('--tool-group-notch-left', `${notchLeft}px`);
-    groupContent.style.setProperty('--tool-group-notch-width', `${notchWidth}px`);
-    groupContent.style.setProperty('--tool-group-notch-depth', `${notchDepth}px`);
-  }, [selectedGroupId]);
-
-  useLayoutEffect(() => {
-    updateSelectedGroupNotch();
-
-    const groupContent = groupContentRef.current;
-    if (!groupContent || !selectedGroupId || typeof ResizeObserver === 'undefined') {
-      return;
-    }
-
-    const resizeObserver = new ResizeObserver(() => {
-      updateSelectedGroupNotch();
-    });
-
-    resizeObserver.observe(groupContent);
-
-    const tabsRow = groupContent.querySelector<HTMLElement>('.tool-group-tabs');
-    const activeTab = groupContent.querySelector<HTMLElement>('.tool-group-tab.active');
-    if (tabsRow) {
-      resizeObserver.observe(tabsRow);
-    }
-    if (activeTab) {
-      resizeObserver.observe(activeTab);
-    }
-
-    return () => {
-      resizeObserver.disconnect();
-    };
-  }, [
-    updateSelectedGroupNotch,
-    selectedGroupId,
-    editingGroupId,
-    toolFilter.tags.length,
-    toolFilter.input,
-  ]);
-
   const isToolFiltering = toolFilter.queries.length > 0;
-  const baseVisibleTools = isToolFiltering
-    ? tools
-    : selectedGroup
-      ? selectedGroup.tools
-      : ungroupedTools;
-  const visibleTools = useMemo(() => {
-    if (!isToolFiltering) {
-      return baseVisibleTools;
-    }
+  const dragDisabled = isToolFiltering || orderPending;
+  const knownGroupIds = useMemo(() => new Set(groups.map((group) => group.id)), [groups]);
+  const knownSectionIds = useMemo(
+    () => new Set([UNGROUPED_SECTION_ID, ...knownGroupIds]),
+    [knownGroupIds],
+  );
+  // Every section in display order; the Ungrouped section is included while dragging.
+  const sections = useMemo(
+    () => buildToolSections(tools, groups, { includeEmptyUngrouped: dragToolId !== null }),
+    [tools, groups, dragToolId],
+  );
+  const orderedGroups = useMemo(
+    () => sections.flatMap((section) => (section.group ? [section.group] : [])),
+    [sections],
+  );
+  const visibleSections = useMemo(
+    () =>
+      sections.flatMap((section): VisibleToolSection[] => {
+        const groupName = section.group?.name ?? '';
+        const shownTools = isToolFiltering
+          ? section.tools.filter((tool) => toolMatchesFilter(tool, groupName, toolFilter.queries))
+          : section.tools;
+        return isToolFiltering && shownTools.length === 0 ? [] : [{ section, shownTools }];
+      }),
+    [sections, isToolFiltering, toolFilter.queries],
+  );
+  const matchedTools = visibleSections.flatMap(({ shownTools }) => shownTools);
+  const plainSection: ToolSection = sections[0] ?? {
+    id: UNGROUPED_SECTION_ID,
+    group: null,
+    tools: [],
+  };
+  const summaryText = getToolsSummaryText({
+    toolCount: tools.length,
+    matchedCount: matchedTools.length,
+    groupCount: groups.length,
+    filtering: isToolFiltering,
+  });
+  const moveDialogTool = tools.find((tool) => tool.id === moveDialogToolId) ?? null;
+  const moveTargetGroups = sections.flatMap((section) =>
+    section.group
+      ? [
+          {
+            id: section.group.id,
+            name: section.group.name,
+            description: section.group.description,
+            toolCount: section.tools.length,
+          },
+        ]
+      : [],
+  );
 
-    return baseVisibleTools.filter((tool) =>
-      searchFilterTextMatchesQuery(getToolSearchText(tool), toolFilter.queries),
-    );
-  }, [baseVisibleTools, isToolFiltering, toolFilter.queries]);
-  const showSelectedGroupEmptyState =
-    Boolean(selectedGroupId) && !isToolFiltering && baseVisibleTools.length === 0;
-  const showToolFilterEmptyState =
-    baseVisibleTools.length > 0 && visibleTools.length === 0 && toolFilter.hasActiveFilters;
+  const currentUserId = currentUser?.id ?? null;
+  useEffect(() => {
+    // Per-user state: neither the saved collapse set nor in-memory overrides carry over.
+    setCollapsedIds(getCollapsedToolSections(currentUserId));
+    setForcedOpenIds(new Set());
+    setFilterCollapsedIds(new Set());
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!isToolFiltering) setFilterCollapsedIds((current) => (current.size ? new Set() : current));
+  }, [isToolFiltering]);
+
+  const isSectionCollapsed = (sectionId: string): boolean => {
+    if (forcedOpenIds.has(sectionId)) return false;
+    return isToolFiltering ? filterCollapsedIds.has(sectionId) : collapsedIds.has(sectionId);
+  };
+  const allSectionsCollapsed =
+    visibleSections.length > 0 &&
+    visibleSections.every(({ section }) => isSectionCollapsed(section.id));
+
+  // Groups must be loaded first: the setter prunes ids it does not know.
+  const persistCollapsedSections = (next: ReadonlySet<string>) => {
+    if (groupsLoaded) setCollapsedToolSections(currentUserId, next, knownSectionIds);
+  };
+
+  const toggleSection = (sectionId: string) => {
+    const collapseNow = !isSectionCollapsed(sectionId);
+    setForcedOpenIds((current) => withSetMembers(current, [sectionId], false));
+    if (isToolFiltering) {
+      setFilterCollapsedIds((current) => withSetMembers(current, [sectionId], collapseNow));
+      return;
+    }
+    const next = withSetMembers(collapsedIds, [sectionId], collapseNow);
+    setCollapsedIds(next);
+    persistCollapsedSections(next);
+  };
+
+  const toggleAllSections = () => {
+    const collapse = !allSectionsCollapsed;
+    const sectionIds = visibleSections.map(({ section }) => section.id);
+    setForcedOpenIds(new Set());
+    if (isToolFiltering) {
+      setFilterCollapsedIds((current) => withSetMembers(current, sectionIds, collapse));
+      return;
+    }
+    const next = withSetMembers(collapsedIds, sectionIds, collapse);
+    setCollapsedIds(next);
+    persistCollapsedSections(next);
+  };
+
+  // Opens the section holding a tool (in memory only) and clears a filter that would hide it.
+  const revealToolInSection = useCallback(
+    (sectionId: string, tool: ToolConfig, groupName: string) => {
+      if (isToolFiltering && !toolMatchesFilter(tool, groupName, toolFilter.queries)) {
+        toolFilter.clear();
+      }
+      setForcedOpenIds((current) => withSetMembers(current, [sectionId], true));
+    },
+    [isToolFiltering, toolFilter],
+  );
 
   const loadTools = useCallback(async () => {
     try {
@@ -1049,6 +561,7 @@ export function ToolsPanel({
       const connectionTools = data.filter((t) => t.tool_type !== 'filesystem_indexer');
       setTools(connectionTools);
       setGroups(groupData);
+      setGroupsLoaded(true);
       setMountSources(sources);
       setShowFooterActions(Boolean(settingsResponse?.settings?.show_tool_card_footer_actions));
       setExportPasswordPolicy(getExportPasswordPolicy(settingsResponse?.settings ?? null));
@@ -1117,23 +630,41 @@ export function ToolsPanel({
     loadTools();
   }, [loadTools]);
 
-  // Scroll to and highlight section when navigated from another view
+  // Navigation target (tool:<id> or a section id): open its section, then highlight it once rendered
   useEffect(() => {
-    const requestedSection =
+    if (loading) return;
+    const requested =
       highlightSection || (window.location.hash === '#tools-connections' ? 'connections' : null);
-    if (requestedSection && !loading) {
-      const element = document.getElementById(resolveHighlightTargetId(requestedSection));
-      if (element) {
-        element.classList.add('highlight-setting');
-        element.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
-        const timer = setTimeout(() => {
-          element.classList.remove('highlight-setting');
-          onHighlightComplete?.();
-        }, 2000);
-        return () => clearTimeout(timer);
-      }
+    if (!requested) {
+      handledHighlightRef.current = null;
+      return;
     }
-  }, [highlightSection, loading, onHighlightComplete, resolveHighlightTargetId]);
+    if (requested === handledHighlightRef.current) return;
+    handledHighlightRef.current = requested;
+    if (requested.startsWith('tool:')) {
+      const toolId = requested.slice('tool:'.length);
+      const section = sections.find((candidate) =>
+        candidate.tools.some((tool) => tool.id === toolId),
+      );
+      const tool = section?.tools.find((candidate) => candidate.id === toolId);
+      if (section && tool) revealToolInSection(section.id, tool, section.group?.name ?? '');
+    }
+    setHighlightRequest({ elementId: resolveHighlightTargetId(requested) });
+  }, [highlightSection, loading, sections, resolveHighlightTargetId, revealToolInSection]);
+
+  useEffect(() => {
+    if (!highlightRequest) return;
+    const element = document.getElementById(highlightRequest.elementId);
+    if (!element) return;
+    element.classList.add('highlight-setting');
+    element.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    const timer = setTimeout(() => {
+      element.classList.remove('highlight-setting');
+      setHighlightRequest(null);
+      onHighlightComplete?.();
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [highlightRequest, onHighlightComplete]);
 
   // Load schema stats when tools change
   useEffect(() => {
@@ -1409,29 +940,6 @@ export function ToolsPanel({
     setTools((current) => current.map((tool) => (tool.id === updatedTool.id ? updatedTool : tool)));
   }, []);
 
-  const startEditingGroup = useCallback((groupId: string, name: string) => {
-    setEditingGroupId(groupId);
-    setEditingGroupName(name);
-  }, []);
-
-  const createSuggestedGroup = useCallback(
-    async (tool: ToolConfig | null | undefined) => {
-      const suggestedName = getUniqueGroupName(getSuggestedGroupName(tool), groups);
-      const created = await api.createToolGroup({ name: suggestedName });
-
-      setGroups((current) =>
-        current.some((group) => group.id === created.id) ? current : [...current, created],
-      );
-
-      if (created.id) {
-        startEditingGroup(created.id, suggestedName);
-      }
-
-      return { created, suggestedName };
-    },
-    [groups, startEditingGroup],
-  );
-
   const handleDeleteTool = async (
     toolId: string,
     options?: Parameters<typeof api.deleteToolConfig>[1],
@@ -1439,7 +947,15 @@ export function ToolsPanel({
     const response = options
       ? await api.deleteToolConfig(toolId, options)
       : await api.deleteToolConfig(toolId);
-    setTools((current) => current.filter((tool) => tool.id !== toolId));
+    setTools((current) =>
+      current
+        .filter((tool) => tool.id !== toolId)
+        .map((tool) =>
+          tool.pdm_link?.tool_id === toolId
+            ? { ...tool, pdm_link: { ...tool.pdm_link, exists: false, enabled: false } }
+            : tool,
+        ),
+    );
     setHeartbeats((current) => {
       const next = { ...current };
       delete next[toolId];
@@ -1458,6 +974,13 @@ export function ToolsPanel({
       setWindowsDeleteTool(tool);
       return;
     }
+    if (
+      tool.tool_type === 'solidworks_pdm' &&
+      pdmLinkRelations.some((relation) => relation.pdmToolId === tool.id)
+    ) {
+      setDeleteConfirmTool(tool);
+      return;
+    }
     void handleDeleteTool(tool.id)
       .then(() => toast.success('Tool deleted successfully'))
       .catch((err) => toast.error(err instanceof Error ? err.message : 'Failed to delete tool'));
@@ -1467,6 +990,27 @@ export function ToolsPanel({
     try {
       const result = await api.toggleToolConfig(toolId, enabled);
       patchToolInState(toolId, { enabled: result.enabled });
+      const pdmTool = tools.find(
+        (tool) => tool.id === toolId && tool.tool_type === 'solidworks_pdm',
+      );
+      if (pdmTool) {
+        setTools((current) =>
+          current.map((tool) =>
+            tool.pdm_link?.tool_id === toolId
+              ? { ...tool, pdm_link: { ...tool.pdm_link, enabled: result.enabled } }
+              : tool,
+          ),
+        );
+        if (!result.enabled) {
+          pdmLinkRelations
+            .filter((relation) => relation.pdmToolId === toolId)
+            .forEach((relation) => {
+              toast.info(
+                `“${pdmTool.name}” is disabled. The SolidWorks tool “${relation.solidworksToolName}” cannot search the vault until you enable it again.`,
+              );
+            });
+        }
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to toggle tool');
     }
@@ -1476,7 +1020,7 @@ export function ToolsPanel({
     if (allowWrite) {
       const tool = tools.find((t) => t.id === toolId);
       if (tool) {
-        setToolContextMenu(null);
+        closeToolMenu();
         setWriteConfirmTool(tool);
       }
       return;
@@ -1522,7 +1066,6 @@ export function ToolsPanel({
 
   const handleDuplicateTool = useCallback(
     async (toolId: string) => {
-      setToolContextMenu(null);
       const tool = tools.find((candidate) => candidate.id === toolId);
       if (!tool) return;
 
@@ -1646,168 +1189,333 @@ export function ToolsPanel({
     }
   };
 
-  // ---- Tool Group handlers ----
+  // ---- Tool and group menus ----
 
-  const handleCreateGroup = async () => {
-    try {
-      await createSuggestedGroup(ungroupedTools[0]);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to create group');
+  const closeToolMenu = useCallback(() => {
+    const trigger = toolMenuTriggerRef.current;
+    toolMenuTriggerRef.current = null;
+    setToolMenu(null);
+    trigger?.focus();
+  }, []);
+
+  const closeGroupMenu = useCallback(() => {
+    const trigger = groupMenuTriggerRef.current;
+    groupMenuTriggerRef.current = null;
+    setGroupMenu(null);
+    trigger?.focus();
+  }, []);
+
+  useMenuDismissal({
+    open: toolMenu !== null,
+    menuRef: toolMenuRef,
+    triggerRef: toolMenuTriggerRef,
+    onDismiss: closeToolMenu,
+  });
+  useMenuDismissal({
+    open: groupMenu !== null,
+    menuRef: groupMenuRef,
+    triggerRef: groupMenuTriggerRef,
+    onDismiss: closeGroupMenu,
+  });
+
+  const openToolMenuFromButton = (tool: ToolConfig, anchor: HTMLElement) => {
+    if (toolMenuTriggerRef.current === anchor) {
+      closeToolMenu();
+      return;
     }
+    const rect = anchor.getBoundingClientRect();
+    toolMenuTriggerRef.current = anchor;
+    setToolMenu({ toolId: tool.id, placement: { anchorRect: toAnchorRect(rect) } });
   };
 
-  const handleRenameGroup = async (groupId: string) => {
-    const name = editingGroupName.trim();
-    if (!name) return;
-    try {
-      const updatedGroup = await api.updateToolGroup(groupId, { name });
-      setGroups((current) => current.map((group) => (group.id === groupId ? updatedGroup : group)));
-      setEditingGroupId(null);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to rename group');
-    }
+  const openToolMenuAtPointer = (tool: ToolConfig, event: React.MouseEvent) => {
+    event.preventDefault();
+    toolMenuTriggerRef.current = null;
+    setToolMenu({ toolId: tool.id, placement: { x: event.clientX, y: event.clientY } });
   };
 
-  const handleDeleteGroup = async (groupId: string) => {
-    try {
-      await api.deleteToolGroup(groupId);
-      setGroups((current) => current.filter((group) => group.id !== groupId));
-      setTools((current) =>
-        current.map((tool) => (tool.group_id === groupId ? { ...tool, group_id: null } : tool)),
-      );
-      toast.success('Group deleted');
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete group');
+  const openGroupMenuFromButton = (sectionId: string, anchor: HTMLElement) => {
+    if (groupMenuTriggerRef.current === anchor) {
+      closeGroupMenu();
+      return;
     }
+    const rect = anchor.getBoundingClientRect();
+    groupMenuTriggerRef.current = anchor;
+    setGroupMenu({ sectionId, placement: { anchorRect: toAnchorRect(rect) } });
   };
 
-  const deleteEmptyGroupIfNeeded = useCallback(
-    async (
-      toolId: string,
-      previousGroupId: string | null,
-      nextGroupId: string | null | undefined,
-    ) => {
-      if (!previousGroupId || previousGroupId === nextGroupId) {
-        return;
-      }
+  const openGroupMenuAtPointer = (sectionId: string, event: React.MouseEvent) => {
+    event.preventDefault();
+    groupMenuTriggerRef.current = null;
+    setGroupMenu({ sectionId, placement: { x: event.clientX, y: event.clientY } });
+  };
 
-      const remainingToolsInPreviousGroup = tools.filter(
-        (tool) => tool.id !== toolId && tool.group_id === previousGroupId,
-      );
-
-      if (remainingToolsInPreviousGroup.length > 0) {
-        return;
-      }
-
-      await api.deleteToolGroup(previousGroupId);
-      setGroups((current) => current.filter((group) => group.id !== previousGroupId));
-
-      if (selectedGroupId === previousGroupId) {
-        setSelectedGroupId(null);
-      }
-    },
-    [tools, selectedGroupId],
-  );
-
-  const handleAssignGroup = useCallback(
-    async (toolId: string, groupId: string | null) => {
-      try {
-        const previousTool = tools.find((tool) => tool.id === toolId);
-        const previousGroupId = previousTool?.group_id ?? null;
-        const updatedTool = await api.updateToolConfig(toolId, { group_id: groupId ?? '' });
-        replaceToolInState(updatedTool);
-
-        await deleteEmptyGroupIfNeeded(toolId, previousGroupId, updatedTool.group_id);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to assign group');
-      }
-    },
-    [tools, replaceToolInState, deleteEmptyGroupIfNeeded, toast],
-  );
-
-  // Click outside the group content area clears the selected group
+  // Focus the element requested by the last state change. The request waits across renders until
+  // its element exists; it is dropped only when its group no longer exists.
   useEffect(() => {
-    if (!selectedGroupId || hasBlockingModalOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (toolContextMenuRef.current?.contains(target)) {
-        return;
-      }
-      if (groupContentRef.current && !groupContentRef.current.contains(target)) {
-        setSelectedGroupId(null);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [selectedGroupId, hasBlockingModalOpen]);
-
-  const handleGroupTabsClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (selectedGroupId && e.target === e.currentTarget) {
-        setSelectedGroupId(null);
-      }
-    },
-    [selectedGroupId],
-  );
-
-  const handleGroupTabClick = useCallback(
-    (groupId: string) => {
-      const isActive = selectedGroupId === groupId;
-      if (!isActive) {
-        toolFilter.clear();
-      }
-      setSelectedGroupId(isActive ? null : groupId);
-    },
-    [selectedGroupId, toolFilter],
-  );
-
-  const handleGroupTabsListClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!selectedGroupId) {
-        return;
-      }
-
-      if (!(e.target instanceof Element) || e.target.closest('.tool-group-tab')) {
-        return;
-      }
-
-      setSelectedGroupId(null);
-    },
-    [selectedGroupId],
-  );
-
-  const handleToolFilterClick = useCallback(() => {
-    if (selectedGroupId) {
-      setSelectedGroupId(null);
+    const pending = pendingFocusRef.current;
+    if (!pending) return;
+    if (pending.groupId && !knownGroupIds.has(pending.groupId)) {
+      pendingFocusRef.current = null;
+      return;
     }
-  }, [selectedGroupId]);
+    const element = document.getElementById(pending.elementId);
+    if (!element) return;
+    pendingFocusRef.current = null;
+    element.scrollIntoView?.({ block: 'center' });
+    element.focus();
+  });
 
-  // Close the tool-card context menu when clicking outside or pressing Escape
-  useEffect(() => {
-    if (!toolContextMenu) return;
+  // One ordering write at a time: while it runs, moves and group moves are disabled.
+  const runOrderChange = async <T,>(task: () => Promise<T>): Promise<T | null> => {
+    if (orderLockRef.current) return null;
+    orderLockRef.current = true;
+    setOrderPending(true);
+    try {
+      return await task();
+    } finally {
+      orderLockRef.current = false;
+      setOrderPending(false);
+    }
+  };
 
-    const handlePointerDown = (event: MouseEvent) => {
-      if (
-        toolContextMenuRef.current &&
-        !toolContextMenuRef.current.contains(event.target as Node)
-      ) {
-        setToolContextMenu(null);
+  // ---- Tool moves: one path for drag and drop, dialogs and keyboard steps ----
+
+  const nextGroupSortOrder = groups.length
+    ? Math.max(...groups.map((group) => group.sort_order)) + SORT_ORDER_STEP
+    : 0;
+
+  const canStepTool = (toolId: string, direction: 'earlier' | 'later'): boolean =>
+    moveToolWithinSection({ tools, knownGroupIds, toolId, direction }) !== null;
+
+  const commitToolOrder = async (input: {
+    toolId: string;
+    orderedIds: string[];
+    targetGroupId: string | null;
+    groupChanged: boolean;
+    groupList: ToolGroup[];
+  }): Promise<boolean> => (await runOrderChange(() => saveToolOrder(input))) ?? false;
+
+  const saveToolOrder = async (input: {
+    toolId: string;
+    orderedIds: string[];
+    targetGroupId: string | null;
+    groupChanged: boolean;
+    groupList: ToolGroup[];
+  }): Promise<boolean> => {
+    const tool = tools.find((candidate) => candidate.id === input.toolId);
+    if (!tool) return false;
+    const knownIds = new Set(input.groupList.map((group) => group.id));
+    const staleGroup = Boolean(tool.group_id) && !knownIds.has(tool.group_id ?? '');
+    const needsGroupWrite = input.groupChanged || (staleGroup && input.targetGroupId === null);
+    const targetName = input.groupList.find((group) => group.id === input.targetGroupId)?.name;
+
+    setTools((current) => {
+      const byId = new Map(current.map((candidate) => [candidate.id, candidate]));
+      return input.orderedIds.flatMap((id, index) => {
+        const existing = byId.get(id);
+        if (!existing) return [];
+        const sort_order = index * SORT_ORDER_STEP;
+        if (id === input.toolId && needsGroupWrite) {
+          return [
+            {
+              ...existing,
+              group_id: input.targetGroupId,
+              group_name: targetName ?? null,
+              sort_order,
+            },
+          ];
+        }
+        return [{ ...existing, sort_order }];
+      });
+    });
+
+    try {
+      if (needsGroupWrite) {
+        const updated = await api.updateToolConfig(input.toolId, {
+          group_id: input.targetGroupId ?? '',
+        });
+        setTools((current) =>
+          current.map((candidate) =>
+            candidate.id === updated.id
+              ? { ...updated, sort_order: candidate.sort_order }
+              : candidate,
+          ),
+        );
       }
-    };
+      // Always the full global order: the API reorders the whole list, never a subset.
+      await api.reorderTools({ tool_ids: input.orderedIds });
+      return true;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to move tool');
+      await loadTools();
+      return false;
+    }
+  };
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setToolContextMenu(null);
-      }
-    };
+  const applyToolMove = async (input: {
+    toolId: string;
+    targetGroupId: string | null;
+    insertIndex: number;
+    groupList: ToolGroup[];
+  }): Promise<boolean> => {
+    const tool = tools.find((candidate) => candidate.id === input.toolId);
+    if (!tool) return false;
+    const knownIds = new Set(input.groupList.map((group) => group.id));
+    const targetGroupId =
+      input.targetGroupId && knownIds.has(input.targetGroupId) ? input.targetGroupId : null;
+    const move = computeToolMove({
+      tools,
+      knownGroupIds: knownIds,
+      toolId: tool.id,
+      targetGroupId,
+      insertIndex: input.insertIndex,
+    });
+    const staleGroup = Boolean(tool.group_id) && !knownIds.has(tool.group_id ?? '');
+    if (!move && !(staleGroup && targetGroupId === null)) return true;
+    return commitToolOrder({
+      toolId: tool.id,
+      orderedIds: move?.orderedIds ?? tools.map((candidate) => candidate.id),
+      targetGroupId,
+      groupChanged: move?.groupChanged ?? false,
+      groupList: input.groupList,
+    });
+  };
 
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [toolContextMenu]);
+  const moveToolOneStep = (toolId: string, direction: 'earlier' | 'later') => {
+    const move = moveToolWithinSection({ tools, knownGroupIds, toolId, direction });
+    if (!move) return;
+    const section = sections.find((candidate) =>
+      candidate.tools.some((tool) => tool.id === toolId),
+    );
+    void commitToolOrder({
+      toolId,
+      orderedIds: move.orderedIds,
+      targetGroupId: section?.group?.id ?? null,
+      groupChanged: false,
+      groupList: groups,
+    });
+  };
+
+  const handleMoveToGroup = async (target: MoveToGroupTarget) => {
+    const tool = moveDialogTool;
+    if (!tool) return;
+    if (orderLockRef.current) {
+      throw new Error('Another move is still saving. Try again when it finishes.');
+    }
+    let groupList = groups;
+    let targetGroupId: string | null;
+    let insertIndex: number;
+    let groupLabel: string;
+    if (target.kind === 'new') {
+      const created = await api.createToolGroup({
+        name: target.name,
+        description: '',
+        sort_order: nextGroupSortOrder,
+      });
+      groupList = [...groups, created];
+      setGroups(groupList);
+      targetGroupId = created.id;
+      insertIndex = 0;
+      groupLabel = created.name;
+    } else {
+      const targetSection = sections.find(
+        (section) => section.id === (target.groupId ?? UNGROUPED_SECTION_ID),
+      );
+      targetGroupId = target.groupId;
+      insertIndex = targetSection?.tools.length ?? 0;
+      groupLabel = targetSection?.group?.name ?? UNGROUPED_LABEL;
+    }
+    const moved = await applyToolMove({ toolId: tool.id, targetGroupId, insertIndex, groupList });
+    if (!moved) throw new Error('The tool was not moved. The list has been reloaded.');
+    toast.success(`Moved “${tool.name}” to “${groupLabel}”`);
+    setMoveDialogToolId(null);
+    revealToolInSection(
+      targetGroupId ?? UNGROUPED_SECTION_ID,
+      tool,
+      targetGroupId ? groupLabel : '',
+    );
+  };
+
+  // ---- Group handlers ----
+
+  const handleSaveGroupDialog = async (value: { name: string; description: string }) => {
+    if (groupDialog?.mode === 'edit') {
+      const updated = await api.updateToolGroup(groupDialog.group.id, value);
+      setGroups((current) => current.map((group) => (group.id === updated.id ? updated : group)));
+      setGroupDialog(null);
+      return;
+    }
+    const created = await api.createToolGroup({ ...value, sort_order: nextGroupSortOrder });
+    // A filter would hide the empty new section, so it is cleared to show the new group.
+    if (isToolFiltering) toolFilter.clear();
+    setGroups((current) => [...current, created]);
+    const expanded = withSetMembers(collapsedIds, [created.id], false);
+    setCollapsedIds(expanded);
+    persistCollapsedSections(expanded);
+    setGroupDialog(null);
+    pendingFocusRef.current = { elementId: sectionToggleId(created.id), groupId: created.id };
+  };
+
+  const moveGroup = (groupId: string, offset: 1 | -1): Promise<unknown> =>
+    runOrderChange(() => saveGroupOrder(groupId, offset));
+
+  const saveGroupOrder = async (groupId: string, offset: 1 | -1) => {
+    const index = orderedGroups.findIndex((group) => group.id === groupId);
+    const nextIndex = index + offset;
+    const moved = orderedGroups[index];
+    if (!moved || nextIndex < 0 || nextIndex >= orderedGroups.length) return;
+
+    const nextOrder = [...orderedGroups];
+    nextOrder.splice(index, 1);
+    nextOrder.splice(nextIndex, 0, moved);
+    const sortOrders = new Map<string, number>(
+      nextOrder.map((group, position): [string, number] => [group.id, position * SORT_ORDER_STEP]),
+    );
+    setGroups((current) =>
+      current.map((group) => ({
+        ...group,
+        sort_order: sortOrders.get(group.id) ?? group.sort_order,
+      })),
+    );
+    try {
+      await api.reorderToolGroups({ group_ids: nextOrder.map((group) => group.id) });
+      setAnnouncement(
+        `Group “${moved.name}” moved to position ${nextIndex + 1} of ${nextOrder.length}.`,
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to move group');
+      const freshGroups = await api.listToolGroups().catch(() => null);
+      if (freshGroups) setGroups(freshGroups);
+    }
+  };
+
+  const handleConfirmDeleteGroup = async () => {
+    const group = deleteGroupTarget;
+    if (!group) return;
+    await api.deleteToolGroup(group.id);
+    // Focus goes to the next group section that is actually rendered, else the New group button.
+    const renderedGroups = visibleSections.flatMap(({ section }) =>
+      section.group ? [section.group] : [],
+    );
+    const deletedIndex = renderedGroups.findIndex((candidate) => candidate.id === group.id);
+    const nextRendered = deletedIndex >= 0 ? renderedGroups[deletedIndex + 1] : undefined;
+    setGroups((current) => current.filter((candidate) => candidate.id !== group.id));
+    setTools((current) =>
+      current.map((tool) =>
+        tool.group_id === group.id ? { ...tool, group_id: null, group_name: null } : tool,
+      ),
+    );
+    setForcedOpenIds((current) => withSetMembers(current, [group.id], false));
+    const nextCollapsed = withSetMembers(collapsedIds, [group.id], false);
+    setCollapsedIds(nextCollapsed);
+    persistCollapsedSections(nextCollapsed);
+    setDeleteGroupTarget(null);
+    pendingFocusRef.current = nextRendered
+      ? { elementId: sectionToggleId(nextRendered.id), groupId: nextRendered.id }
+      : { elementId: NEW_GROUP_BUTTON_ID, groupId: null };
+    toast.success('Group deleted');
+  };
 
   // ---------------------------------------------------------------------------
   // Mount source handlers
@@ -2010,42 +1718,7 @@ export function ToolsPanel({
     }
   }, [disableConfirmation, toast]);
 
-  // Drag-and-drop state
-  const [dragToolId, setDragToolId] = useState<string | null>(null);
-  const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
-  const [dragOverUngrouped, setDragOverUngrouped] = useState(false);
-  // Within-list reorder DnD state
-  const [dragOverToolId, setDragOverToolId] = useState<string | null>(null);
-  const [dragInsertBefore, setDragInsertBefore] = useState(true);
-  // Group-by-stacking DnD state (hovering over center of another card)
-  const [dragGroupTargetId, setDragGroupTargetId] = useState<string | null>(null);
-  const dragPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingDragPreviewRef = useRef<DragPreviewTarget | null>(null);
-  const showUngroupedDropZone = !selectedGroupId && Boolean(dragToolId);
-
-  const previewInsertIndex = useMemo(() => {
-    if (!dragToolId || !dragOverToolId) {
-      return null;
-    }
-
-    const targetIdx = visibleTools.findIndex((tool) => tool.id === dragOverToolId);
-    if (targetIdx < 0) {
-      return null;
-    }
-
-    const idx = Math.max(
-      0,
-      Math.min(dragInsertBefore ? targetIdx : targetIdx + 1, visibleTools.length),
-    );
-
-    // Don't show a drop slot at a position that would result in no change
-    const fromIdx = visibleTools.findIndex((tool) => tool.id === dragToolId);
-    if (fromIdx >= 0 && (idx === fromIdx || idx === fromIdx + 1)) {
-      return null;
-    }
-
-    return idx;
-  }, [dragToolId, dragOverToolId, dragInsertBefore, visibleTools]);
+  // ---- Drag and drop (disabled while filtering) ----
 
   const clearDragPreviewTimer = useCallback(() => {
     if (dragPreviewTimerRef.current) {
@@ -2054,411 +1727,219 @@ export function ToolsPanel({
     }
   }, []);
 
-  const clearDragPreview = useCallback(() => {
+  const clearDragPreview = () => {
     clearDragPreviewTimer();
     pendingDragPreviewRef.current = null;
     setDragOverToolId(null);
-    setDragGroupTargetId(null);
-  }, [clearDragPreviewTimer]);
+  };
 
-  const scheduleDragPreview = useCallback(
-    (target: DragPreviewTarget) => {
-      clearDragPreviewTimer();
-      pendingDragPreviewRef.current = target;
-      setDragOverToolId(null);
-
-      dragPreviewTimerRef.current = setTimeout(() => {
-        const pending = pendingDragPreviewRef.current;
-        if (!pending) {
-          dragPreviewTimerRef.current = null;
-          return;
-        }
-
-        setDragOverToolId(pending.toolId);
-        setDragInsertBefore(pending.insertBefore);
-
-        dragPreviewTimerRef.current = null;
-        pendingDragPreviewRef.current = null;
-      }, DRAG_REORDER_PREVIEW_DELAY_MS);
-    },
-    [clearDragPreviewTimer],
-  );
-
-  const handleDragStart = useCallback((e: React.DragEvent, toolId: string) => {
-    e.dataTransfer.setData('text/plain', toolId);
-    e.dataTransfer.effectAllowed = 'move';
-    setDragToolId(toolId);
-  }, []);
-
-  const handleDragEnd = useCallback(() => {
+  const resetDragState = () => {
     clearDragPreview();
     setDragToolId(null);
-    setDragOverGroupId(null);
-    setDragOverUngrouped(false);
-  }, [clearDragPreview]);
+    setBodyDropSectionId(null);
+    setHeaderDropSectionId(null);
+  };
 
-  const handleGroupDragOver = useCallback((e: React.DragEvent, groupId: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverGroupId(groupId);
-  }, []);
+  const scheduleDragPreview = (target: DragPreviewTarget) => {
+    clearDragPreviewTimer();
+    pendingDragPreviewRef.current = target;
+    setDragOverToolId(null);
 
-  const handleGroupDragLeave = useCallback((e: React.DragEvent, groupId: string) => {
-    // Only clear if we actually left the group card (not entering a child element)
-    if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) {
-      setDragOverGroupId((current) => (current === groupId ? null : current));
-    }
-  }, []);
-
-  const handleGroupDrop = useCallback(
-    async (e: React.DragEvent, groupId: string) => {
-      e.preventDefault();
-      const toolId = e.dataTransfer.getData('text/plain');
-      clearDragPreview();
-      setDragOverGroupId(null);
-      setDragToolId(null);
-      if (toolId) {
-        await handleAssignGroup(toolId, groupId);
-      }
-    },
-    [handleAssignGroup, clearDragPreview],
-  );
-
-  const handleUngroupedDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverUngrouped(true);
-  }, []);
-
-  const handleUngroupedDragLeave = useCallback((e: React.DragEvent) => {
-    if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) {
-      setDragOverUngrouped(false);
-    }
-  }, []);
-
-  const handleUngroupedDrop = useCallback(
-    async (e: React.DragEvent) => {
-      e.preventDefault();
-      const toolId = e.dataTransfer.getData('text/plain');
-      clearDragPreview();
-      setDragOverUngrouped(false);
-      setDragToolId(null);
-      if (toolId) {
-        await handleAssignGroup(toolId, null);
-      }
-    },
-    [handleAssignGroup, clearDragPreview],
-  );
-
-  // ---- Within-list reorder handlers ----
-
-  const handleToolCardDragOver = useCallback(
-    (e: React.DragEvent, targetToolId: string) => {
-      e.preventDefault();
-      e.stopPropagation();
-      e.dataTransfer.dropEffect = 'move';
-
-      if (!dragToolId || dragToolId === targetToolId) {
-        return;
-      }
-
-      // Detect stack/group zone in the center of the card. Edge zones reorder.
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const relX = (e.clientX - rect.left) / rect.width;
-      const relY = (e.clientY - rect.top) / rect.height;
-      const isCenter = relX >= 0.25 && relX <= 0.75 && relY >= 0.25 && relY <= 0.75;
-
-      if (isCenter) {
-        // Center hover → show stack/group indicator, suppress reorder slot
-        if (dragGroupTargetId !== targetToolId) {
-          clearDragPreviewTimer();
-          pendingDragPreviewRef.current = null;
-          setDragOverToolId(null);
-          setDragGroupTargetId(targetToolId);
-        }
-        return;
-      }
-
-      // Edge hover → reorder mode; clear any group target
-      if (dragGroupTargetId !== null) {
-        setDragGroupTargetId(null);
-      }
-
-      const insertBefore = relX < 0.5;
-
-      if (dragOverToolId === targetToolId && dragInsertBefore === insertBefore) {
-        return;
-      }
-
+    dragPreviewTimerRef.current = setTimeout(() => {
       const pending = pendingDragPreviewRef.current;
-      if (pending?.toolId === targetToolId && pending.insertBefore === insertBefore) {
-        return;
-      }
+      dragPreviewTimerRef.current = null;
+      pendingDragPreviewRef.current = null;
+      if (!pending) return;
+      setDragOverToolId(pending.toolId);
+      setDragInsertBefore(pending.insertBefore);
+    }, DRAG_REORDER_PREVIEW_DELAY_MS);
+  };
 
-      scheduleDragPreview({ toolId: targetToolId, insertBefore });
-    },
-    [
-      dragToolId,
-      dragOverToolId,
-      dragInsertBefore,
-      dragGroupTargetId,
-      clearDragPreviewTimer,
-      scheduleDragPreview,
-    ],
-  );
+  const handleDragStart = (event: React.DragEvent, toolId: string) => {
+    event.dataTransfer.setData('text/plain', toolId);
+    event.dataTransfer.effectAllowed = 'move';
+    setDragToolId(toolId);
+  };
 
-  const handleToolCardDragLeave = useCallback(
-    (e: React.DragEvent) => {
-      const related = e.relatedTarget as HTMLElement;
-      if (
-        !(e.currentTarget as HTMLElement).contains(related) &&
-        (!related || !related.closest('.tool-reorder-drop-slot'))
-      ) {
-        clearDragPreview();
-      }
-    },
-    [clearDragPreview],
-  );
+  // Drop slot shown in one section: index is "insert before the card at this index".
+  const previewSlot = useMemo(() => {
+    if (!dragToolId || !dragOverToolId) return null;
+    const targetSection = sections.find((section) =>
+      section.tools.some((tool) => tool.id === dragOverToolId),
+    );
+    if (!targetSection) return null;
+    const targetIndex = targetSection.tools.findIndex((tool) => tool.id === dragOverToolId);
+    const index = dragInsertBefore ? targetIndex : targetIndex + 1;
+    const sourceSection = sections.find((section) =>
+      section.tools.some((tool) => tool.id === dragToolId),
+    );
+    if (sourceSection?.id === targetSection.id) {
+      const fromIndex = sourceSection.tools.findIndex((tool) => tool.id === dragToolId);
+      if (index === fromIndex || index === fromIndex + 1) return null;
+    }
+    return { sectionId: targetSection.id, index };
+  }, [dragToolId, dragOverToolId, dragInsertBefore, sections]);
 
-  const reorderVisibleTools = useCallback(
-    async (draggedId: string, insertIdx: number) => {
-      try {
-        const reordered = [...visibleTools];
-        const fromIdx = reordered.findIndex((t) => t.id === draggedId);
+  const handleToolCardDragOver = (event: React.DragEvent<HTMLElement>, targetToolId: string) => {
+    if (!dragToolId || dragDisabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'move';
+    setBodyDropSectionId(null);
+    setHeaderDropSectionId(null);
+    if (dragToolId === targetToolId) return;
 
-        let moved: ToolConfig;
-        let safeInsertIdx = insertIdx;
+    const insertBefore = isPointerBeforeMidpoint(event);
+    if (dragOverToolId === targetToolId && dragInsertBefore === insertBefore) return;
+    const pending = pendingDragPreviewRef.current;
+    if (pending?.toolId === targetToolId && pending.insertBefore === insertBefore) return;
+    scheduleDragPreview({ toolId: targetToolId, insertBefore });
+  };
 
-        if (fromIdx >= 0) {
-          [moved] = reordered.splice(fromIdx, 1);
-          if (fromIdx < safeInsertIdx) {
-            safeInsertIdx -= 1;
-          }
-        } else {
-          const draggedTool = tools.find((t) => t.id === draggedId);
-          if (!draggedTool) return;
-          moved = await api.updateToolConfig(draggedId, { group_id: selectedGroupId ?? '' });
-        }
-
-        safeInsertIdx = Math.max(0, Math.min(safeInsertIdx, reordered.length));
-        reordered.splice(safeInsertIdx, 0, moved);
-
-        // Persist a full global order so sort_order remains unique and stable across reloads.
-        // Sending only the visible subset causes sort_order collisions with hidden tools.
-        const visibleIds = visibleTools.map((t) => t.id);
-        const visibleIdSet = new Set(visibleIds);
-        const reorderedVisibleIds = reordered.map((t) => t.id);
-
-        let fullOrderedIds: string[];
-
-        if (fromIdx >= 0) {
-          // Reorder within the currently visible subset while keeping non-visible tools in place.
-          let nextVisibleIdx = 0;
-          fullOrderedIds = tools.map((tool) => {
-            if (!visibleIdSet.has(tool.id)) {
-              return tool.id;
-            }
-            const replacement = reorderedVisibleIds[nextVisibleIdx];
-            nextVisibleIdx += 1;
-            return replacement;
-          });
-        } else {
-          // Dragged from outside the visible subset: remove old position, then insert into
-          // this subset's band at the resolved visible insertion index.
-          fullOrderedIds = tools.map((t) => t.id).filter((id) => id !== draggedId);
-
-          let globalInsertIdx = fullOrderedIds.length;
-          if (visibleIds.length > 0) {
-            if (safeInsertIdx >= visibleIds.length) {
-              const anchorId = visibleIds[visibleIds.length - 1];
-              const anchorIdx = fullOrderedIds.indexOf(anchorId);
-              if (anchorIdx >= 0) {
-                globalInsertIdx = anchorIdx + 1;
-              }
-            } else {
-              const anchorId = visibleIds[safeInsertIdx];
-              const anchorIdx = fullOrderedIds.indexOf(anchorId);
-              if (anchorIdx >= 0) {
-                globalInsertIdx = anchorIdx;
-              }
-            }
-          }
-
-          fullOrderedIds.splice(globalInsertIdx, 0, draggedId);
-        }
-
-        const updatedSortOrders = new Map(fullOrderedIds.map((id, i) => [id, i * 100]));
-        setTools((current) => {
-          const byId = new Map(current.map((tool) => [tool.id, tool]));
-          byId.set(draggedId, {
-            ...(byId.get(draggedId) ?? moved),
-            ...moved,
-            sort_order: updatedSortOrders.get(draggedId) ?? moved.sort_order,
-          });
-
-          return fullOrderedIds
-            .map((id) => {
-              const tool = byId.get(id);
-              if (!tool) return null;
-              const nextOrder = updatedSortOrders.get(id);
-              return nextOrder === undefined ? tool : { ...tool, sort_order: nextOrder };
-            })
-            .filter((tool): tool is ToolConfig => tool !== null);
-        });
-
-        await api.reorderTools({ tool_ids: fullOrderedIds });
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to reorder tools');
-        await loadTools();
-      }
-    },
-    [visibleTools, tools, selectedGroupId, loadTools, toast],
-  );
-
-  const handleToolCardDrop = useCallback(
-    async (e: React.DragEvent, targetToolId: string) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const draggedId = e.dataTransfer.getData('text/plain') || dragToolId;
-
-      const localDragOverId = dragOverToolId;
-      const localInsertBefore = localDragOverId ? dragInsertBefore : true;
-      const localGroupTarget = dragGroupTargetId;
-
-      // Re-detect center zone during drop to ensure grouping intent is captured even if state was cleared
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const relX = (e.clientX - rect.left) / rect.width;
-      const relY = (e.clientY - rect.top) / rect.height;
-      const isCenterZone = relX >= 0.25 && relX <= 0.75 && relY >= 0.25 && relY <= 0.75;
-
+  const handleToolCardDragLeave = (event: React.DragEvent<HTMLElement>) => {
+    const related = event.relatedTarget as HTMLElement | null;
+    if (!event.currentTarget.contains(related) && !related?.closest('.tool-reorder-drop-slot')) {
       clearDragPreview();
-      setDragToolId(null);
+    }
+  };
 
-      if (!draggedId || draggedId === targetToolId) return;
+  const handleToolCardDrop = async (event: React.DragEvent<HTMLElement>, targetToolId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const draggedId = event.dataTransfer.getData('text/plain') || dragToolId;
+    const insertBefore = isPointerBeforeMidpoint(event);
+    resetDragState();
+    if (!draggedId || draggedId === targetToolId || dragDisabled) return;
 
-      // Center drop or localGroupTarget match → group tools
-      if (isCenterZone || localGroupTarget === targetToolId) {
-        try {
-          const targetTool = tools.find((tool) => tool.id === targetToolId);
-          if (!targetTool) return;
+    const section = sections.find((candidate) =>
+      candidate.tools.some((tool) => tool.id === targetToolId),
+    );
+    if (!section) return;
+    const targetIndex = section.tools.findIndex((tool) => tool.id === targetToolId);
+    await applyToolMove({
+      toolId: draggedId,
+      targetGroupId: section.group?.id ?? null,
+      insertIndex: insertBefore ? targetIndex : targetIndex + 1,
+      groupList: groups,
+    });
+  };
 
-          const targetGroupId = targetTool.group_id;
+  const handleDropSlotDragOver = (event: React.DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'move';
+  };
 
-          if (targetGroupId) {
-            // Target is already in a group, just add dragged tool to it
-            await handleAssignGroup(draggedId, targetGroupId);
-            setSelectedGroupId(targetGroupId);
-          } else {
-            // Target is not in a group, create a new suggested group for both
-            const { created: newGroup } = await createSuggestedGroup(targetTool);
-            // Assign both tools to the new group (target first so it retains lower sort_order)
-            await Promise.all([
-              handleAssignGroup(targetToolId, newGroup.id),
-              handleAssignGroup(draggedId, newGroup.id),
-            ]);
-            setSelectedGroupId(newGroup.id);
-          }
-        } catch (err) {
-          toast.error(err instanceof Error ? err.message : 'Failed to group tools');
-        }
-        return;
-      }
+  const handleSlotDrop = async (
+    event: React.DragEvent<HTMLElement>,
+    section: ToolSection,
+    index: number,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const draggedId = event.dataTransfer.getData('text/plain') || dragToolId;
+    resetDragState();
+    if (!draggedId || dragDisabled) return;
+    await applyToolMove({
+      toolId: draggedId,
+      targetGroupId: section.group?.id ?? null,
+      insertIndex: index,
+      groupList: groups,
+    });
+  };
 
-      const resolvedTargetId = localDragOverId ?? targetToolId;
+  const handleSectionBodyDragOver = (event: React.DragEvent<HTMLElement>, section: ToolSection) => {
+    if (!dragToolId || dragDisabled) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setBodyDropSectionId(section.id);
+    setHeaderDropSectionId(null);
 
-      const toIdx = visibleTools.findIndex((t) => t.id === resolvedTargetId);
-      if (toIdx < 0) return;
-      const insertIdx = localInsertBefore ? toIdx : toIdx + 1;
-      await reorderVisibleTools(draggedId, insertIdx);
-    },
-    [
-      visibleTools,
-      tools,
-      dragToolId,
-      dragOverToolId,
-      dragInsertBefore,
-      dragGroupTargetId,
-      reorderVisibleTools,
-      clearDragPreview,
-      handleAssignGroup,
-      createSuggestedGroup,
-      setSelectedGroupId,
-      toast,
-    ],
-  );
-
-  const handleSlotDrop = useCallback(
-    async (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const draggedId = e.dataTransfer.getData('text/plain');
-      const localDragOverId = dragOverToolId;
-      const localInsertBefore = dragInsertBefore;
-
+    const lastTool = section.tools[section.tools.length - 1];
+    if (!lastTool || lastTool.id === dragToolId) {
       clearDragPreview();
-      setDragToolId(null);
+      return;
+    }
+    const pending = pendingDragPreviewRef.current;
+    if (pending?.toolId === lastTool.id && !pending.insertBefore) return;
+    if (dragOverToolId === lastTool.id && !dragInsertBefore) return;
+    scheduleDragPreview({ toolId: lastTool.id, insertBefore: false });
+  };
 
-      if (!draggedId || !localDragOverId || draggedId === localDragOverId) return;
+  const handleSectionBodyDragLeave = (event: React.DragEvent<HTMLElement>, sectionId: string) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setBodyDropSectionId((current) => (current === sectionId ? null : current));
+    clearDragPreview();
+  };
 
-      const toIdx = visibleTools.findIndex((t) => t.id === localDragOverId);
-      const insertIdx = localInsertBefore ? toIdx : toIdx + 1;
-      await reorderVisibleTools(draggedId, insertIdx);
-    },
-    [visibleTools, dragOverToolId, dragInsertBefore, reorderVisibleTools, clearDragPreview],
-  );
+  const handleSectionBodyDrop = async (
+    event: React.DragEvent<HTMLElement>,
+    section: ToolSection,
+  ) => {
+    event.preventDefault();
+    const draggedId = event.dataTransfer.getData('text/plain') || dragToolId;
+    resetDragState();
+    if (!draggedId || dragDisabled) return;
+    await applyToolMove({
+      toolId: draggedId,
+      targetGroupId: section.group?.id ?? null,
+      insertIndex: section.tools.length,
+      groupList: groups,
+    });
+  };
 
-  const handleGridDragOver = useCallback(
-    (e: React.DragEvent) => {
-      if (!dragToolId) return;
+  const handleSectionHeaderDragOver = (
+    event: React.DragEvent<HTMLElement>,
+    section: ToolSection,
+  ) => {
+    if (!dragToolId || dragDisabled) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    clearDragPreview();
+    setBodyDropSectionId(null);
+    setHeaderDropSectionId(section.id);
+  };
 
-      if ((e.target as HTMLElement).closest('.tool-card-drag-wrap, .tool-reorder-drop-slot')) {
-        return;
-      }
+  const handleSectionHeaderDragLeave = (event: React.DragEvent<HTMLElement>, sectionId: string) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setHeaderDropSectionId((current) => (current === sectionId ? null : current));
+  };
 
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      setDragGroupTargetId(null);
+  const handleSectionHeaderDrop = async (
+    event: React.DragEvent<HTMLElement>,
+    section: ToolSection,
+  ) => {
+    event.preventDefault();
+    const draggedId = event.dataTransfer.getData('text/plain') || dragToolId;
+    const wasCollapsed = isSectionCollapsed(section.id);
+    resetDragState();
+    const draggedTool = tools.find((tool) => tool.id === draggedId);
+    if (!draggedId || !draggedTool || dragDisabled) return;
 
-      // Hovering over the grid background itself, so push drop slot to the very end
-      const lastTool = visibleTools[visibleTools.length - 1];
-      if (lastTool && lastTool.id !== dragToolId) {
-        // Guard against resetting the timer on every rapid dragover event:
-        // check the pending ref (like handleToolCardDragOver does) so we only
-        // schedule once and let the 80ms timer commit.
-        const pending = pendingDragPreviewRef.current;
-        if (pending?.toolId === lastTool.id && pending.insertBefore === false) {
-          return;
-        }
-        if (dragOverToolId !== lastTool.id || dragInsertBefore !== false) {
-          scheduleDragPreview({ toolId: lastTool.id, insertBefore: false });
-        }
-      }
-    },
-    [dragToolId, dragOverToolId, dragInsertBefore, visibleTools, scheduleDragPreview],
-  );
+    const groupLabel = section.group?.name ?? UNGROUPED_LABEL;
+    const moved = await applyToolMove({
+      toolId: draggedId,
+      targetGroupId: section.group?.id ?? null,
+      insertIndex: section.tools.length,
+      groupList: groups,
+    });
+    if (moved && wasCollapsed) {
+      flashSectionHeader(section.id);
+      toast.success(`Moved “${draggedTool.name}” to “${groupLabel}”`);
+    }
+  };
 
-  const handleGridDrop = useCallback(
-    async (e: React.DragEvent) => {
-      if (!dragToolId) return;
-      if ((e.target as HTMLElement).closest('.tool-card-drag-wrap, .tool-reorder-drop-slot')) {
-        return;
-      }
+  const getSectionBodyHandlers = (section: ToolSection): SectionDropHandlers => ({
+    onDragOver: (event) => handleSectionBodyDragOver(event, section),
+    onDragLeave: (event) => handleSectionBodyDragLeave(event, section.id),
+    onDrop: (event) => void handleSectionBodyDrop(event, section),
+  });
 
-      e.preventDefault();
-      const draggedId = e.dataTransfer.getData('text/plain');
-
-      clearDragPreview();
-      setDragToolId(null);
-
-      if (!draggedId) return;
-
-      const lastTool = visibleTools[visibleTools.length - 1];
-      if (lastTool) {
-        await reorderVisibleTools(draggedId, visibleTools.length);
-      }
-    },
-    [dragToolId, visibleTools, reorderVisibleTools, clearDragPreview],
-  );
+  const getSectionHeaderHandlers = (section: ToolSection): SectionDropHandlers => ({
+    onDragOver: (event) => handleSectionHeaderDragOver(event, section),
+    onDragLeave: (event) => handleSectionHeaderDragLeave(event, section.id),
+    onDrop: (event) => void handleSectionHeaderDrop(event, section),
+  });
 
   useEffect(() => {
     return () => {
@@ -2467,89 +1948,124 @@ export function ToolsPanel({
     };
   }, [clearDragPreviewTimer]);
 
-  const renderToolCard = (tool: ToolConfig) => {
-    const isBeingDragged = dragToolId === tool.id;
-    const isGroupTarget = dragGroupTargetId === tool.id;
-    return (
-      <Popover
-        key={tool.id}
-        content="Right-click for tool actions."
-        position="top"
-        trigger="hover"
-        followCursor={true}
-        requireHoverIdleMs={1000}
-        focusTrigger={false}
-        disabled={showFooterActions}
-        ignoreSelector=".tool-badge, .tool-card-heartbeat, .inline-edit-btn, button, input, textarea, a"
-        className={`tool-card-drag-wrap${isBeingDragged ? ' dragging' : ''}${isGroupTarget ? ' group-target' : ''}`}
-        draggable
-        onDragStart={(e) => handleDragStart(e, tool.id)}
-        onDragEnd={handleDragEnd}
-        onDragOver={(e) => handleToolCardDragOver(e, tool.id)}
-        onDragLeave={handleToolCardDragLeave}
-        onDrop={(e) => handleToolCardDrop(e, tool.id)}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setToolContextMenu({ toolId: tool.id, x: e.clientX, y: e.clientY });
-        }}
-      >
-        <ToolCard
-          tool={tool}
-          targetId={`tools-tool-${tool.id}`}
-          heartbeat={heartbeats[tool.id] || null}
-          showFooterActions={showFooterActions}
-          onEdit={handleEditTool}
-          onDelete={requestToolDeletion}
-          onTest={handleTestTool}
-          testing={testingToolId === tool.id}
-          onPdmReindex={handlePdmReindex}
-          pdmIndexing={pdmIndexingToolId === tool.id}
-          pdmStats={pdmStats[tool.id] || null}
-          onSchemaReindex={handleSchemaReindex}
-          schemaIndexing={schemaIndexingToolId === tool.id}
-          activeSchemaJob={activeSchemaJobsByToolId[tool.id] || null}
-          schemaStats={schemaStats[tool.id] || null}
-          onInlineUpdate={handleInlineUpdate}
-          classified={cpEnabled && requiredToolIds.has(tool.id)}
-          skillCount={instructionSkillSummary.tools[tool.id]}
-          onOpenSkills={openSkillsDialog}
-        />
-      </Popover>
-    );
-  };
-
-  const handleDropSlotDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    e.dataTransfer.dropEffect = 'move';
-  }, []);
-
-  const renderDropSlot = (key: string) => (
+  const renderToolCard = (tool: ToolConfig) => (
     <div
-      key={key}
+      key={tool.id}
+      role="listitem"
+      className={`tool-card-drag-wrap${dragToolId === tool.id ? ' dragging' : ''}`}
+      draggable={!dragDisabled}
+      onDragStart={(event) => handleDragStart(event, tool.id)}
+      onDragEnd={resetDragState}
+      onDragOver={(event) => handleToolCardDragOver(event, tool.id)}
+      onDragLeave={handleToolCardDragLeave}
+      onDrop={(event) => handleToolCardDrop(event, tool.id)}
+      onContextMenu={(event) => openToolMenuAtPointer(tool, event)}
+    >
+      <ToolCard
+        tool={tool}
+        tools={tools}
+        targetId={`tools-tool-${tool.id}`}
+        heartbeat={heartbeats[tool.id] || null}
+        showFooterActions={showFooterActions}
+        onEdit={handleEditTool}
+        onDelete={requestToolDeletion}
+        onTest={handleTestTool}
+        testing={testingToolId === tool.id}
+        onPdmReindex={handlePdmReindex}
+        pdmIndexing={pdmIndexingToolId === tool.id}
+        pdmStats={pdmStats[tool.id] || null}
+        onSchemaReindex={handleSchemaReindex}
+        schemaIndexing={schemaIndexingToolId === tool.id}
+        activeSchemaJob={activeSchemaJobsByToolId[tool.id] || null}
+        schemaStats={schemaStats[tool.id] || null}
+        onInlineUpdate={handleInlineUpdate}
+        classified={cpEnabled && requiredToolIds.has(tool.id)}
+        skillCount={instructionSkillSummary.tools[tool.id]}
+        onOpenSkills={openSkillsDialog}
+        onOpenActions={openToolMenuFromButton}
+        actionsMenuOpen={toolMenu?.toolId === tool.id}
+      />
+    </div>
+  );
+
+  const renderDropSlot = (section: ToolSection, index: number) => (
+    <div
+      key={`tool-reorder-drop-slot-${section.id}-${index}`}
       className="tool-reorder-drop-slot"
       aria-hidden="true"
       onDragOver={handleDropSlotDragOver}
-      onDrop={handleSlotDrop}
+      onDrop={(event) => void handleSlotDrop(event, section, index)}
     />
   );
 
-  const renderToolCardsWithDropSlot = () => {
+  const renderToolGrid = ({
+    id,
+    section,
+    shownTools,
+    bodyHandlers,
+  }: {
+    id: string;
+    section: ToolSection;
+    shownTools: ToolConfig[];
+    bodyHandlers?: SectionDropHandlers;
+  }) => {
     const items: JSX.Element[] = [];
-    const slotPrefix = `tool-reorder-drop-slot-${selectedGroupId ?? 'ungrouped'}`;
-
-    visibleTools.forEach((tool, idx) => {
-      if (previewInsertIndex === idx) {
-        items.push(renderDropSlot(`${slotPrefix}-${idx}`));
+    shownTools.forEach((tool, index) => {
+      if (previewSlot?.sectionId === section.id && previewSlot.index === index) {
+        items.push(renderDropSlot(section, index));
       }
       items.push(renderToolCard(tool));
     });
-
-    if (previewInsertIndex === visibleTools.length) {
-      items.push(renderDropSlot(`${slotPrefix}-end`));
+    if (previewSlot?.sectionId === section.id && previewSlot.index === shownTools.length) {
+      items.push(renderDropSlot(section, shownTools.length));
     }
+    return (
+      <div id={id} className="tools-grid" role="list" {...bodyHandlers}>
+        {items}
+      </div>
+    );
+  };
 
-    return items;
+  const renderToolSection = ({ section, shownTools }: VisibleToolSection) => {
+    const groupName = section.group?.name ?? UNGROUPED_LABEL;
+    const isUngrouped = section.group === null;
+    const title = isUngrouped && dragToolId !== null ? UNGROUPED_DROP_TITLE : groupName;
+    return (
+      <ToolGroupSection
+        key={section.id}
+        sectionId={section.id}
+        title={title}
+        description={section.group?.description || undefined}
+        toolCount={shownTools.length}
+        totalCount={section.tools.length}
+        disabledCount={shownTools.filter((tool) => !tool.enabled).length}
+        health={summarizeToolGroupHealth(shownTools, heartbeats, testingToolId)}
+        collapsed={isSectionCollapsed(section.id)}
+        onToggle={toggleSection}
+        onOpenActions={section.group ? openGroupMenuFromButton : undefined}
+        actionsMenuOpen={groupMenu?.sectionId === section.id}
+        onHeaderContextMenu={
+          section.group ? (event) => openGroupMenuAtPointer(section.id, event) : undefined
+        }
+        dropTarget={
+          headerDropSectionId === section.id
+            ? 'header'
+            : bodyDropSectionId === section.id
+              ? 'body'
+              : null
+        }
+        dropLabel={`Move to ${groupName}`}
+        headerDropHandlers={getSectionHeaderHandlers(section)}
+        bodyDropHandlers={getSectionBodyHandlers(section)}
+        emptyMessage={section.group ? GROUP_EMPTY_MESSAGE : undefined}
+      >
+        {renderToolGrid({
+          id: `tools-section-${section.id}-grid`,
+          section,
+          shownTools,
+        })}
+      </ToolGroupSection>
+    );
   };
 
   return (
@@ -2612,18 +2128,21 @@ export function ToolsPanel({
               />
             )}
 
-            {toolContextMenu &&
+            {toolMenu &&
               (() => {
-                const contextTool = tools.find((t) => t.id === toolContextMenu.toolId);
+                const contextTool = tools.find((t) => t.id === toolMenu.toolId);
                 if (!contextTool) return null;
                 const contextHasSchemaIndexing = hasSchemaIndexingEnabled(contextTool);
                 const closeAnd = (fn: () => void) => {
-                  setToolContextMenu(null);
+                  closeToolMenu();
                   fn();
                 };
                 return (
                   <ContextMenu
-                    ref={toolContextMenuRef}
+                    ref={toolMenuRef}
+                    autoFocus
+                    ariaLabel={`Tool actions for ${contextTool.name}`}
+                    onClose={closeToolMenu}
                     items={[
                       {
                         label: contextTool.enabled ? 'Enabled' : 'Disabled',
@@ -2633,14 +2152,27 @@ export function ToolsPanel({
                           handleToggleTool(contextTool.id, !contextTool.enabled);
                         },
                       },
-                      {
-                        label: 'Write Access',
-                        type: 'toggle',
-                        checked: contextTool.allow_write,
-                        onSelect: () => {
-                          handleToggleWrite(contextTool.id, !contextTool.allow_write);
-                        },
-                      },
+                      ...(contextTool.tool_type === 'solidworks'
+                        ? contextTool.allow_write
+                          ? [
+                              {
+                                label: 'Allow changes',
+                                type: 'toggle' as const,
+                                checked: true,
+                                onSelect: () => handleToggleWrite(contextTool.id, false),
+                              },
+                            ]
+                          : []
+                        : [
+                            {
+                              label: 'Write Access',
+                              type: 'toggle' as const,
+                              checked: contextTool.allow_write,
+                              onSelect: () => {
+                                handleToggleWrite(contextTool.id, !contextTool.allow_write);
+                              },
+                            },
+                          ]),
                       {
                         label: 'Test',
                         icon: 'play',
@@ -2675,10 +2207,7 @@ export function ToolsPanel({
                               label: 'Clear broken credentials...' as const,
                               icon: 'alert-circle' as const,
                               description: 'Remove fields that cannot be decrypted',
-                              onSelect: () => {
-                                setToolContextMenu(null);
-                                setClearConfirmTool(contextTool);
-                              },
+                              onSelect: () => closeAnd(() => setClearConfirmTool(contextTool)),
                             },
                           ]
                         : []),
@@ -2712,9 +2241,27 @@ export function ToolsPanel({
                           ]
                         : []),
                       {
+                        label: 'Move to group…',
+                        icon: 'folder',
+                        disabled: orderPending,
+                        onSelect: () => closeAnd(() => setMoveDialogToolId(contextTool.id)),
+                      },
+                      {
+                        label: 'Move earlier',
+                        icon: 'chevron-up',
+                        disabled: orderPending || !canStepTool(contextTool.id, 'earlier'),
+                        onSelect: () => closeAnd(() => moveToolOneStep(contextTool.id, 'earlier')),
+                      },
+                      {
+                        label: 'Move later',
+                        icon: 'chevron-down',
+                        disabled: orderPending || !canStepTool(contextTool.id, 'later'),
+                        onSelect: () => closeAnd(() => moveToolOneStep(contextTool.id, 'later')),
+                      },
+                      {
                         label: 'Duplicate',
                         icon: 'copy',
-                        onSelect: () => handleDuplicateTool(contextTool.id),
+                        onSelect: () => closeAnd(() => void handleDuplicateTool(contextTool.id)),
                       },
                       {
                         label: 'Export',
@@ -2727,21 +2274,99 @@ export function ToolsPanel({
                       {
                         label: 'Delete',
                         icon: 'trash',
-                        onSelect: () => {
-                          setToolContextMenu(null);
-                          if (isPairedWindowsTool(contextTool)) {
-                            setWindowsDeleteTool(contextTool);
-                          } else {
-                            setDeleteConfirmTool(contextTool);
-                          }
-                        },
+                        onSelect: () =>
+                          closeAnd(() => {
+                            if (isPairedWindowsTool(contextTool)) {
+                              setWindowsDeleteTool(contextTool);
+                            } else {
+                              setDeleteConfirmTool(contextTool);
+                            }
+                          }),
                       },
                     ]}
-                    x={toolContextMenu.x}
-                    y={toolContextMenu.y}
+                    {...toolMenu.placement}
                   />
                 );
               })()}
+
+            {groupMenu &&
+              (() => {
+                const group = orderedGroups.find(
+                  (candidate) => candidate.id === groupMenu.sectionId,
+                );
+                if (!group) return null;
+                const groupIndex = orderedGroups.indexOf(group);
+                const closeAnd = (fn: () => void) => {
+                  closeGroupMenu();
+                  fn();
+                };
+                return (
+                  <ContextMenu
+                    ref={groupMenuRef}
+                    autoFocus
+                    ariaLabel={`Group actions for ${group.name}`}
+                    onClose={closeGroupMenu}
+                    items={[
+                      {
+                        label: 'Edit group…',
+                        icon: 'pencil',
+                        onSelect: () => closeAnd(() => setGroupDialog({ mode: 'edit', group })),
+                      },
+                      {
+                        label: 'Move up',
+                        icon: 'chevron-up',
+                        disabled: orderPending || groupIndex <= 0,
+                        onSelect: () => closeAnd(() => void moveGroup(group.id, -1)),
+                      },
+                      {
+                        label: 'Move down',
+                        icon: 'chevron-down',
+                        disabled: orderPending || groupIndex === orderedGroups.length - 1,
+                        onSelect: () => closeAnd(() => void moveGroup(group.id, 1)),
+                      },
+                      {
+                        label: 'Delete group…',
+                        icon: 'trash',
+                        onSelect: () => closeAnd(() => setDeleteGroupTarget(group)),
+                      },
+                    ]}
+                    {...groupMenu.placement}
+                  />
+                );
+              })()}
+
+            {groupDialog && (
+              <ToolGroupDialog
+                key={groupDialog.mode === 'edit' ? `edit-${groupDialog.group.id}` : 'create'}
+                mode={groupDialog.mode}
+                initialName={groupDialog.mode === 'edit' ? groupDialog.group.name : ''}
+                initialDescription={
+                  groupDialog.mode === 'edit' ? groupDialog.group.description : ''
+                }
+                existingNames={groups.map((group) => group.name)}
+                onSubmit={handleSaveGroupDialog}
+                onClose={() => setGroupDialog(null)}
+              />
+            )}
+            {moveDialogTool && (
+              <MoveToGroupDialog
+                toolName={moveDialogTool.name}
+                currentGroupId={moveDialogTool.group_id ?? null}
+                groups={moveTargetGroups}
+                onMove={handleMoveToGroup}
+                onClose={() => setMoveDialogToolId(null)}
+              />
+            )}
+            {deleteGroupTarget && (
+              <ToolGroupDeleteDialog
+                groupName={deleteGroupTarget.name}
+                toolCount={
+                  sections.find((section) => section.id === deleteGroupTarget.id)?.tools.length ?? 0
+                }
+                onConfirm={handleConfirmDeleteGroup}
+                onClose={() => setDeleteGroupTarget(null)}
+              />
+            )}
 
             <p className="fieldset-help">
               Configure connections to databases, shells, and other tools that the AI can use during
@@ -2752,154 +2377,62 @@ export function ToolsPanel({
 
             {loading ? (
               <p className="muted">Loading tools...</p>
-            ) : tools.length === 0 ? (
+            ) : tools.length === 0 && groups.length === 0 ? (
               <div className="empty-state">
                 <p>No tools configured yet.</p>
                 <p className="muted">Click "Add Tool" to set up your first connection.</p>
               </div>
             ) : (
               <>
-                {/* Group tabs + tool grid */}
-                <div
-                  ref={groupContentRef}
-                  className={`tool-group-content${selectedGroupId ? ' has-selection' : ''}`}
-                >
-                  <div
-                    className={`tool-group-tabs${dragToolId ? ' dragging' : ''}`}
-                    onClick={handleGroupTabsClick}
+                <div id="tools-toolbar" className="tools-toolbar">
+                  <SearchFilterBar
+                    state={toolFilter}
+                    inputRef={toolFilterInputRef}
+                    placeholder="Filter tools by keyword..."
+                    ariaLabel="Filter tools by keyword"
+                    className="tools-toolbar-search"
+                  />
+                  <button
+                    id={NEW_GROUP_BUTTON_ID}
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setGroupDialog({ mode: 'create' })}
                   >
-                    <div className="tool-group-tabs-list" onClick={handleGroupTabsListClick}>
-                      {allGroups.length > 0 &&
-                        allGroups.map(({ group, tools: groupTools }) => {
-                          const isActive = selectedGroupId === group.id;
-                          const isDragTarget = dragOverGroupId === group.id;
-                          return (
-                            <div
-                              key={group.id}
-                              className={`tool-group-tab${isActive ? ' active' : ''}${isDragTarget ? ' drag-over' : ''}${editingGroupId === group.id ? ' editing' : ''}`}
-                              onClick={() => handleGroupTabClick(group.id)}
-                              onDragOver={(e) => handleGroupDragOver(e, group.id)}
-                              onDragLeave={(e) => handleGroupDragLeave(e, group.id)}
-                              onDrop={(e) => handleGroupDrop(e, group.id)}
-                            >
-                              {editingGroupId === group.id ? (
-                                <textarea
-                                  className="tool-group-tab-input"
-                                  value={editingGroupName}
-                                  onChange={(e) => setEditingGroupName(e.target.value)}
-                                  onBlur={() => handleRenameGroup(group.id)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      e.preventDefault();
-                                      handleRenameGroup(group.id);
-                                    }
-                                    if (e.key === 'Escape') setEditingGroupId(null);
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  autoFocus
-                                />
-                              ) : (
-                                <span className="tool-group-tab-name">{group.name}</span>
-                              )}
-                              <span className="tool-group-tab-count">{groupTools.length}</span>
-                              <span
-                                className="tool-group-tab-rename"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setEditingGroupId(group.id);
-                                  setEditingGroupName(group.name);
-                                }}
-                                title="Rename group"
-                              >
-                                &#9998;
-                              </span>
-                              <DeleteConfirmButton
-                                onDelete={() => {
-                                  handleDeleteGroup(group.id);
-                                  if (selectedGroupId === group.id) setSelectedGroupId(null);
-                                }}
-                                className="tool-group-tab-delete"
-                                title="Delete group"
-                              />
-                            </div>
-                          );
-                        })}
-                      {/* "Ungrouped" drop target — visible when dragging from within a group */}
-                      {dragToolId && selectedGroupId && (
-                        <div
-                          className={`tool-group-tab tool-group-tab-ungrouped${dragOverUngrouped ? ' drag-over' : ''}`}
-                          onDragOver={handleUngroupedDragOver}
-                          onDragLeave={handleUngroupedDragLeave}
-                          onDrop={handleUngroupedDrop}
-                        >
-                          Ungrouped
-                        </div>
-                      )}
-                    </div>
-                    <div className="tool-group-tabs-actions" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        className="tool-group-tab tool-group-tab-add"
-                        onClick={handleCreateGroup}
-                        title="Create a new group"
-                      >
-                        + Add Group
-                      </button>
-                      <SearchFilterBar
-                        state={toolFilter}
-                        inputRef={toolFilterInputRef}
-                        placeholder="Filter tools by keyword..."
-                        ariaLabel="Filter tools by keyword"
-                        className="tool-group-filter-search"
-                        onClick={handleToolFilterClick}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Tool cards — filtered by selected group */}
-                  {showSelectedGroupEmptyState ? (
-                    <div className="tool-group-active-panel">
-                      <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
-                        No tools in this group yet. Drag tools here to add them.
-                      </p>
-                    </div>
-                  ) : showToolFilterEmptyState ? (
-                    <div
-                      className={
-                        selectedGroupId ? 'tool-group-active-panel' : 'tool-group-section-panel'
-                      }
+                    New group
+                  </button>
+                  {groups.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={toggleAllSections}
+                      disabled={visibleSections.length === 0}
                     >
-                      <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
-                        No tools match the current filters.
-                      </p>
-                    </div>
-                  ) : selectedGroupId && selectedGroup ? (
-                    <div className="tool-group-active-panel">
-                      <div
-                        className="tools-grid"
-                        onDragOver={(e) => (dragToolId ? handleGridDragOver(e) : undefined)}
-                        onDrop={(e) => (dragToolId ? handleGridDrop(e) : undefined)}
-                      >
-                        {renderToolCardsWithDropSlot()}
-                      </div>
-                    </div>
-                  ) : (
-                    <div
-                      className={`tool-group-section-panel${showUngroupedDropZone ? ' tool-ungrouped-drop-zone' : ''}${dragOverUngrouped ? ' drag-over' : ''}`}
-                      onDragOver={(e) => {
-                        if (showUngroupedDropZone) handleUngroupedDragOver(e);
-                        if (dragToolId) handleGridDragOver(e);
-                      }}
-                      onDragLeave={showUngroupedDropZone ? handleUngroupedDragLeave : undefined}
-                      onDrop={(e) => {
-                        const draggedTool = tools.find((t) => t.id === dragToolId);
-                        if (showUngroupedDropZone && draggedTool?.group_id) handleUngroupedDrop(e);
-                        else if (dragToolId) handleGridDrop(e);
-                      }}
-                    >
-                      <div className="tools-grid">{renderToolCardsWithDropSlot()}</div>
-                    </div>
+                      {allSectionsCollapsed ? 'Expand all' : 'Collapse all'}
+                    </button>
                   )}
+                  <span className="tools-toolbar-summary" aria-live="polite">
+                    {summaryText}
+                  </span>
                 </div>
+                <p className="rc-visually-hidden" aria-live="polite">
+                  {announcement}
+                </p>
+                {groups.length === 0 ? (
+                  matchedTools.length === 0 && isToolFiltering ? (
+                    <p className="muted">No tools match the current filters.</p>
+                  ) : (
+                    renderToolGrid({
+                      id: 'tools-grid-all',
+                      section: plainSection,
+                      shownTools: matchedTools,
+                      bodyHandlers: getSectionBodyHandlers(plainSection),
+                    })
+                  )
+                ) : visibleSections.length === 0 ? (
+                  <p className="muted">No tools match the current filters.</p>
+                ) : (
+                  visibleSections.map(renderToolSection)
+                )}
               </>
             )}
           </>
@@ -3322,6 +2855,26 @@ export function ToolsPanel({
               <p className="field-help" style={{ marginTop: 8 }}>
                 This will permanently remove the tool configuration. This action cannot be undone.
               </p>
+              {deleteConfirmTool.tool_type === 'solidworks_pdm' &&
+                pdmLinkRelations.some(
+                  (relation) => relation.pdmToolId === deleteConfirmTool.id,
+                ) && (
+                  <div id="tool-delete-linked-note" role="note">
+                    {pdmLinkRelations
+                      .filter((relation) => relation.pdmToolId === deleteConfirmTool.id)
+                      .map((relation) => (
+                        <p key={relation.solidworksToolId}>
+                          “{deleteConfirmTool.name}” is linked to the SolidWorks tool “
+                          {relation.solidworksToolName}”. If you delete it, that tool can no longer
+                          search the vault or open, add, check out or check in vault files until you
+                          link another PDM tool. The SolidWorks tool keeps its other settings and
+                          shows a warning.
+                          {relation.allowWrite &&
+                            ` Changes are currently on in ${relation.approvedFolderCount} approved folders.`}
+                        </p>
+                      ))}
+                  </div>
+                )}
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={() => setDeleteConfirmTool(null)}>

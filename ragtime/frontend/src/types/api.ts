@@ -3,6 +3,8 @@
  * These types mirror the Python Pydantic models in app/indexer/models.py
  */
 
+import type { SolidworksConnectionConfig } from '../api/solidworks';
+
 // =============================================================================
 // Authentication Types
 // =============================================================================
@@ -1752,6 +1754,7 @@ export type ToolType =
   | 'ssh_shell'
   | 'windows_shell'
   | 'filesystem_indexer'
+  | 'solidworks'
   | 'solidworks_pdm';
 
 // Mount type for filesystem indexer
@@ -2088,6 +2091,8 @@ export interface RemotePairingResponse {
   transport?: 'direct' | 'tunnel' | null;
   error?: string | null;
   connection_config: SSHShellConnectionConfig;
+  /** Computed by the server for tunnel pairings; never stored. */
+  tunnel_client?: TunnelClientState | null;
 }
 
 export interface RemotePairingCreatedResponse extends RemotePairingResponse {
@@ -2206,6 +2211,7 @@ export type ConnectionConfig =
   | HttpApiConnectionConfig
   | OdooShellConnectionConfig
   | SSHShellConnectionConfig
+  | SolidworksConnectionConfig
   | FilesystemConnectionConfig
   | SolidworksPdmConnectionConfig
   | CloudMountConnectionConfig;
@@ -2220,6 +2226,40 @@ export type UserspaceMountBackend =
   | 'local'
   | 'cloud_virtual';
 
+export type SolidworksHostAutoUpdateState =
+  | 'current'
+  | 'newer'
+  | 'off'
+  | 'pending'
+  | 'updating'
+  | 'failed';
+export type SolidworksHostAutoUpdateReason =
+  | 'in_use'
+  | 'documents_open'
+  | 'logged_off'
+  | 'not_running'
+  | 'busy';
+
+/** Computed by the server for SolidWorks tools; never stored. */
+export interface SolidworksHostAutoUpdate {
+  enabled: boolean;
+  state: SolidworksHostAutoUpdateState;
+  installed_version: string | null;
+  target_version: string | null;
+  reason: SolidworksHostAutoUpdateReason | null;
+  last_attempt_at: string | null;
+  next_attempt_at: string | null;
+  message: string | null;
+}
+
+/** Computed by the server for tunnel tools; never stored. */
+export interface TunnelClientState {
+  connected: boolean;
+  version: number | null;
+  current_version: number;
+  outdated: boolean;
+}
+
 export interface ToolConfig {
   id: string;
   name: string;
@@ -2233,6 +2273,17 @@ export interface ToolConfig {
   sort_order: number;
   group_id?: string | null;
   group_name?: string | null;
+  /** Computed by the server for SolidWorks tools that link a PDM tool; never stored. */
+  pdm_link?: {
+    tool_id: string;
+    tool_name: string | null;
+    enabled: boolean;
+    exists: boolean;
+  } | null;
+  /** Computed by the server for SolidWorks tools; never stored. */
+  solidworks_host_update?: SolidworksHostAutoUpdate | null;
+  /** Computed by the server for tunnel tools; never stored. */
+  tunnel_client?: TunnelClientState | null;
   disabled_reason?: string;
   /** Credential field names that are encrypted but cannot be decrypted with the current server key. */
   undecryptable_fields: string[];
@@ -2338,9 +2389,14 @@ export interface UpdateToolGroupRequest {
   sort_order?: number;
 }
 
+export interface ReorderToolGroupsRequest {
+  group_ids: string[];
+}
+
 export interface CreateToolConfigRequest {
   name: string;
   tool_type: ToolType;
+  enabled?: boolean;
   description?: string;
   connection_config: ConnectionConfig;
   max_results?: number;
@@ -2590,6 +2646,12 @@ export const TOOL_TYPE_INFO: Record<
     description:
       'Index files from a filesystem path (Docker volume, SMB, NFS, or local) for semantic search',
     icon: 'folder',
+  },
+  solidworks: {
+    name: 'SolidWorks',
+    description:
+      'Read features, sketches, dimensions, mates and mass properties from SolidWorks on a Windows machine',
+    icon: 'box',
   },
   solidworks_pdm: {
     name: 'SolidWorks PDM',
@@ -2843,7 +2905,6 @@ export interface PdmIndexJob {
 }
 
 export interface PdmIndexStatusResponse {
-  enabled: boolean;
   last_indexed: string | null;
   document_count: number;
   embedding_count: number;

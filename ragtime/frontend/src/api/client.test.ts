@@ -219,6 +219,52 @@ describe('tool deletion client', () => {
   });
 });
 
+describe('PDM index status client', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+  const job = { id: 'job-1', status: 'completed', error_message: null };
+  const stats = {
+    document_count: 19932,
+    embedding_count: 19930,
+    last_indexed_at: '2026-11-20T20:46:33Z',
+  };
+
+  beforeEach(() => vi.stubGlobal('fetch', fetchMock));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  function serve(latestJob: unknown, indexStats: unknown) {
+    fetchMock.mockImplementation(async (input) =>
+      jsonResponse(String(input).endsWith('/pdm/stats') ? indexStats : latestJob),
+    );
+  }
+
+  it('combines the latest job with the index counts', async () => {
+    serve(job, stats);
+
+    await expect(api.getPdmIndexStatus('pdm-1')).resolves.toEqual({
+      last_indexed: '2026-11-20T20:46:33Z',
+      document_count: 19932,
+      embedding_count: 19930,
+      current_job: job,
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/indexes/tools/pdm-1/pdm/status', expect.anything());
+    expect(fetchMock).toHaveBeenCalledWith('/indexes/tools/pdm-1/pdm/stats', expect.anything());
+  });
+
+  it('reports no current job before the first index', async () => {
+    serve(null, { document_count: 0, embedding_count: 0, last_indexed_at: null });
+
+    await expect(api.getPdmIndexStatus('pdm-1')).resolves.toEqual({
+      last_indexed: null,
+      document_count: 0,
+      embedding_count: 0,
+      current_job: null,
+    });
+  });
+});
+
 describe('user management transport contracts', () => {
   const fetchMock = vi.fn<typeof fetch>();
   beforeEach(() => vi.stubGlobal('fetch', fetchMock));

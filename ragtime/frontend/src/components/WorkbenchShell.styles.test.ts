@@ -309,6 +309,56 @@ describe('Workbench shell styles contract', () => {
     expect(css).not.toContain("[data-theme-pack='modern'] .settings-filter-card");
   });
 
+  it('renders the Modern shared sign-in dialog as one surface with link-style text buttons', () => {
+    const adminCss = readSource('src/styles/workbench-admin.css');
+    const componentsCss = readSource('src/styles/components.css');
+    const layoutCss = readSource('src/styles/layout.css');
+    const modernLoginCardIndex = adminCss.indexOf("[data-theme-pack='modern'] .login-card {");
+    const flattenBlock = getRuleBody(
+      adminCss,
+      "[data-theme-pack='modern'] .shared-login-modal-card .login-card",
+    );
+    const modernDialogBlock = getRuleBody(
+      adminCss,
+      "[data-theme-pack='modern'] .shared-login-modal-card",
+    );
+    const linkRuleBodies = [...componentsCss.matchAll(/(?:^|\n)\.btn-link \{([^}]*)\}/g)].map(
+      (match) => match[1],
+    );
+
+    expect(modernLoginCardIndex).toBeGreaterThan(-1);
+    expect(
+      adminCss.indexOf("[data-theme-pack='modern'] .shared-login-modal-card .login-card {"),
+    ).toBeGreaterThan(modernLoginCardIndex);
+    expect(flattenBlock).toMatch(/max-width:\s*none;/);
+    expect(flattenBlock).toMatch(/padding:\s*0;/);
+    expect(flattenBlock).toMatch(/background:\s*transparent;/);
+    expect(flattenBlock).toMatch(/border:\s*0;/);
+    expect(flattenBlock).toMatch(/box-shadow:\s*none;/);
+    expect(modernDialogBlock).toContain('background: var(--color-widget);');
+    expect(modernDialogBlock).toContain('border: var(--workbench-container-border);');
+    expect(modernDialogBlock).toContain('border-radius: var(--workbench-surface-radius);');
+    expect(modernDialogBlock).toContain('box-shadow: var(--shadow-lg);');
+    const modernBtnNotLists =
+      adminCss.match(/\.btn:not\(\.btn-secondary[^)]*\.btn-link[^)]*\)/g) ?? [];
+
+    expect(modernBtnNotLists.length).toBeGreaterThanOrEqual(2);
+    expect(componentsCss).toMatch(
+      /\.btn\.btn-link:hover:not\(:disabled\) \{[^}]*background:\s*none;[^}]*transform:\s*none;[^}]*box-shadow:\s*none;/,
+    );
+    expect(linkRuleBodies.length).toBeGreaterThan(0);
+    for (const body of linkRuleBodies) {
+      expect(body).toMatch(/color:\s*var\(--color-link\);/);
+      expect(body).not.toContain('--color-accent');
+    }
+    expect(layoutCss).toMatch(
+      /\.shared-login-modal-card \{[^}]*max-height:\s*calc\(100dvh - 2 \* var\(--space-lg\)\);[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/,
+    );
+    expect(layoutCss).toMatch(
+      /\.shared-login-modal-card:has\(\.totp-enrollment-form\) \{[^}]*max-width:\s*560px;/,
+    );
+  });
+
   it('keeps embedded ToolWizard containers flat in the Modern theme', () => {
     const css = readSource('src/styles/workbench-admin.css');
     const embeddedWizardRule = getRuleBody(css, "[data-theme-pack='modern'] .wizard-card.embedded");

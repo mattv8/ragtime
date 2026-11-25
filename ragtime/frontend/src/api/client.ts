@@ -51,6 +51,7 @@ import type {
   ToolGroup,
   CreateToolGroupRequest,
   UpdateToolGroupRequest,
+  ReorderToolGroupsRequest,
   PostgresDiscoverRequest,
   PostgresDiscoverResponse,
   MssqlDiscoverRequest,
@@ -261,6 +262,7 @@ import type {
   PublicErrorDetail,
 } from '@/types';
 import { getThemeSnapshot } from '@/theme/themeSnapshot';
+import { ArtifactRequestError, type ModelArtifact } from '@/utils/modelArtifact';
 import { formatPublicErrorDetail, getPublicErrorDetail } from './publicErrorDetail';
 import {
   sessionLifecycle,
@@ -631,9 +633,28 @@ function instructionSkillsPath(owner: InstructionSkillOwner): string {
   return `${API_BASE}/${ownerSegment}/${encodeURIComponent(owner.id)}/skills`;
 }
 
+/** Metadata served by `GET /indexes/solidworks/artifacts/{id}`. */
+export interface ModelArtifactMetadata extends ModelArtifact {
+  sha256?: string;
+  expired: boolean;
+  tool_config_name: string | null;
+}
+
 export const api = {
   getConversationEventsUrl(conversationId: string, workspaceId?: string): string {
     return withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/events`, workspaceId);
+  },
+
+  /**
+   * Artifact metadata for the standalone page. Rejects with ArtifactRequestError carrying the
+   * HTTP status (401, 403, 404, 410); `expired` is reported in the body while the file exists.
+   */
+  async getModelArtifact(artifactId: string): Promise<ModelArtifactMetadata> {
+    const response = await apiFetch(
+      `${API_BASE}/solidworks/artifacts/${encodeURIComponent(artifactId)}`,
+    );
+    if (!response.ok) throw new ArtifactRequestError(response.status);
+    return response.json() as Promise<ModelArtifactMetadata>;
   },
 
   async discoverHttpApiOAuth(
@@ -2269,7 +2290,7 @@ export const api = {
   },
 
   async createRemotePairing(
-    toolType: 'ssh_shell' | 'windows_shell',
+    toolType: 'ssh_shell' | 'windows_shell' | 'solidworks',
     toolId?: string,
   ): Promise<RemotePairingCreatedResponse> {
     const response = await apiFetch(`${API_BASE}/remote/pairings`, {
@@ -2544,6 +2565,15 @@ export const api = {
       body: JSON.stringify(request),
     });
     return handleResponse<ToolGroup>(response);
+  },
+
+  async reorderToolGroups(request: ReorderToolGroupsRequest): Promise<void> {
+    const response = await apiFetch(`${API_BASE}/tool-groups/reorder`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    await handleResponse<{ message: string }>(response);
   },
 
   async updateToolGroup(groupId: string, request: UpdateToolGroupRequest): Promise<ToolGroup> {
@@ -3179,11 +3209,22 @@ export const api = {
   },
 
   /**
-   * Get PDM index status for a tool
+   * Get PDM index status for a tool: the latest job (`/pdm/status`, null before the first index)
+   * combined with the index counts (`/pdm/stats`).
    */
   async getPdmIndexStatus(toolId: string): Promise<import('@/types').PdmIndexStatusResponse> {
-    const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/status`);
-    return handleResponse<import('@/types').PdmIndexStatusResponse>(response);
+    const [job, stats] = await Promise.all([
+      apiFetch(`${API_BASE}/tools/${toolId}/pdm/status`).then((response) =>
+        handleResponse<import('@/types').PdmIndexJob | null>(response),
+      ),
+      this.getPdmIndexStats(toolId),
+    ]);
+    return {
+      last_indexed: stats.last_indexed_at,
+      document_count: stats.document_count,
+      embedding_count: stats.embedding_count,
+      current_job: job,
+    };
   },
 
   /**

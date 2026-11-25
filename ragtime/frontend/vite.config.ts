@@ -66,8 +66,75 @@ const localPreviewOriginPlugin: Plugin = {
   },
 };
 
+const modelLibraryFiles: Record<string, string> = {
+  'occt-import-js/occt-import-js-worker.js': 'occt-import-js/dist/occt-import-js-worker.js',
+  'occt-import-js/occt-import-js.js': 'occt-import-js/dist/occt-import-js.js',
+  'occt-import-js/occt-import-js.wasm': 'occt-import-js/dist/occt-import-js.wasm',
+  'draco3d/draco_decoder_nodejs.min.js': 'draco3d/draco_decoder_nodejs.js',
+  'draco3d/draco_decoder.wasm': 'draco3d/draco_decoder.wasm',
+};
+let modelLibraryPrefix = '/assets/vendor/';
+
+const selfHostModelLibraries: Plugin = {
+  name: 'self-host-model-libraries',
+  configResolved(config) {
+    modelLibraryPrefix = `${config.base.replace(/\/?$/, '/')}assets/vendor/`;
+  },
+  transform(code, id) {
+    if (!id.split('?')[0].endsWith('/online-3d-viewer/build/engine/o3dv.module.js')) return;
+    const modelLibraryUrls: Record<string, string> = {
+      'https://cdn.jsdelivr.net/npm/occt-import-js@0.0.22/dist/': `${modelLibraryPrefix}occt-import-js/`,
+      'https://cdn.jsdelivr.net/npm/draco3d@1.5.7/draco_decoder_nodejs.min.js': `${modelLibraryPrefix}draco3d/draco_decoder_nodejs.min.js`,
+    };
+    for (const [external, local] of Object.entries(modelLibraryUrls)) {
+      if (!code.includes(external)) this.error(`Missing expected model library URL: ${external}`);
+      if (external.includes('/occt-import-js@')) {
+        if (!code.includes(`'${external}'`)) this.error('Unexpected OCCT library URL syntax');
+        code = code.replaceAll(`'${external}'`, `new URL('${local}', window.location.origin).href`);
+      } else {
+        code = code.replaceAll(external, local);
+      }
+    }
+    return { code, map: null };
+  },
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      const pathname = new URL(req.url || '/', 'http://vite.local').pathname;
+      const prefix = new URL(modelLibraryPrefix, 'http://vite.local').pathname;
+      const name = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : '';
+      const file = Object.hasOwn(modelLibraryFiles, name) ? modelLibraryFiles[name] : undefined;
+      if (!file) return next();
+      res.setHeader(
+        'Content-Type',
+        file.endsWith('.wasm') ? 'application/wasm' : 'text/javascript',
+      );
+      fs.createReadStream(resolve(__dirname, 'node_modules', file))
+        .on('error', next)
+        .pipe(res);
+    });
+  },
+  generateBundle(_options, bundle) {
+    for (const output of Object.values(bundle)) {
+      if (
+        output.type === 'chunk' &&
+        /cdn\.jsdelivr\.net\/npm\/(?:occt-import-js|draco3d)/.test(output.code)
+      ) {
+        this.error(`External model library URL found in ${output.fileName}`);
+      }
+    }
+    for (const [name, file] of Object.entries(modelLibraryFiles)) {
+      this.emitFile({
+        type: 'asset',
+        fileName: `assets/vendor/${name}`,
+        source: fs.readFileSync(resolve(__dirname, 'node_modules', file)),
+      });
+    }
+  },
+};
+
 export default defineConfig({
-  plugins: [react(), localPreviewOriginPlugin],
+  plugins: [react(), localPreviewOriginPlugin, selfHostModelLibraries],
+  optimizeDeps: { exclude: ['online-3d-viewer'] },
   base: '/',
   appType: 'spa',
   cacheDir: resolve(__dirname, '.vite'),

@@ -36,6 +36,8 @@ from ragtime.indexer.routes import (
 )
 from ragtime.rag.components import RAGComponents
 
+# Local PowerShell runtime tests use `pwsh` on PATH; set RAGTIME_TEST_PWSH to another executable (e.g. Windows PowerShell's powershell.exe) to override.
+
 
 class _Channel:
     def exit_status_ready(self):
@@ -73,9 +75,10 @@ def test_powershell_wrapper_uses_encoded_command_and_preserves_native_124():
     script = base64.b64decode(encoded).decode("utf-16le")
     decoded_payload = base64.b64decode(_encode_powershell_payload("Write-Output 'héllo'; cmd /c exit 124")).decode("utf-16le")
     assert "OpenStandardInput" in script
-    assert "$stdinTask = $stdinReader.ReadToEndAsync()" in script
-    assert "[Console]::In.ReadLine()" not in script
-    assert "[Console]::In.ReadToEnd()" not in script
+    assert "[PowerShell]::Create().AddScript('[Console]::In.ReadToEnd()')" in script
+    assert "$read = $reader.BeginInvoke()" in script
+    assert "$reader.EndInvoke($read)" in script
+    assert "$stdinReader.ReadToEndAsync()" not in script
     assert "UTF8Encoding" in decoded_payload
     assert "cmd /c exit 124" in decoded_payload
     assert "Start-Job" not in script
@@ -88,6 +91,16 @@ def test_powershell_wrapper_uses_encoded_command_and_preserves_native_124():
     assert result.exit_code == 124
     assert not result.success
     assert "timed out" not in result.stderr.lower()
+
+
+def test_powershell_wrapper_keeps_payload_off_both_command_lines():
+    wrapped = _wrap_powershell_command(29.123456789012345)
+    script = base64.b64decode(wrapped.rsplit(" ", 1)[1]).decode("utf-16le")
+    child_arguments = next(line for line in script.splitlines() if line.startswith("$info.Arguments ="))
+    assert len(wrapped) < 8000  # Leave room for Windows OpenSSH's default-shell prefix.
+    assert "$payload" not in child_arguments
+    assert "ReadByte()" in child_arguments
+    assert '$payload + "`n" + $stdinPayload' in script
 
 
 def test_powershell_read_only_guardrails_are_not_a_directory_sandbox():
@@ -199,8 +212,26 @@ def test_paired_browse_hydrates_server_credentials_for_both_shells():
         assert config.key_content == "server-only-private-key"
 
 
-@pytest.mark.parametrize("write_payload", [False, True])
-def test_local_pwsh_wrapper_times_out_with_stdin_open(write_payload):
+def _local_supervisor_encoded(pwsh: Path, timeout_seconds: int | float) -> str:
+    outer = base64.b64decode(_wrap_powershell_command(timeout_seconds).rsplit(" ", 1)[1]).decode("utf-16le")
+    outer = outer.replace("FileName = 'powershell.exe'", f"FileName = '{pwsh.resolve()}'")
+    return base64.b64encode(outer.encode("utf-16le")).decode("ascii")
+
+
+def _local_powershell_process_exists(pwsh: Path, pid: int) -> bool:
+    # Query through PowerShell itself so the check works for pwsh and Windows PowerShell alike.
+    result = subprocess.run(
+        [str(pwsh), "-NoProfile", "-NonInteractive", "-Command", f"if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }}; exit 1"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    return result.returncode == 0
+
+
+@pytest.mark.parametrize("padding", [None, 0, 3777, 30000])
+def test_local_pwsh_wrapper_times_out_with_stdin_open(padding):
     configured_pwsh = os.environ.get("RAGTIME_TEST_PWSH") or shutil.which("pwsh")
     if not configured_pwsh:
         pytest.skip("PowerShell runtime integration test requires pwsh or RAGTIME_TEST_PWSH")
@@ -217,9 +248,10 @@ def test_local_pwsh_wrapper_times_out_with_stdin_open(write_payload):
         stderr=subprocess.PIPE,
     )
     try:
-        if write_payload:
+        if padding is not None:
             assert process.stdin is not None
-            process.stdin.write(f"{_encode_powershell_payload('Write-Output ok')}\n".encode("utf-8"))
+            command = "#" + ("x" * padding) + "\nWrite-Output ok"
+            process.stdin.write(f"{_encode_powershell_payload(command)}\n".encode("utf-8"))
             process.stdin.flush()
         assert process.wait(timeout=15) != 0
         assert process.stderr is not None
@@ -229,7 +261,8 @@ def test_local_pwsh_wrapper_times_out_with_stdin_open(write_payload):
         process.communicate()
 
 
-def test_local_pwsh_parses_outer_wrapper_and_runs_inner_encoded_payload():
+@pytest.mark.parametrize("padding", [0, 3777, 30000])
+def test_local_pwsh_parses_outer_wrapper_and_runs_inner_encoded_payload(padding, tmp_path):
     configured_pwsh = os.environ.get("RAGTIME_TEST_PWSH") or shutil.which("pwsh")
     if not configured_pwsh:
         pytest.skip("PowerShell runtime integration test requires pwsh or RAGTIME_TEST_PWSH")
@@ -239,7 +272,7 @@ def test_local_pwsh_parses_outer_wrapper_and_runs_inner_encoded_payload():
     user_command = "Write-Output 'héllo'; $line = [Console]::In.ReadLine(); Write-Output \"stdin:$line\"; exit 124"
     wrapped = _wrap_powershell_command(5)
     outer = base64.b64decode(wrapped.rsplit(" ", 1)[1]).decode("utf-16le")
-    payload = _encode_powershell_payload(user_command)
+    payload = _encode_powershell_payload("#" + ("x" * padding) + "\n" + user_command)
     assert "StandardInputEncoding" not in outer
     parser_env = {**os.environ, "RAGTIME_TEST_SCRIPT": base64.b64encode(outer.encode("utf-8")).decode("ascii")}
     parsed = subprocess.run(
@@ -257,7 +290,7 @@ def test_local_pwsh_parses_outer_wrapper_and_runs_inner_encoded_payload():
     )
     assert parsed.returncode == 0, parsed.stderr
     inner = subprocess.run(
-        [str(pwsh), "-NoProfile", "-NonInteractive", "-EncodedCommand", payload],
+        [str(pwsh), "-NoProfile", "-NonInteractive", "-EncodedCommand", _encode_powershell_payload(user_command)],
         input="data\n",
         capture_output=True,
         text=True,
@@ -295,6 +328,18 @@ def test_local_pwsh_parses_outer_wrapper_and_runs_inner_encoded_payload():
     assert unicode_supervised.returncode == 47
     assert unicode_supervised.stdout == f"stdin:{unicode_input}"
     assert unicode_supervised.stderr == "child-error"
+
+    native_reader = "cmd /c more" if os.name == "nt" else "/bin/cat"
+    native_stdin = subprocess.run(
+        [str(pwsh), "-NoProfile", "-NonInteractive", "-EncodedCommand", local_outer_encoded],
+        input=f"{_encode_powershell_payload(native_reader)}\nnative-stdin-marker\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert native_stdin.returncode == 0, native_stdin.stderr
+    assert "native-stdin-marker" in native_stdin.stdout
 
     eof_payload = _encode_powershell_payload("if ([Console]::In.ReadToEnd() -eq '') { Write-Output 'eof' } else { exit 1 }")
     eof_supervised = subprocess.run(
@@ -343,19 +388,21 @@ def test_local_pwsh_parses_outer_wrapper_and_runs_inner_encoded_payload():
     assert len(_wrap_powershell_command(30)) < 8191
     assert len(long_payload) > 8191
 
-    timeout_outer = base64.b64decode(_wrap_powershell_command(1).rsplit(" ", 1)[1]).decode("utf-16le")
-    timeout_outer = timeout_outer.replace("FileName = 'powershell.exe'", f"FileName = '{pwsh.resolve()}'")
-    timeout_encoded = base64.b64encode(timeout_outer.encode("utf-16le")).decode("ascii")
+    pid_file = tmp_path / "payload.pid"
+    timeout_encoded = _local_supervisor_encoded(pwsh, 3)
+    timeout_payload = _encode_powershell_payload(f"$PID | Set-Content -LiteralPath '{pid_file}'; Start-Sleep -Seconds 30")
     timed_out = subprocess.run(
         [str(pwsh), "-NoProfile", "-NonInteractive", "-EncodedCommand", timeout_encoded],
-        input=f"{_encode_powershell_payload('Start-Sleep -Seconds 5')}\n",
+        input=f"{timeout_payload}\n",
         capture_output=True,
         text=True,
         check=False,
-        timeout=10,
+        timeout=15,
     )
     assert timed_out.returncode != 0
     assert POWERSHELL_TIMEOUT_SENTINEL in timed_out.stderr
+    payload_pid = int(pid_file.read_text(encoding="utf-8").strip())
+    assert not _local_powershell_process_exists(pwsh, payload_pid)
 
 
 @pytest.mark.parametrize(
@@ -381,10 +428,12 @@ def test_local_pwsh_payload_keeps_user_scope_and_exit_contract(command, expected
     native_shell = "cmd /c" if os.name == "nt" else "/bin/sh -c"
     payload = _encode_powershell_payload(command.format(native_shell=native_shell))
     result = subprocess.run(
-        [str(pwsh), "-NoProfile", "-NonInteractive", "-EncodedCommand", payload],
+        [str(pwsh), "-NoProfile", "-NonInteractive", "-EncodedCommand", _local_supervisor_encoded(pwsh, 10)],
+        input=f"{payload}\n",
         capture_output=True,
         text=True,
         check=False,
+        timeout=20,
     )
 
     assert result.returncode == expected_exit_code

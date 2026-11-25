@@ -3,11 +3,12 @@ applyTo: '**'
 ---
 ## Big Picture
 
-- FastAPI app in `ragtime/main.py` composes four surfaces: OpenAI API (`/v1/*`), auth (`/auth/*`), indexer/UI (`/indexes/*` + `/`), and MCP (`/mcp*`).
-- Runtime services: `ragtime-dev` container (API + Vite + tool execution) and `ragtime-db-dev` (Postgres+pgvector).
-- Core startup sequence (`lifespan` in `ragtime/main.py`): connect DB -> `rag.initialize()` -> recover/cleanup index jobs -> start background chat tasks -> start MCP session manager.
+- FastAPI app in `ragtime/main.py` composes the OpenAI API (`/v1/*`), auth (`/auth/*`), indexer/admin UI (`/indexes/*` + `/`), and MCP (`/mcp*`), plus User Space, runtime, external-agent, SolidWorks, content-protection, instruction-skill, backup, webhook, and remote-client routers. Its `include_router` calls are the full list.
+- Dev stack containers (`docker/docker-compose.dev.yml`): `ragtime-dev` (API + Vite + tool execution), `ragtime-db-dev` (Postgres+pgvector), `runtime-dev` (User Space runtime manager/worker), `runtime-s3-dev` (object-storage gateway), and `searxng-dev` (web search).
+- Core startup sequence (`lifespan` in `ragtime/main.py`): connect DB -> `rag.initialize()` -> recover/cleanup index jobs -> start background chat tasks -> start MCP session manager. Health monitors, the resource governor, backups, and User Space services start around these steps; read `lifespan` for the exact order.
 - Health/readiness is progressive: `/health` is `initializing` until core LLM/tool setup finishes; FAISS indexes can continue loading in background.
 - CRITICAL: Always search first for existing code paths and import and reuse existing functions/components when implementing features or fixes; avoid copy-pasting or bypassing established patterns without strong justification. Always use DRY methodology.
+- Domain notes in `.agents/` hold verified detail for one area each: MCP surfaces, User Space runtime, SQLite history, object storage, SolidWorks, PDM, external agent tasks, CI and release, switching the dev stack between worktrees, and UX review. Read the note that covers your change before editing that area.
 
 ## Data and Retrieval Architecture
 
@@ -24,6 +25,7 @@ applyTo: '**'
 - Discovery convention: module `my_tool.py` should export `my_tool_tool` (or `tool`) as a `StructuredTool`.
 - Runtime tools come from DB `tool_configs` and are materialized in `ragtime/rag/components.py` (not just filesystem modules).
 - Tool schemas must use Pydantic fields with descriptions (LLM-facing contract quality matters).
+- The `solidworks` tool type is one `solidworks_<name>` wrapper served by `ragtime/solidworks/` and a Windows host program in `dotnet/`; read `.agents/solidworks.md` before changing either.
 
 ## Auth, MCP, and User Space
 
@@ -39,6 +41,7 @@ applyTo: '**'
 ## Developer Workflow
 
 - Preferred dev loop: VS Code task `Start Development Stack` (`docker/docker-compose.dev.yml`).
+- The dev stack is shared between worktrees and serves one checkout at a time. Switch it only with `scripts/switch-dev-worktree.sh` (see `.agents/dev-worktree-switching.md`); do not assume it is running your branch.
 - Dev ports: `8000` API, `8001` Vite UI; in dev, `DEBUG_MODE=true` and hot reload is active.
 - If `ragtime/frontend/package.json` changes, run `docker exec ragtime-dev sh -c "cd /ragtime/ragtime/frontend && npm ci"`.
 - Documentation sync rule: the expanded `.env` template and `docker-compose.yml` blocks in `README.md` are checked against their source files by `.github/actions/sync-readme/action.yml` and `tests/check_readme_sync.sh`. When updating env or compose docs, edit the canonical source first and run `bash tests/check_readme_sync.sh --write` to refresh the README snippets.
@@ -76,5 +79,5 @@ applyTo: '**'
 - OAuth endpoints consumed by external MCP clients are strict about response shape: return RFC 6749 top-level JSON errors from `/token` via `JSONResponse`, not `HTTPException(detail={...})`, which FastAPI wraps as `{"detail": ...}`.
 - With `allow_credentials=True`, `ALLOWED_ORIGINS` entries must be full origins including scheme (for example `https://ragtime.hammerton.com`), not bare hostnames.
 - Keep async style and existing logging pattern (`get_logger` / `setup_logging`), and preserve mapped Prisma field naming conventions.
-- No dedicated test suite exists in repo; validate changes with targeted API/UI/container smoke checks.
+- Tests: pytest in `tests/` (see `testing.instructions.md`), Vitest files beside frontend sources, the SolidWorks host's xUnit tests in `dotnet/tests/`, and the storage service's Maven tests in `storage/`. `bash tests/run_all_tests.sh` runs the full local gate.
 - House style: keep type hints and Pydantic `Field(description=...)` on LLM-facing schemas; avoid emojis in logs/UI text.

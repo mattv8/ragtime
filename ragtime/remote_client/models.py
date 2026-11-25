@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.indexer.models import ToolType
 
+WINDOWS_PAIRING_TOOL_TYPES = frozenset({ToolType.WINDOWS_SHELL, ToolType.SOLIDWORKS})
+
 
 class PairingCreateRequest(BaseModel):
     tool_type: ToolType
@@ -16,8 +18,8 @@ class PairingCreateRequest(BaseModel):
     @field_validator("tool_type")
     @classmethod
     def validate_shell_type(cls, value: ToolType) -> ToolType:
-        if value not in {ToolType.SSH_SHELL, ToolType.WINDOWS_SHELL}:
-            raise ValueError("tool_type must be ssh_shell or windows_shell")
+        if value != ToolType.SSH_SHELL and value not in WINDOWS_PAIRING_TOOL_TYPES:
+            raise ValueError("tool_type must be ssh_shell, windows_shell, or solidworks")
         return value
 
 
@@ -86,6 +88,7 @@ class PairingResponse(BaseModel):
     transport: str | None = None
     error: str | None = None
     connection_config: dict = Field(default_factory=dict)
+    tunnel_client: dict | None = None
 
 
 class PairingCreatedResponse(PairingResponse):

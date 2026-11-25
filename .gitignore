@@ -92,6 +92,9 @@ dmypy.json
 secrets/
 
 # Frontend artifacts
+dotnet/artifacts/
+dotnet/**/bin/
+dotnet/**/obj/
 ragtime/frontend/node_modules/
 ragtime/frontend/dist/
 ragtime/frontend/dist-build-check/
@@ -105,6 +108,8 @@ ragtime/indexer/static/dist/
 # Agent session scratch files
 .swarm/
 .opencode/
+.openchamber/**
+!.openchamber/project.json
 .omo/
 .ruff_cache/
 .superpowers/

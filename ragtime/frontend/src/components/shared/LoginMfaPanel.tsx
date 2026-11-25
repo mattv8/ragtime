@@ -157,7 +157,11 @@ export function LoginMfaPanel({
         onRecoveryContinue={onRecoveryContinue}
       />
       {mode === 'verify' && onRestartLogin && (
-        <button type="button" className="btn btn-link" onClick={() => setShowRecoveryPass(true)}>
+        <button
+          type="button"
+          className="btn btn-link login-recovery-pass-link"
+          onClick={() => setShowRecoveryPass(true)}
+        >
           Use administrator recovery pass
         </button>
       )}

@@ -5,6 +5,7 @@ import { api } from '@/api';
 import { INSTRUCTION_SKILL_LIMITS as LIMITS, INSTRUCTION_SKILL_NAME_PATTERN } from '@/types';
 import type { InstructionSkill, InstructionSkillOwner, InstructionSkillMode } from '@/types';
 import { estimateTokens, estimateTokensForLength } from '@/utils/contextUsage';
+import { DEFAULT_MCP_ROUTE_OWNER_ID } from '@/utils/instructionSkills';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { ToastContainer, useToast } from './shared/Toast';
 
@@ -118,6 +119,17 @@ export function InstructionSkillsDialog({
     row?.querySelector<HTMLElement>('[data-instruction-skill-select]')?.focus();
   };
   const selected = skills.find((item) => item.id === selectedId);
+  const isDefaultRoute = owner.kind === 'route' && owner.id === DEFAULT_MCP_ROUTE_OWNER_ID;
+  const emptyHelp = isDefaultRoute
+    ? "Skills are instructions added to the default /mcp route, after Ragtime's built-in guide. Only clients that can use the general tool catalog receive them."
+    : owner.kind === 'tool'
+      ? 'Skills are instructions the model follows when it uses this tool.'
+      : 'Skills are instructions sent to every agent that connects to this route.';
+  const alwaysHelp = isDefaultRoute
+    ? "Sent to every eligible client on the default /mcp route. Workspace-only development credentials don't receive it."
+    : owner.kind === 'route'
+      ? 'Sent to every agent that connects to this route.'
+      : 'The full text is sent on every model call that can use this tool.';
   const dirty = draft || fieldNames.some((key) => fields[key] !== snapshot[key]);
   const duplicate = skills.some((item) => item.name === fields.name && item.id !== selectedId);
   const invalidName = !INSTRUCTION_SKILL_NAME_PATTERN.test(fields.name);
@@ -553,11 +565,7 @@ export function InstructionSkillsDialog({
           {noItems ? (
             <div id="instruction-skills-empty" className="empty-state instruction-skills-empty">
               <h4>No skills yet</h4>
-              <p>
-                {owner.kind === 'tool'
-                  ? 'Skills are instructions the model follows when it uses this tool.'
-                  : 'Skills are instructions sent to every agent that connects to this route.'}
-              </p>
+              <p>{emptyHelp}</p>
               <div>
                 {newButton('New skill')} {uploadButton('Upload .md or .txt')}
               </div>
@@ -894,9 +902,7 @@ export function InstructionSkillsDialog({
                       </div>
                       <p id="instruction-skill-mode-help" className="field-help">
                         {fields.mode === 'always'
-                          ? owner.kind === 'route'
-                            ? 'Sent to every agent that connects to this route.'
-                            : 'The full text is sent on every model call that can use this tool.'
+                          ? alwaysHelp
                           : 'Only the name and description are sent. The model loads the full text when the task calls for it.'}
                       </p>
                     </div>

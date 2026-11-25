@@ -1,11 +1,20 @@
 """Database access and shared validation for instruction skills."""
 
+from collections.abc import Iterable
 from typing import Any, cast
 
 from prisma.models import InstructionSkill as PrismaInstructionSkill
 
 from ragtime.core.database import get_db
-from ragtime.skills.contract import ALWAYS_INCLUDE_BUDGET_CHARS, MAX_SKILLS_PER_OWNER, SkillOwnerKind, build_skill_uri
+from ragtime.skills.contract import (
+    ALWAYS_INCLUDE_BUDGET_CHARS,
+    DEFAULT_ROUTE_OWNER_ID,
+    MAX_SKILLS_PER_OWNER,
+    SkillOwnerKind,
+    SkillRecord,
+    build_skill_uri,
+    is_default_route_owner,
+)
 from ragtime.skills.models import CreateInstructionSkill, InstructionSkill
 
 
@@ -36,15 +45,40 @@ def validate_instruction_skills(instruction_skills: list[CreateInstructionSkill]
         raise ValueError(f"Always-include skills for this {owner_kind} total {total:,} characters; the limit is {ALWAYS_INCLUDE_BUDGET_CHARS:,}.")
 
 
-def _owner_filter(owner_kind: SkillOwnerKind, owner_id: str) -> dict[str, str]:
+def _owner_filter(owner_kind: SkillOwnerKind, owner_id: str) -> dict[str, str | bool]:
+    if is_default_route_owner(owner_kind, owner_id):
+        return {"defaultRoute": True}
     return {"toolConfigId" if owner_kind == "tool" else "mcpRouteId": owner_id}
 
 
 async def owner_exists(owner_kind: SkillOwnerKind, owner_id: str) -> bool:
+    if is_default_route_owner(owner_kind, owner_id):
+        return True
     db = await get_db()
     if owner_kind == "tool":
         return await db.toolconfig.find_unique(where={"id": owner_id}) is not None
     return await db.mcprouteconfig.find_unique(where={"id": owner_id}) is not None
+
+
+def to_skill_record(record: PrismaInstructionSkill) -> SkillRecord:
+    return {
+        "id": record.id,
+        "name": record.name,
+        "description": record.description,
+        "content": record.content,
+        "mode": cast(Any, record.mode),
+        "sort_order": record.sortOrder,
+    }
+
+
+def enabled_skill_records(records: Iterable[PrismaInstructionSkill]) -> list[SkillRecord]:
+    return [to_skill_record(record) for record in sorted((record for record in records if record.enabled), key=lambda record: (record.sortOrder, record.name))]
+
+
+async def list_enabled_skill_records(owner_kind: SkillOwnerKind, owner_id: str) -> list[SkillRecord]:
+    db = await get_db()
+    records = await db.instructionskill.find_many(where=cast(Any, _owner_filter(owner_kind, owner_id)))
+    return enabled_skill_records(records)
 
 
 async def list_instruction_skills(owner_kind: SkillOwnerKind, owner_id: str) -> list[InstructionSkill]:
@@ -99,16 +133,16 @@ async def instruction_skill_summary() -> dict[str, dict[str, dict[str, int]]]:
     db = await get_db()
     records = await db.query_raw(
         """
-        SELECT tool_config_id, mcp_route_id,
+        SELECT tool_config_id, mcp_route_id, default_route,
                COUNT(*) AS total, COUNT(*) FILTER (WHERE enabled) AS enabled
         FROM instruction_skills
-        GROUP BY tool_config_id, mcp_route_id
+        GROUP BY tool_config_id, mcp_route_id, default_route
         """
     )
     summary: dict[str, dict[str, dict[str, int]]] = {"tools": {}, "routes": {}}
     for record in records:
         group = "tools" if record["tool_config_id"] is not None else "routes"
-        owner_id = record["tool_config_id"] or record["mcp_route_id"]
+        owner_id = DEFAULT_ROUTE_OWNER_ID if record["default_route"] else record["tool_config_id"] or record["mcp_route_id"]
         assert owner_id is not None
         summary[group][owner_id] = {"total": int(record["total"]), "enabled": int(record["enabled"])}
     return summary

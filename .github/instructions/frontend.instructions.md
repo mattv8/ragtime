@@ -21,6 +21,7 @@ They compose: for example, `data-theme-pack="serif"` + `data-theme="light"` prod
 
 - Theme pack resolution is `user saved choice -> global default -> default`; `resolveThemePackId(...)` is the source of truth.
 - The theme registry (`THEME_PACKS`) is canonical for available packs, user-menu cycling order, and Settings cards. There are currently `default`, `modern`, and `serif`.
+- The legacy stored pack id `vscode` is normalized to `modern` (`normalizeThemePackId`) and rewritten in storage.
 - `localStorage` is advisory only: `getStoredThemePack()` and `getStoredColorMode()` are guarded and fall back to defaults if storage is unavailable or invalid.
 - `setThemePack()` and `setColorMode()` remove the corresponding HTML attribute and clear the storage key when switching back to `default` or `system`.
 - User-menu theme changes are applied immediately in the UI and then saved best-effort to the account; the optimistic local theme stays in place even if the network save fails.
@@ -53,18 +54,18 @@ Light: Parchment `#f5f4ed` · Ivory `#faf9f5` · Terracotta `#c96442` · Near-bl
 
 ### Modern palette anchors
 
-Dark (base): Workbench desk `#252526` · Panel `#181818` · Widget/record `#202020` · Text `#cccccc`. Light: Desk `#f3f3f3` · Panel `#f8f8f8` · Widget `#ffffff` · Text `#0c0c0c`. Modern is a compact, workbench-style palette with framed floating panels (panel sections on desk) and elevated records (widgets inside panels). Admin surfaces use the canonical Modern surface hierarchy (see **Modern pack canonical hierarchy** below). All colors are cool grays with blue accents (`#0078d4` primary).
+Dark (base): Workbench desk `#252526` · Panel `#181818` · Widget/record `#202020` · Text `#cccccc`. Light: Desk `#f3f3f3` · Panel `#f8f8f8` · Widget `#ffffff` · Text `#0c0c0c`. Modern is a compact, workbench-style palette with framed floating panels (panel sections on desk) and elevated records (widgets inside panels). Chat, Workspaces, and Admin surfaces use the canonical Modern surface hierarchy (see **Modern pack canonical hierarchy** below). All colors are cool grays with blue accents (`#0078d4` primary).
 
 ## Typography
 
 - `--font-sans` - Nunito stack. The raw sans stack; reference it directly only for form controls and other UI chrome that should stay sans in every pack.
 - `--font-serif` - Source Serif 4 (Georgia fallback). Available to any pack.
-- `--font-body` - applied at the `body` level (see `layout.css`), so it cascades to all content that does not set its own font: chat messages, tool-call formatting, the topnav links, DataTables, modals, and settings text. Default pack maps it to `--font-sans`; the serif pack maps it to `--font-serif`. This is the primary lever that makes a pack feel app-wide.
-- `--font-heading` - applied to `h1-h6`, `legend`, and the `.topnav-brand` wordmark. Default pack maps it to `--font-sans`; the serif pack maps it to `--font-serif`.
-- `--font-mono` - code/terminal. Never themed.
+- `--font-body` - applied at the `body` level (see `layout.css`), so it cascades to all content that does not set its own font: chat messages, tool-call formatting, the topnav links, DataTables, modals, and settings text. Default pack maps it to `--font-sans`; the serif pack maps it to `--font-serif`; the modern pack maps it to its own Droid Sans stack. This is the primary lever that makes a pack feel app-wide.
+- `--font-heading` - applied to `h1-h6`, `legend`, and the `.topnav-brand` wordmark. Default pack maps it to `--font-sans`; the serif pack maps it to `--font-serif`; the modern pack maps it to Droid Sans.
+- `--font-mono` - code/terminal. Each pack sets its own stack: JetBrains Mono first in default and serif, Fira Code first in modern.
 - Scale: `--text-xs ... --text-2xl`; line-heights `--leading-tight|normal|relaxed`.
 
-Source Serif 4 and Nunito are loaded from Google Fonts in `index.html`.
+Fonts are self-hosted, with no Google Fonts request: Nunito, Source Serif 4, JetBrains Mono, and Fira Code come from `@fontsource` imports in `src/styles/fonts.css`, which also declares Droid Sans from `/fonts/`.
 
 `layout.css` forces `button, input, select, textarea, optgroup { font-family: inherit; }` so form controls and button-based nav stay on-theme instead of falling back to browser UI fonts.
 
@@ -114,9 +115,9 @@ Some values stay literal on purpose; do not tokenize them:
 3. Register it in `src/theme/themes.ts` by adding a `ThemePack` entry (id, label, description, heading font preview, swatch colors). The Settings Appearance picker renders from this registry automatically.
 4. No component CSS changes are needed - the pack inherits the full token contract and overrides what it declares.
 
-## Modern pack canonical hierarchy (all tabs)
+## Modern pack canonical hierarchy
 
-Modern surfaces follow a strict three-layer inversion model for all admin tabs (Tools, Indexer, Users, Settings) and must not appear elsewhere:
+Modern surfaces follow a strict three-layer inversion model: desk, section panel, elevated record. It applies to Chat (`workbench-chat.css`), Workspaces (`workbench-userspace.css`), and the admin tabs (Tools, Indexer, Users, Settings; `workbench-admin.css`). The selectors below are the admin implementation:
 
 **Desk layer:** `--color-workbench` background fills the root workbench shell (`8px` horizontal inset `--workbench-padding`).
 
@@ -127,3 +128,8 @@ Modern surfaces follow a strict three-layer inversion model for all admin tabs (
 **Elevated records:** Individual items inside section panels (`.index-item`, `.tool-card`, `.mount-source-card`, jobs/users tables, `.users-detail-list-shell`) render as `--color-widget` with the same border/radius/no-shadow treatment. Exactly one widget elevation layer per section panel; modals, popovers, dropdowns, and toasts remain widget overlays (unchanged).
 
 Margin stacking with `gap` requires `margin-block: 0` resets on flex children (see `workbench-admin.css`). All rules are `[data-theme-pack='modern']`-scoped to prevent side effects on other packs.
+
+## Verify and Review
+
+- From `ragtime/frontend/`: `npm test` (Vitest; test files live beside their sources), `npm run typecheck`, `npm run lint`, `npm run format:check`, and `npm run build`.
+- Review UI changes against `.agents/ragtime-ux-style-guide.md`. It covers interaction, accessibility, responsive layout, and stable `id` / `data-*` hooks on meaningful boundaries.

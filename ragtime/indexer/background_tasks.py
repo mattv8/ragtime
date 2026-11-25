@@ -73,6 +73,7 @@ from ragtime.indexer.service import indexer
 from ragtime.indexer.task_policy import activity_summary, policy_requires_action, required_action_termination
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.rag import rag
+from ragtime.solidworks.artifacts import cleanup_expired_artifacts
 
 logger = get_logger(__name__)
 
@@ -671,6 +672,7 @@ class BackgroundTaskService:
                 await asyncio.sleep(300)  # Every 5 minutes
                 await repository.cleanup_stale_tasks(max_age_seconds=600)
                 await cleanup_expired_chat_attachments()
+                await cleanup_expired_artifacts()
             except asyncio.CancelledError:
                 break
             except Exception as e:

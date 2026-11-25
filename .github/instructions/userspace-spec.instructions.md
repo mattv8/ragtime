@@ -4,13 +4,13 @@ applyTo: 'ragtime/userspace/**, runtime/**'
 
 # User Space Feature Implementation Instructions
 
-Last updated: 2026-07-14 (codebase-scanned; concise agent-focused)
+Last full scan: 2026-07-14 (codebase-scanned; concise agent-focused). Later corrections are targeted. The `.agents/` notes named below are newer; where they differ from this guide, they win.
 
 ## Scope
 
 - Apply to User Space runtime/collab/share work in `ragtime/userspace/**` and `runtime/**`.
 - Keep changes incremental; do not invent new UX or role semantics.
-- Endpoint details belong in `/docs` (do not maintain static route dumps here).
+- Endpoint details belong in the app's OpenAPI UI at `/docs`, served only when `DEBUG_MODE=true`; route code is authoritative (do not maintain static route dumps here).
 
 ## Big Picture (How User Space Actually Works)
 
@@ -21,6 +21,8 @@ Last updated: 2026-07-14 (codebase-scanned; concise agent-focused)
 - Preview is runtime-only and now uses dedicated per-workspace preview origins dispatched by `PreviewHostDispatchMiddleware` in `ragtime/userspace/preview_host.py`.
 - Preview launch is an explicit API step: control-plane routes mint short-lived bootstrap grants and the preview host mints a preview session cookie on first load.
 - Browser-auth cookie surfaces are only for `collab` and `runtime_pty`; preview no longer uses capability cookies.
+- External agents develop workspaces through the `/mcp` workspace-development lane (`ragtime/userspace/development_*.py`); external build briefs use `/agent/w/{token}`, a separate surface. See `.agents/mcp-byoh-vs-custom-routes.md` and `.agents/external-agent-tasks.md`.
+- Domain notes: runtime execution, mounts, and preview proxies in `.agents/userspace-runtime.md`; durable SQLite history in `.agents/userspace-sqlite-history.md`; object storage in `.agents/userspace-object-storage.md`.
 
 ## Workspace Code Index Queue
 
@@ -44,13 +46,13 @@ Last updated: 2026-07-14 (codebase-scanned; concise agent-focused)
 
 - Runtime bootstrap config is workspace-local: `.ragtime/runtime-bootstrap.json`.
 - Bootstrap execution stamp is `.ragtime/.runtime-bootstrap.done` (`runtime/core/shared.py`).
-- Default bootstrap template is managed in `ragtime/userspace/service.py` (`_default_runtime_bootstrap_config`, template version 5). Auto-update logic includes `_is_legacy_default_bootstrap` detection for configs missing `managed_by`/`template_version`.
+- Default bootstrap template is managed in `ragtime/userspace/service.py` (`_default_runtime_bootstrap_config`; the current template version is `_RUNTIME_BOOTSTRAP_TEMPLATE_VERSION`). Auto-update logic includes `_is_legacy_default_bootstrap` detection for configs missing `managed_by`/`template_version`.
 - Worker startup reads bootstrap config and reruns commands when config digest changes (`runtime/worker/service.py`). Digest includes file content of `watch_paths`.
 - Bootstrap retry: if devserver exits with "command not found" patterns, the worker invalidates the stamp and retries on next start (`_should_retry_bootstrap_after_exit`).
 - Runtime launch is defined by `.ragtime/runtime-entrypoint.json` (command/cwd/framework) consumed by worker service.
 - `.ragtime/runtime-entrypoint.json` is authoritative. Runtime no longer falls back to `package.json`, Python entrypoint guesses, or `index.html` heuristics.
 - Keep launch commands `$PORT`-aware and bound to `0.0.0.0` for proxy reachability.
-- SQLite persistence uses `.ragtime/db/migrations/*.sql` as source-of-truth schema history and `.ragtime/scripts/sqlite_migrate.py` as the default runner scaffold.
+- Workspace-app SQLite persistence uses `.ragtime/db/migrations/*.sql` as source-of-truth schema history and `.ragtime/scripts/sqlite_migrate.py` as the default runner scaffold. Durable capture, retention, and restore of those databases is a separate, runtime-owned concern (`runtime/worker/sqlite_history/`); see `.agents/userspace-sqlite-history.md`.
 - The runtime bootstrap template includes a migration apply command for the default runner and watches both the runner path and migrations directory for digest changes.
 - Agents may update `.ragtime/scripts/sqlite_migrate.py` and `.ragtime/db/migrations/*` via file tools when implementing persistence changes.
 - `dashboard_entrypoint.js`, `runtime_bridge.js`, and `sqlite_migrate.py` templates live in `templates/`.
@@ -109,11 +111,12 @@ Last updated: 2026-07-14 (codebase-scanned; concise agent-focused)
 - LLM prompt instructs passing `window.__ragtime_context` as the context argument to `render(container, context)`. The bridge exposes the injected auth/session payload as `context.session` and `context.auth` when present. Authenticated user UI should use `context.auth.user.display_name`/`context.auth.user.username`; audit logs should use `user_fingerprint` instead of raw user IDs.
 - **The preview iframe is always cross-origin from the parent UI** (workspace served on `<workspace_id>.<host>`, parent on `<host>`). Workspace code that synchronously reads `window.parent[anything]` will throw `SecurityError` and abort module evaluation, leaving the loading shell visible forever. The bridge intentionally sets `window.__ragtime_context` only on the iframe's own window — workspace code must never scan `window.parent`/`window.top`/`window.opener` for context. This is documented in the LLM prompt (`USERSPACE_ENTRYPOINT_SETUP_PROMPT` in `ragtime/rag/prompts.py`); keep that guidance in sync if the bridge ever changes how context is exposed.
 
-## Tool Write Access Model (Critical — Two Lanes)
+## Tool Write Access Model (Critical — Browser vs Server Lanes)
 
 - Effective write access for a workspace tool is `ToolConfig.allowWrite AND WorkspaceToolOption.write_access_enabled`. Global `allowWrite=false` is a hard ceiling; a missing workspace option means read-only; only workspace owners and global admins may change the workspace opt-in (`ragtime/userspace/workspace_tool_options.py`).
-- That effective write access applies to exactly ONE execution lane: the **server lane** — workspace backend code (e.g. Express) calling `POST {RAGTIME_BRIDGE_URL}/execute-component` with `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN`, handled by `execute_component_from_runtime_bridge()` in `ragtime/userspace/service.py`. The bridge token is a backend service identity injected only into the runtime process env; it is never exposed to browsers.
+- That effective write access never applies to the browser lane. It applies to the **server lane** — workspace backend code (e.g. Express) calling `POST {RAGTIME_BRIDGE_URL}/execute-component` with `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN`, handled by `execute_component_from_runtime_bridge()` in `ragtime/userspace/service.py`. The bridge token is a backend service identity injected only into the runtime process env; it is never exposed to browsers.
 - The **browser lane** is hardcoded read-only regardless of the workspace write toggle: workspace preview `execute_component()`, shared preview `execute_component_from_authorized_shared_preview()`, and the preview-host `/__ragtime/execute-component` endpoint all execute with `allow_workspace_write=False`.
+- External development adds a second server-side lane, the **server-direct lane**: `execute_component_from_development_server_lane()` runs tool types in `_USPACE_DEVELOPMENT_SERVER_LANE_TOOL_TYPES` (currently `odoo_shell`) without starting a runtime. It needs `exec` scope and workspace editor role; a write additionally needs the same effective write access, owner `read_write`, caller workspace-surface `read_write`, and `write` scope. See `.agents/mcp-byoh-vs-custom-routes.md`.
 - Why the browser lane can never be write-enabled: `ExecuteComponentRequest.request` is client-supplied query/command text with no execution-time binding of `component_id` to a server-registered query. Write-enabling it would let anyone holding a share URL (or preview session) curl arbitrary `UPDATE`/`DELETE`/Odoo/SSH mutations directly, bypassing the app. Do not "unify" the lanes without first adding server-side component-to-query binding.
 - Anonymous shared-preview visitors can still trigger writes indirectly and safely: they call the app's own server routes, and the app's server decides what to write via the bridge. The server owns authn/authz for its mutation routes.
 - Prompt guidance for this contract lives in `_USERSPACE_RUNTIME_BRIDGE_BLOCK` (`ragtime/rag/prompts.py`); keep it in sync with these semantics (tests: `tests/test_userspace_runtime_bridge_prompts.py`).
@@ -195,9 +198,9 @@ Modifying `_sync_usr_for_chroot`, `_sync_system_dirs_for_chroot`, `provision_roo
   - runtime launch issues: inspect `.ragtime/runtime-entrypoint.json` first (do not add fallback launch logic)
   - live data persistence issues: verify selected tools, execution proofs, and `dashboard/main.ts` contract metadata/call sites
   - proxy changes: verify header filtering and websocket pass-through still work
-- Use `/docs` for endpoint signatures and payload shapes.
+- Use `/docs` (with `DEBUG_MODE=true`) or the route code for endpoint signatures and payload shapes.
 
 ## Sources Used for This Guide
 
-- Conventions search requested by user found `README.md` only (no `AGENTS.md`/`copilot-instructions.md` in repo).
+- Domain notes for single areas live in `.agents/`; consult the ones named in this guide alongside it.
 - Primary implementation references: `ragtime/main.py`, `ragtime/userspace/runtime_routes.py`, `ragtime/userspace/runtime_service.py`, `ragtime/userspace/service.py`, `runtime/main.py`, `runtime/core/shared.py`, `runtime/worker/service.py`, `runtime/worker/sandbox.py`, `runtime/worker/api.py`.

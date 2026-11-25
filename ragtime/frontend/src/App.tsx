@@ -112,6 +112,9 @@ const LazyIndexerAdminView = lazy(async () => ({
 const LazyPublicSharedChatView = lazy(async () => ({
   default: (await import('./components/PublicSharedChatView')).PublicSharedChatView,
 }));
+const LazyModelArtifactPage = lazy(async () => ({
+  default: (await import('./components/ModelArtifactPage')).ModelArtifactPage,
+}));
 
 type ObservedServerJobKind = 'backup' | 'restore';
 
@@ -242,6 +245,14 @@ function getUserSpaceSharedRoute(): UserSpaceSharedRoute {
   return null;
 }
 
+/**
+ * Raw `artifact` query value. Present-but-invalid values are returned too, so the page can show
+ * its not-found state; null means the standalone artifact page is not requested.
+ */
+export function getModelArtifactRouteParam(search: string): string | null {
+  return new URLSearchParams(search).get('artifact');
+}
+
 export function App() {
   const {
     authStatus,
@@ -272,6 +283,10 @@ export function App() {
     return params;
   });
   const [userspaceSharedRoute] = useState<UserSpaceSharedRoute>(getUserSpaceSharedRoute);
+  // Read once: the page keeps its id through sign-in and the URL is left untouched.
+  const [artifactRouteParam] = useState<string | null>(() =>
+    getModelArtifactRouteParam(window.location.search),
+  );
   const sharedRouteMountedRef = useRef(false);
 
   // App state
@@ -997,6 +1012,8 @@ export function App() {
   // Skip URL sync during OAuth flow - we need to preserve those params until redirect
   useEffect(() => {
     if (userspaceSharedRoute) return;
+    // Keep the standalone artifact URL (and its `artifact` param) intact through sign-in
+    if (artifactRouteParam !== null) return;
     // Don't modify URL during OAuth authorization flow
     if (oauthParams) return;
 
@@ -1023,7 +1040,15 @@ export function App() {
     }
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', newUrl);
-  }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceSharedRoute, chatEnabled]);
+  }, [
+    activeView,
+    highlightSetting,
+    oauthParams,
+    isAdmin,
+    userspaceSharedRoute,
+    artifactRouteParam,
+    chatEnabled,
+  ]);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -1450,6 +1475,15 @@ export function App() {
     );
   }
 
+  // Standalone SolidWorks export page; signing in keeps `?artifact=` in place
+  if (artifactRouteParam !== null) {
+    return (
+      <Suspense fallback={<RouteViewFallback />}>
+        <LazyModelArtifactPage artifactId={artifactRouteParam} />
+      </Suspense>
+    );
+  }
+
   const warningToMessage = (w: ConfigurationWarning): string =>
     w.recommendation ? `${w.message} ${w.recommendation}` : w.message;
   const encryptionKeyErrorMessages = configurationWarnings
@@ -1775,6 +1809,7 @@ export function App() {
                     schemaJobs={schemaJobs}
                     highlightSection={highlightToolsSection}
                     onHighlightComplete={() => setHighlightToolsSection(null)}
+                    currentUser={currentUser}
                   />
                 </Suspense>
               </div>
