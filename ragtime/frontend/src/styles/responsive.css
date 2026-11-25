@@ -93,8 +93,16 @@
 
 /* Tablet breakpoint (768px and below) */
 @media (max-width: 768px) {
+  #tool-delete-dialog .modal-header {
+    padding: var(--space-sm) var(--space-md) var(--space-xs);
+  }
+
   #tool-delete-dialog .modal-body {
-    padding: var(--space-md);
+    padding: var(--space-xs) var(--space-md);
+  }
+
+  #tool-delete-dialog .modal-footer {
+    padding: var(--space-sm) var(--space-md) var(--space-md);
   }
 
   #tool-delete-dialog [data-tool-delete-cleanup-options] {
@@ -107,13 +115,6 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-  }
-
-  #tool-delete-dialog [data-tool-delete-recovery-command] pre {
-    max-width: 100%;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
   }
 
   body {
