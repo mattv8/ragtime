@@ -37,6 +37,12 @@ class FakeTransport:
     async def upload_file(self, local_path, remote_path, *, timeout_seconds):
         raise NotImplementedError
 
+    async def download_file(self, remote_path, local_path, *, max_bytes, timeout_seconds):
+        raise NotImplementedError
+
+    async def remove_file(self, remote_path, *, timeout_seconds):
+        raise NotImplementedError
+
 
 class PdmRightsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
