@@ -393,6 +393,21 @@
   background: transparent;
 }
 
+[data-theme-pack='modern'] :is(.tool-delete-steps, .tool-delete-command) {
+  background: var(--color-panel);
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-surface-radius);
+}
+
+[data-theme-pack='modern'] .tool-delete-command :is(.tool-delete-command-bar, pre) {
+  background: transparent;
+}
+
+[data-theme-pack='modern'] .tool-delete-steps .tool-delete-step .userspace-status-pill {
+  min-height: 0;
+  margin-top: 0;
+}
+
 [data-theme-pack='modern'] .tabs,
 [data-theme-pack='modern'] .users-inline-switch,
 [data-theme-pack='modern'] .users-panel-controls,
