@@ -133,6 +133,29 @@ describe('ToolDeleteDialog', () => {
     await waitFor(() => expect(document.activeElement).toBe(dismissButton));
   });
 
+  it('focuses the copy command button when a recovery command is shown', async () => {
+    const user = userEvent.setup();
+    render(
+      <ToolDeleteDialog
+        toolName="Windows host"
+        onDelete={vi.fn().mockResolvedValue({
+          cleanup: {
+            mode: 'pairing_only',
+            steps: { pairing_cleanup: 'unconfirmed', ssh_service: 'not_requested' },
+            warnings: [],
+            local_removal_command: 'powershell.exe -File remove.ps1',
+          },
+        })}
+        onClose={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByLabelText(/Remove Ragtime only/i));
+    await user.click(screen.getByRole('button', { name: 'Delete tool' }));
+
+    const copyButton = await screen.findByRole('button', { name: 'Copy command' });
+    await waitFor(() => expect(document.activeElement).toBe(copyButton));
+  });
+
   it('bounds stalled requests at 45 seconds without retrying or accepting late success', async () => {
     vi.useFakeTimers();
     let resolveDeletion!: (result: object) => void;

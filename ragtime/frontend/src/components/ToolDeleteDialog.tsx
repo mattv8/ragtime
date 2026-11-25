@@ -63,7 +63,8 @@ export function ToolDeleteDialog({
   const openerRef = useRef<HTMLElement | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const workingStatusRef = useRef<HTMLParagraphElement>(null);
-  const resultActionRef = useRef<HTMLButtonElement>(null);
+  const copyCommandRef = useRef<HTMLButtonElement>(null);
+  const dismissRef = useRef<HTMLButtonElement>(null);
   const requestGenerationRef = useRef(0);
 
   useLayoutEffect(() => {
@@ -85,7 +86,7 @@ export function ToolDeleteDialog({
 
   useLayoutEffect(() => {
     if (phase === 'working') workingStatusRef.current?.focus();
-    else if (phase === 'result') resultActionRef.current?.focus();
+    else if (phase === 'result') (copyCommandRef.current ?? dismissRef.current)?.focus();
   }, [phase]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -302,7 +303,7 @@ export function ToolDeleteDialog({
                     <code>{localRemovalCommand}</code>
                   </pre>
                   <button
-                    ref={resultActionRef}
+                    ref={copyCommandRef}
                     type="button"
                     className="btn btn-secondary"
                     onClick={() => void handleCopyCommand()}
@@ -343,12 +344,7 @@ export function ToolDeleteDialog({
             </>
           )}
           {phase === 'result' && (
-            <button
-              ref={resultActionRef}
-              type="button"
-              className="btn btn-secondary"
-              onClick={onClose}
-            >
+            <button ref={dismissRef} type="button" className="btn btn-secondary" onClick={onClose}>
               Dismiss
             </button>
           )}
