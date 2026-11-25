@@ -1,6 +1,7 @@
 import type { InstructionSkill, InstructionSkillCount, InstructionSkillSummary } from '@/types';
 
 export const EMPTY_INSTRUCTION_SKILL_SUMMARY: InstructionSkillSummary = { tools: {}, routes: {} };
+export const DEFAULT_MCP_ROUTE_OWNER_ID = 'default';
 
 export function countInstructionSkills(skills: InstructionSkill[]): InstructionSkillCount {
   return {

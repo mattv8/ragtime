@@ -28,9 +28,27 @@
   outline-offset: 2px;
 }
 
-.tool-card-meta .instruction-skills-route-count[data-mcp-route-skills-count] {
+.tool-card-meta .instruction-skills-route-count[data-mcp-route-skills-count],
+.tool-card-meta .instruction-skills-route-count[data-mcp-default-route-skills-count] {
   color: var(--color-text-secondary);
   font-weight: 600;
+}
+
+#mcp-default-route .tool-card-description {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+
+#mcp-default-route .field-help {
+  color: var(--color-text-secondary);
+  margin: 0 0 var(--space-md);
+}
+
+#mcp-default-route-heading,
+#mcp-custom-routes-heading {
+  font-size: var(--text-base);
+  margin: var(--space-md) 0 var(--space-sm);
 }
 
 @media (hover: none) and (pointer: coarse) {

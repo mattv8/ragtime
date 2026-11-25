@@ -782,6 +782,26 @@ The schemas below list the primary fields; several tools also accept optional fi
 | `knowledge_search` | `{query, index_name}` |
 | `schema_search` | `{prompt, limit}` |
 | `git_history` | `{action, ...}` |
+| `read_skill` | `{uri}`; listed when instruction skills are attached to the caller's tools or routes. |
+
+#### Agent guidance and instruction skills
+
+`/mcp` sends a built-in guide to every client as the MCP server `instructions`. The guide explains how Ragtime's tools, skills and workspace tools work. Workspace development starts at `workspace_development_context`. Claude Code and opencode add server instructions to the system prompt.
+
+Admins attach instruction skills in three places:
+
+- **A tool:** Settings → Tools, then **Skills** on the tool card.
+- **A custom route:** Settings → MCP Configuration → **Manage Custom Routes**, then **Skills** on the route card.
+- **The default `/mcp` route:** the same dialog, then **Skills** on the **Default route** card at the top of the **Custom Routes** tab.
+
+How agents receive them:
+
+- **Custom route:** always-applied skills are included in full in the server instructions.
+- **Default `/mcp` route:** always-applied skills are included in full, unless content protection applies to the caller. Then they are listed with an instruction to load them first, so their text passes the same check as `read_skill`.
+- **Tool:** an always-applied tool skill is included in the tool description while the tool's always-applied skills total 1,500 characters or less. Otherwise the description tells the agent to load them first.
+- **Other skills** are listed and loaded with `read_skill` or `resources/read` when relevant.
+
+Default-route skills reach only callers that can use the general tool catalog. Workspace-only development credentials (`rtdev_`) do not receive them, and neither do sign-ins outside the default route's allowed group. They are served only on the HTTP `/mcp` endpoint, not on the stdio server.
 
 #### MCP Server Setup
 

@@ -105,3 +105,55 @@ Ragtime has three external-agent surfaces. Do not substitute one for another:
 - Each resource contract's `execute_component.supported` and
   `execution_lanes.*.supported` fields state which lane applies. Read them
   before calling.
+
+## Server instructions and route skills
+
+- `/mcp` and its default-route group-filter servers compose MCP `instructions`
+  per request. `ragtime/mcp/guide.py` holds the guide text and the composition.
+  `_enable_default_route_instructions` in `ragtime/mcp/server.py` wraps
+  `create_initialization_options`, so the text reflects the caller bound during
+  `initialize`. The wrapper sets `instructions` on a copy of the options and
+  keeps `listChanged` from `_enable_dynamic_tool_refresh`.
+- Composition order on `/mcp`:
+  1. The general guide, when the caller can use the general tools.
+  2. The workspace guide, when the caller has a development principal and the
+     server lists `workspace_development*` tools.
+  3. Admin default-route skills, only for callers that can use the general tools.
+- Default-route skills are a per-request snapshot, `RouteSkillSet`, in
+  `ragtime/mcp/skills.py`. It holds the records and an `inline_always` flag.
+  `default_route_skills_context()` in `ragtime/mcp/server.py` loads the cached
+  records, computes the flag, and binds the snapshot with a ContextVar. `routes.py`
+  enters it inside `mcp_request_context` on both default-route paths: the plain
+  default route and the filtered route. The initialize wrapper reads the same
+  snapshot.
+- `inline_always` is True only when the snapshot has records, the caller can use
+  the general tools, and `classification_required()` returns False for that
+  caller. Any exception counts as False. When it is False, always-applied
+  default-route skills appear as pointers in the instructions: the name, a
+  description, the URI, and an instruction to load the skill before using the
+  server's tools. Their content is never sent inline. Content leaves only through
+  a `read_skill` call or `resources/read`. Both call `authorize_external_content`.
+- Unbound callers (stdio, or any path without a bound snapshot) get no
+  default-route skills on any surface: not in instructions, not in `read_skill`
+  or `resources/list`, not in `resources/read`. The loader returns an empty
+  `RouteSkillSet` in that case.
+- Custom routes send only their `route_instructions`. They get no built-in
+  guide and no default-route skills. Their always-applied content is inline
+  without the `classification_required()` check. That is pre-existing behavior
+  and out of scope here. Do not work around it in an agent or config; change it
+  in code as its own change.
+- `skill_catalog` in `ragtime/mcp/server.py` gates `read_skill`,
+  `resources/list`, and `resources/read` with the same caller rules. A caller
+  that cannot see a skill cannot list or read it.
+- Default-route skills are `instruction_skills` rows with `default_route = true`
+  and the reserved owner id `default` (`DEFAULT_ROUTE_OWNER_ID`). Their URI is
+  `skill://routes/default/<name>/SKILL.md`.
+- The owner CHECK and the partial unique index for default-route rows exist only
+  in `prisma/migrations/20261124120000_add_default_route_instruction_skills/migration.sql`.
+  `schema.prisma` cannot express them. A `prisma migrate dev` diff drops them, so
+  never accept one for `instruction_skills`. Deploy with `prisma migrate deploy`.
+- The default-route skill cache uses a generation counter. `notify_tools_changed()`
+  clears the cache and increments the counter. A load keeps its result only if
+  the counter is unchanged when the load finishes. A load that straddles an
+  invalidation is not cached, though its own request still uses its result. A
+  failed load is logged and returns no skills, and the failure is not cached.

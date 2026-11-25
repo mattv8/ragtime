@@ -259,7 +259,7 @@ describe('InstructionSkillsDialog', () => {
     render(
       <InstructionSkillsDialog
         open
-        owner={{ kind: 'route', id: 'route' }}
+        owner={{ kind: 'route', id: 'route-1' }}
         ownerName="Route"
         onClose={vi.fn()}
       />,
@@ -268,6 +268,52 @@ describe('InstructionSkillsDialog', () => {
       await screen.findByText('Sent to every agent that connects to this route.'),
     ).toBeTruthy();
     expect(screen.getByText(/4 of 32,000 characters/)).toBeTruthy();
+  });
+
+  it('shows default route empty-state guidance while custom routes retain their copy', async () => {
+    mocks.listInstructionSkills.mockResolvedValue([]);
+    const { rerender } = render(
+      <InstructionSkillsDialog
+        open
+        owner={{ kind: 'route', id: 'default' }}
+        ownerName="Default"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "Skills are instructions added to the default /mcp route, after Ragtime's built-in guide. Only clients that can use the general tool catalog receive them.",
+      ),
+    ).toBeTruthy();
+    rerender(
+      <InstructionSkillsDialog
+        open
+        owner={{ kind: 'route', id: 'route-1' }}
+        ownerName="Route"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        'Skills are instructions sent to every agent that connects to this route.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows default route always-mode guidance', async () => {
+    render(
+      <InstructionSkillsDialog
+        open
+        owner={{ kind: 'route', id: 'default' }}
+        ownerName="Default"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "Sent to every eligible client on the default /mcp route. Workspace-only development credentials don't receive it.",
+      ),
+    ).toBeTruthy();
   });
 
   it('imports JSON-quoted frontmatter into a new draft', async () => {

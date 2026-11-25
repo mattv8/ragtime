@@ -19,6 +19,7 @@ SKILL_MODE_ALWAYS: SkillMode = "always"
 SKILL_MODE_ON_DEMAND: SkillMode = "on_demand"
 SKILL_OWNER_TOOL: SkillOwnerKind = "tool"
 SKILL_OWNER_ROUTE: SkillOwnerKind = "route"
+DEFAULT_ROUTE_OWNER_ID = "default"
 
 SKILL_NAME_MAX_LENGTH = 64
 SKILL_DESCRIPTION_MAX_LENGTH = 1024
@@ -49,6 +50,10 @@ class SkillRecord(TypedDict):
     content: str
     mode: SkillMode
     sort_order: int
+
+
+def is_default_route_owner(owner_kind: SkillOwnerKind, owner_id: str) -> bool:
+    return owner_kind == SKILL_OWNER_ROUTE and owner_id == DEFAULT_ROUTE_OWNER_ID
 
 
 def build_skill_uri(owner_kind: SkillOwnerKind, owner_id: str, name: str) -> str:

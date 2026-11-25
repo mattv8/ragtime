@@ -224,17 +224,21 @@ async function renderPanel({
   ldapConfigured = false,
   contentProtectionConfig = CONTENT_PROTECTION_CONFIG,
   skillSummary = { tools: {}, routes: {} },
+  rejectSkillSummary = false,
 }: {
   routes?: McpRouteConfig[];
   ldapConfigured?: boolean;
   contentProtectionConfig?: typeof CONTENT_PROTECTION_CONFIG;
-  skillSummary?: InstructionSkillSummary;
+  skillSummary?: InstructionSkillSummary | null;
+  rejectSkillSummary?: boolean;
 } = {}) {
   apiMock.listMcpRoutes.mockResolvedValue({ routes, count: routes.length });
   apiMock.listMcpDefaultFilters.mockResolvedValue({ filters: [], count: 0 });
   apiMock.listToolConfigs.mockResolvedValue(TOOL_CONFIGS);
   apiMock.listIndexes.mockResolvedValue(INDEXES);
-  apiMock.getInstructionSkillSummary.mockResolvedValue(skillSummary);
+  if (rejectSkillSummary)
+    apiMock.getInstructionSkillSummary.mockRejectedValue(new Error('offline'));
+  else apiMock.getInstructionSkillSummary.mockResolvedValue(skillSummary);
   apiMock.getSettings.mockResolvedValue({
     settings: {
       aggregate_search: true,
@@ -437,7 +441,7 @@ describe('MCPRoutesPanel', () => {
     expect(count.hasAttribute('data-mcp-route-skills-count')).toBe(true);
     expect(count.closest('.tool-card-meta')).toBeTruthy();
 
-    const actions = document.querySelector('.tool-card-actions') as HTMLElement;
+    const actions = document.querySelector('#mcp-route-route-1 .tool-card-actions') as HTMLElement;
     const buttons = Array.from(actions.querySelectorAll('button'));
     expect(buttons[0].textContent).toBe('Skills');
     expect(buttons[0].hasAttribute('data-mcp-route-skills-button')).toBe(true);
@@ -494,11 +498,107 @@ describe('MCPRoutesPanel', () => {
   });
 
   it('keeps the route list usable when the skill summary cannot be loaded', async () => {
-    apiMock.getInstructionSkillSummary.mockRejectedValue(new Error('offline'));
-    await renderPanel({ routes: [makeRoute()] });
+    await renderPanel({ routes: [makeRoute()], skillSummary: null });
 
     expect(screen.getByText('Custom Route')).toBeTruthy();
     expect(screen.queryByText(/route skill/)).toBeNull();
     expect(toastMock.error).not.toHaveBeenCalled();
+  });
+
+  it('renders the default section before custom routes without LDAP', async () => {
+    await renderPanel();
+    const section = document.getElementById('mcp-default-route-section')!;
+    expect(section.querySelector('#mcp-default-route')).toBeTruthy();
+    expect(
+      section.compareDocumentPosition(document.getElementById('mcp-custom-routes-heading')!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('hides the default section in the route wizard', async () => {
+    const user = userEvent.setup();
+    await renderPanel();
+    await user.click(screen.getByRole('button', { name: /add custom route/i }));
+    expect(document.getElementById('mcp-default-route-section')).toBeNull();
+  });
+
+  it('shows the zero skills state', async () => {
+    await renderPanel();
+    expect(
+      screen.getByText('No skills yet').hasAttribute('data-mcp-default-route-skills-count'),
+    ).toBe(true);
+  });
+
+  it('formats singular and partially enabled counts', async () => {
+    await renderPanel({
+      skillSummary: { tools: {}, routes: { default: { total: 3, enabled: 2 } } },
+    });
+    expect(screen.getByText('3 skills, 2 of 3 enabled')).toBeTruthy();
+    skillsDialogMock.nextSkills = [skillFixture('one', true)];
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Skills for the default /mcp route' }));
+    await user.click(screen.getByRole('button', { name: 'Save Skills Mock' }));
+    expect(screen.getByText('1 skill')).toBeTruthy();
+  });
+
+  it('shows the eligibility helper', async () => {
+    await renderPanel();
+    expect(
+      screen.getByText(
+        "Skills reach only clients that can use the general tool catalog. Workspace-only development credentials (such as rtdev_ credentials) and sign-ins outside the default route's allowed group don't receive them. Who can connect is set in Settings → MCP Configuration.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it('opens the default route skills dialog', async () => {
+    const user = userEvent.setup();
+    await renderPanel();
+    await user.click(screen.getByRole('button', { name: 'Skills for the default /mcp route' }));
+    const dialog = screen.getByRole('dialog', { name: 'Skills · Default /mcp route' });
+    expect(dialog.getAttribute('data-owner-kind')).toBe('route');
+    expect(dialog.getAttribute('data-owner-id')).toBe('default');
+  });
+
+  it('refreshes the default count without affecting custom counts', async () => {
+    const user = userEvent.setup();
+    skillsDialogMock.nextSkills = [skillFixture('one', true), skillFixture('two', false)];
+    await renderPanel({
+      routes: [makeRoute()],
+      skillSummary: { tools: {}, routes: { 'route-1': { total: 1, enabled: 1 } } },
+    });
+    await user.click(screen.getByRole('button', { name: 'Skills for the default /mcp route' }));
+    await user.click(screen.getByRole('button', { name: 'Save Skills Mock' }));
+    expect(screen.getByText('2 skills, 1 of 2 enabled')).toBeTruthy();
+    expect(screen.getByText('1 route skill')).toBeTruthy();
+  });
+
+  it('shows unavailable count without a toast on summary failure', async () => {
+    await renderPanel({ skillSummary: null });
+    expect(screen.getByText('Skill count unavailable')).toBeTruthy();
+    expect(toastMock.error).not.toHaveBeenCalled();
+  });
+
+  it('keeps the default count unavailable after saving custom route skills', async () => {
+    const user = userEvent.setup();
+    await renderPanel({ routes: [makeRoute()], rejectSkillSummary: true });
+    expect(screen.getByText('Skill count unavailable')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Skills' }));
+    await user.click(screen.getByRole('button', { name: 'Save Skills Mock' }));
+    expect(screen.getByText('Skill count unavailable')).toBeTruthy();
+  });
+
+  it('shows zero enabled when all default skills are disabled', async () => {
+    await renderPanel({
+      skillSummary: { tools: {}, routes: { default: { total: 3, enabled: 0 } } },
+    });
+    expect(screen.getByText('3 skills, 0 of 3 enabled')).toBeTruthy();
+  });
+
+  it('returns focus to the default card when the opener loses focus', async () => {
+    const user = userEvent.setup();
+    await renderPanel();
+    await user.click(screen.getByRole('button', { name: 'Skills for the default /mcp route' }));
+    await user.click(screen.getByRole('button', { name: 'Close Skills Mock' }));
+    await waitFor(() => expect(document.activeElement?.id).toBe('mcp-default-route'));
   });
 });
