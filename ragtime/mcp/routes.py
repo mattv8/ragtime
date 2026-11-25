@@ -53,6 +53,7 @@ from ragtime.mcp.oauth import (
     validate_client_credentials_bearer,
 )
 from ragtime.mcp.server import (
+    default_route_skills_context,
     development_principal_context,
     get_custom_route_server,
     get_default_route_filtered_server,
@@ -759,7 +760,8 @@ class MCPTransportEndpoint:
                 filtered_server = await get_filtered_server(matching_filter_id)
                 if filtered_server:
                     with mcp_request_context(_protection_principal(scope, principal), "default"):
-                        await handle_filtered_request(filtered_server, scope, receive, send)
+                        async with default_route_skills_context():
+                            await handle_filtered_request(filtered_server, scope, receive, send)
                     await _log_mcp(scope, auth_method=resolved_auth_method)
                     return
                 # Filter found but couldn't create server - fall back to default
@@ -769,7 +771,8 @@ class MCPTransportEndpoint:
         send_with_status, response_state = _wrap_send_for_status(send)
         try:
             with mcp_request_context(_protection_principal(scope, principal), "default"):
-                await session_manager.handle_request(scope, receive, send_with_status)
+                async with default_route_skills_context():
+                    await session_manager.handle_request(scope, receive, send_with_status)
         except Exception:
             await _log_mcp(
                 scope,

@@ -1,5 +1,6 @@
 """MCP presentation and lookup of admin-provided instruction skills."""
 
+from dataclasses import dataclass
 from typing import Any
 
 from ragtime.skills.contract import (
@@ -15,6 +16,12 @@ from ragtime.skills.contract import (
 _LISTED_DESCRIPTION_MAX_LENGTH = 300
 _READ_SKILL_DESCRIPTION_MAX_LENGTH = 8000
 _ROUTE_OWNER_LABEL = "route"
+
+
+@dataclass(frozen=True)
+class RouteSkillSet:
+    records: list[SkillRecord]
+    inline_always: bool
 
 
 def _short_description(description: str) -> str:
@@ -79,9 +86,9 @@ def _read_skill_description_line(uri: str, skill: SkillRecord, owner: str, inlin
     return line + " Always applies; load it before using this server's tools."
 
 
-def read_skill_description(visible: dict[str, tuple[SkillRecord, str]]) -> str:
+def read_skill_description(visible: dict[str, tuple[SkillRecord, str]], *, inline_route_always: bool = True) -> str:
     route_always = [skill for skill, owner in visible.values() if owner == _ROUTE_OWNER_LABEL and skill["mode"] == SKILL_MODE_ALWAYS]
-    inline_route_always = _fits_inline(route_always)
+    inline_route_always = inline_route_always and _fits_inline(route_always)
     header = "Load an admin-provided instruction skill by URI."
     if route_always and inline_route_always:
         header += "\n\nAlways follow these instructions on this server:\n" + "\n".join(_always_sections(route_always)) + "\n\nSkills:"
@@ -97,14 +104,23 @@ def read_skill_description(visible: dict[str, tuple[SkillRecord, str]]) -> str:
     return header + "\n" + "\n".join(included)
 
 
-def route_instructions(route_id: str, skills: list[SkillRecord]) -> str | None:
+def route_instructions(route_id: str, skills: list[SkillRecord], *, inline_always: bool = True) -> str | None:
     if not skills:
         return None
     always = [skill for skill in skills if skill["mode"] == SKILL_MODE_ALWAYS]
     on_demand = [skill for skill in skills if skill["mode"] != SKILL_MODE_ALWAYS]
     parts = ["Admin-provided instructions for this MCP server."]
-    if always:
+    if always and inline_always:
         parts.append("Always follow these instructions:\n" + "\n\n".join(_always_sections(always)))
+    elif always:
+        listing = []
+        for skill in always:
+            uri = build_skill_uri(SKILL_OWNER_ROUTE, route_id, skill["name"])
+            listing.append(
+                f"- {skill['name']} (always applies): {_short_description(skill['description'])} (uri {uri}). "
+                "Load it with read_skill, or resources/read, before using this server's tools."
+            )
+        parts.append("\n".join(listing))
     if on_demand:
         listing = [f"Load these skills when relevant, with the {READ_SKILL_TOOL_NAME} tool when it is listed, otherwise resources/read:"]
         for skill in on_demand:
