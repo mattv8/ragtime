@@ -47,6 +47,11 @@ GUIDE_TOPICS: tuple[dict[str, str], ...] = (
         "title": "Build models with scripts",
         "when_to_read": "Create or change models using C# 5 scripts.",
     },
+    {
+        "id": "previews",
+        "title": "Previews, exports and the 3D view",
+        "when_to_read": "Show the user design progress with a preview image after a build step, or export the model to a STEP, STL, 3MF, GLB or native file.",
+    },
 )
 
 _GUIDANCE_DIR = Path(__file__).parent / "guidance"

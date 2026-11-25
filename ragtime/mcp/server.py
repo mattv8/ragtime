@@ -39,6 +39,7 @@ from ragtime.core.app_settings import get_app_settings, invalidate_settings_cach
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.utils import safe_tool_name
+from ragtime.mcp.artifact_content import build_artifact_content
 from ragtime.mcp.skills import read_skill_description, route_instructions, visible_skills
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
 from ragtime.rag import rag
@@ -907,7 +908,15 @@ def _register_handlers(
                 execution_completed=True,
             )
 
-            return [TextContent(type="text", text=result)]
+            content = [TextContent(type="text", text=result)]
+            tool_def = tool_adapter._tool_definitions.get(name)
+            if not synthetic_transfer and tool_def and tool_def.tool_config.get("tool_type") == "solidworks":
+                try:
+                    extras = await build_artifact_content(result)
+                    return CallToolResult(content=[*content, *extras])
+                except Exception:
+                    logger.debug("Unable to build SolidWorks artifact content")
+            return content
 
         except Exception as e:
             detail = public_error_detail(e)

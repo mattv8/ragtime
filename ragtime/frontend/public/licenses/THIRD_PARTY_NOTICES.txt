@@ -47,3 +47,28 @@ This build bundles the local font and icon assets listed below.
    - Copyright: Microsoft Corporation
    - Font license: Creative Commons Attribution 4.0 International (CC BY 4.0)
    - Package/source code notice: the distributed CSS and supporting package code include Microsoft MIT-licensed source headers; see the upstream repository for the corresponding MIT source license text.
+
+7. Online 3D Viewer
+   - Package: online-3d-viewer 0.18.0
+   - Source: https://github.com/kovacsv/Online3DViewer
+   - Copyright: Viktor Kovacs
+   - License: MIT
+
+8. three.js
+   - Package: three 0.176.0
+   - Source: https://github.com/mrdoob/three.js
+   - Copyright: three.js authors
+   - License: MIT
+
+9. occt-import-js
+   - Package: occt-import-js 0.0.22
+   - Source: https://github.com/kovacsv/occt-import-js
+   - License: GNU Lesser General Public License 2.1
+   - The unmodified library is dynamically loaded.
+   - Separate replaceable files are shipped under assets/vendor/occt-import-js/.
+   - License text: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+
+10. Draco
+    - Package: draco3d 1.5.7
+    - Source: https://github.com/google/draco
+    - License: Apache License 2.0

@@ -284,7 +284,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             var names = ((JArray)response["result"]!["operations"]!).Select(o => (string?)o["name"]).ToList();
             Assert.DoesNotContain("host.shutdown", names);
-            Assert.Equal(30, names.Count);
+            Assert.Equal(32, names.Count);
             Assert.Contains("features.list", names);
             Assert.Contains("mass_properties.get", names);
         }

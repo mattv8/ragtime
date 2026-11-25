@@ -1,16 +1,22 @@
 """SolidWorks operation execution and host lifecycle delegation."""
 
 import copy
+import hashlib
 import json
 import logging
+import ntpath
 import re
+import tempfile
 import time
 import traceback
 import unicodedata
 from collections.abc import Callable
+from pathlib import Path
 
+from ragtime.config import settings
 from ragtime.content_protection.service import authorize_content, current_context
 from ragtime.solidworks import pdm_link
+from ragtime.solidworks.artifacts import MAX_ARTIFACT_BYTES, ArtifactTooLarge, store_artifact
 from ragtime.solidworks.guidance import read_guide
 from ragtime.solidworks.host_activity import HostBusyError, HostUpdatingError, host_activity, host_key
 from ragtime.solidworks.host_artifact import get_host_artifact
@@ -28,8 +34,15 @@ MIN_OPERATION_SECONDS = 6
 MAX_RESULT_BYTES = 32768
 MAX_CACHED_TOOLS = 256
 HOST_MISMATCH_MESSAGE = "The SolidWorks agent answered a different request."
+AGENT_FAILED_MESSAGE = "The SolidWorks agent could not complete the requested operation."
+AGENT_MESSAGE_MAX_CHARS = 500
+AGENT_DETAILS_MAX_CHARS = 2000
 UNKNOWN_OPERATION_MESSAGE = "The SolidWorks agent does not offer this operation; call describe for the operation list."
 logger = logging.getLogger(__name__)
+_ARTIFACT_PATH = re.compile(
+    r'^[A-Za-z]:\\(?:[^\\/:*?"<>|]+\\)+AppData\\Local\\RagtimeSolidWorks\\work\\[A-Za-z0-9][A-Za-z0-9._-]{0,127}$',
+    re.IGNORECASE,
+)
 
 _GUIDE_OPERATION = {
     "name": "guide",
@@ -83,6 +96,20 @@ _PDM_OPERATIONS = [
 
 class _HostMismatchError(Exception):
     """The host envelope does not answer the request that was sent."""
+
+
+def _artifact_remote_path(value: object) -> str:
+    if not isinstance(value, str) or not _ARTIFACT_PATH.fullmatch(value):
+        raise ValueError("Invalid artifact path")
+    if any(part in (".", "..") or any(unicodedata.category(c) == "Cc" for c in part) for part in value.split("\\")):
+        raise ValueError("Invalid artifact path")
+    return value.replace("\\", "/")
+
+
+def _safe_result_text(value: object, limit: int) -> str:
+    if not isinstance(value, str) or "/" in value or "\\" in value:
+        return ""
+    return value[:limit]
 
 
 def resolve_timeout_cap(config: dict) -> int:
@@ -366,9 +393,137 @@ class SolidworksService:
             details = {"field": "source"} if operation == "script.run" else None
             return self._error(operation, "invalid_arguments", "The request is invalid or too large.", details)
         response = await self._call(transport, key, request, remaining, config)
+        if operation in ("model.export", "model.preview"):
+            if response.get("ok"):
+                return await self._fetch_artifacts(response, transport, config, deadline)
+            return self._agent_error(operation, response.get("error"))
         if operation == "status" and response.get("ok"):
             response["result"]["scripts_enabled"] = bool(connection.get("allow_scripts", False))
         return self._json(response)
+
+    async def _fetch_artifacts(self, response, transport, config, deadline):
+        operation = response["operation"]
+        result = response.get("result")
+        tool_id = config.get("id")
+        tool_id = tool_id if isinstance(tool_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tool_id) else "unknown"
+        if not isinstance(result, dict) or not isinstance(result.get("files"), list):
+            logger.warning("SolidWorks artifact failure category=invalid_metadata phase=verify operation=%s tool_id=%s", operation, tool_id)
+            return self._error(operation, "artifact_transfer_failed", "The agent returned invalid artifact metadata.")
+        files = result["files"]
+        paths = []
+        invalid_path = False
+        for item in files:
+            try:
+                if not isinstance(item, dict):
+                    raise ValueError()
+                paths.append(_artifact_remote_path(item.get("path")))
+            except ValueError:
+                invalid_path = True
+
+        phase = "verify"
+        try:
+            if invalid_path:
+                logger.warning("SolidWorks artifact failure category=invalid_path phase=verify operation=%s tool_id=%s", operation, tool_id)
+                return self._error(operation, "artifact_transfer_failed", "The agent returned an invalid artifact path.")
+            if not 1 <= len(files) <= 3:
+                logger.warning("SolidWorks artifact failure category=invalid_metadata phase=verify operation=%s tool_id=%s", operation, tool_id)
+                return self._error(operation, "artifact_transfer_failed", "The agent returned invalid artifact metadata.")
+            temp_root = Path(settings.index_data_path)
+            with tempfile.TemporaryDirectory(dir=temp_root if temp_root.is_dir() else None) as directory:
+                downloaded = []
+                for index, (item, remote) in enumerate(zip(files, paths)):
+                    size, digest = item.get("size_bytes"), item.get("sha256")
+                    if type(size) is not int or size < 0 or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                        raise ValueError("Invalid artifact metadata")
+                    if size > MAX_ARTIFACT_BYTES:
+                        raise ArtifactTooLarge()
+                    remaining = self._remaining(deadline)
+                    if remaining <= 0:
+                        raise TimeoutError()
+                    local = Path(directory) / str(index)
+                    phase = "download"
+                    transferred = await transport.download_file(remote, local, max_bytes=MAX_ARTIFACT_BYTES, timeout_seconds=remaining)
+                    phase = "verify"
+                    if transferred != size or local.stat().st_size != size:
+                        raise ValueError("Artifact size mismatch")
+                    hasher = hashlib.sha256()
+                    with local.open("rb") as source:
+                        while chunk := source.read(65536):
+                            hasher.update(chunk)
+                    if hasher.hexdigest() != digest:
+                        raise ValueError("Artifact hash mismatch")
+                    downloaded.append((item, local))
+
+                context = current_context()
+                stored = []
+                preview_id = None
+                for item, local in sorted(downloaded, key=lambda pair: pair[0].get("role") != "preview"):
+                    phase = "verify"
+                    role = item.get("role")
+                    formats = {"preview": {"png"}, "model": {"step", "stl", "3mf", "glb"}, "native": {"zip", "sldprt", "sldasm", "slddrw"}}
+                    if role not in formats or item.get("format") not in formats[role] or not isinstance(item.get("file_name"), str):
+                        raise ValueError("Invalid artifact role")
+                    phase = "store"
+                    artifact = await store_artifact(
+                        local,
+                        file_name=item.get("file_name"),
+                        kind=role,
+                        format=item.get("format"),
+                        sha256=item["sha256"],
+                        owner_user_id=getattr(context, "user_id", None),
+                        tool_config_id=config.get("id"),
+                        surface=getattr(context, "surface", None),
+                        mcp_route=getattr(context, "mcp_route", None),
+                        preview_artifact_id=preview_id if role != "preview" else None,
+                    )
+                    stored.append(artifact)
+                    if role == "preview":
+                        preview_id = artifact["id"]
+                primary = next((artifact for artifact in stored if artifact["kind"] != "preview"), stored[0])
+                document_value = result.get("document")
+                document = document_value if isinstance(document_value, dict) else {}
+                if not document.get("title") and isinstance(document.get("path"), str):
+                    document = {**document, "title": ntpath.basename(document["path"])}
+                warnings_value = result.get("warnings")
+                warnings = warnings_value if isinstance(warnings_value, list) else []
+                response = {
+                    "protocol": response.get("protocol"),
+                    "ok": True,
+                    "operation": operation,
+                    "result": {
+                        "artifact": primary,
+                        "artifacts": [{key: artifact[key] for key in ("id", "kind", "format", "size_bytes")} for artifact in stored],
+                        "document": {key: _safe_result_text(document.get(key), 120) for key in ("type", "configuration", "title")},
+                        "warnings": [_safe_result_text(warning, 160) for warning in warnings[:3]],
+                    },
+                    "host": {
+                        key: _safe_result_text((response.get("host") or {}).get(key), 100)
+                        for key in ("host_version", "solidworks_revision", "solidworks_version", "instance_id")
+                    },
+                }
+                for key in ("warnings", "document", "host"):
+                    if len(self._json(response)) <= 1800:
+                        break
+                    if key == "host":
+                        response.pop(key, None)
+                    else:
+                        response["result"].pop(key, None)
+                output = self._json(response)
+                if len(output) > 1800:
+                    raise ValueError("Artifact metadata too large")
+                return output
+        except ArtifactTooLarge:
+            logger.warning("SolidWorks artifact failure category=too_large phase=%s operation=%s tool_id=%s", phase, operation, tool_id)
+            return self._error(operation, "artifact_too_large", "The exported artifact exceeds the size limit.")
+        except Exception:
+            logger.warning("SolidWorks artifact failure category=failed phase=%s operation=%s tool_id=%s", phase, operation, tool_id)
+            return self._error(operation, "artifact_transfer_failed", "The exported artifact could not be transferred or verified.")
+        finally:
+            for remote in paths:
+                try:
+                    await transport.remove_file(remote, timeout_seconds=max(0.01, min(2.0, self._remaining(deadline))))
+                except Exception:
+                    logger.warning("SolidWorks artifact failure category=failed phase=delete operation=%s tool_id=%s", operation, tool_id)
 
     def _updating_error(self, operation: str, config: dict, message: str = "The SolidWorks agent is being updated. Try again in a few minutes.") -> str:
         state = host_updater.state_for(config.get("id") or "") or {}
@@ -436,6 +591,19 @@ class SolidworksService:
 
     def _error(self, operation: str, code: str, message: str, details: dict | None = None) -> str:
         return self._json(error_response(operation, code, message, details))
+
+    def _agent_error(self, operation: str, error: object) -> str:
+        if not isinstance(error, dict):
+            return self._error(operation, "internal_error", AGENT_FAILED_MESSAGE)
+        code = error.get("code")
+        code = code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code) else "internal_error"
+        message = error.get("message")
+        if not isinstance(message, str) or not 0 < len(message) <= AGENT_MESSAGE_MAX_CHARS:
+            message = AGENT_FAILED_MESSAGE
+        details = error.get("details")
+        if not isinstance(details, dict) or len(self._json(details)) > AGENT_DETAILS_MAX_CHARS:
+            details = None
+        return self._error(operation, code, message, details)
 
     async def host_status(self, config: dict) -> dict:
         from ragtime.solidworks.host_status import SolidworksHostStatusService

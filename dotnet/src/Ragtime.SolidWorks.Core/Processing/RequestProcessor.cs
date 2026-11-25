@@ -430,11 +430,15 @@ namespace Ragtime.SolidWorks.Core
         private async Task<Outcome> ModelOperationAsync(OperationDefinition definition, ParsedRequest request, Deadline deadline, CancellationToken cancellationToken)
         {
             var context = request.Context;
-            var document = await ResolveDocumentAsync(
-                ArgumentReader.RequiredString(request.Arguments, "document"),
-                context,
-                deadline,
-                cancellationToken).ConfigureAwait(false);
+            var arguments = request.Arguments;
+            var isFileOperation = ModelFiles.Handles(definition.Name);
+            var document = isFileOperation
+                ? await ResolveFileDocumentAsync(arguments, context, deadline, cancellationToken).ConfigureAwait(false)
+                : await ResolveDocumentAsync(
+                    ArgumentReader.RequiredString(arguments, "document"),
+                    context,
+                    deadline,
+                    cancellationToken).ConfigureAwait(false);
 
             if (ModelOperations.RequiresAssembly(definition.Name) && document.Type != ProtocolInfo.DocumentTypes.Assembly)
             {
@@ -444,15 +448,51 @@ namespace Ragtime.SolidWorks.Core
                     new JObject { ["document_type"] = WireJson.Value(document.Type) });
             }
 
-            var arguments = request.Arguments;
+            if (isFileOperation)
+            {
+                // Refuses bad arguments before a SolidWorks instance is started for the call.
+                ModelFiles.Parse(definition.Name, arguments, document, _pdmWorkFolder);
+            }
+
             var run = await RunOnInstanceAsync(
                 InstanceTarget.Specific(document.InstanceId),
                 context,
                 deadline,
-                session => ModelOperations.Execute(definition.Name, session, document, arguments, context),
+                session => ModelOperations.Execute(definition.Name, session, document, arguments, context, _pdmWorkFolder),
                 cancellationToken).ConfigureAwait(false);
 
             return new Outcome(run.Value, HostInfoOf(run.Instance));
+        }
+
+        /// <summary>
+        /// The document for model.export and model.preview: the given id or path, or the only document open in this request's
+        /// scope. Refreshes the registry once when none is known, then fails with invalid_arguments.
+        /// </summary>
+        private async Task<DocumentEntry> ResolveFileDocumentAsync(JObject arguments, RequestContext context, Deadline deadline, CancellationToken cancellationToken)
+        {
+            var document = ArgumentReader.OptionalString(arguments, "document");
+            if (document != null)
+            {
+                return await ResolveDocumentAsync(document, context, deadline, cancellationToken).ConfigureAwait(false);
+            }
+
+            var open = _documents.Snapshot().Where(ScopeOf(context)).ToList();
+            if (open.Count == 0)
+            {
+                await RefreshDocumentsAsync(context, deadline, cancellationToken).ConfigureAwait(false);
+                open = _documents.Snapshot().Where(ScopeOf(context)).ToList();
+            }
+
+            if (open.Count == 1)
+            {
+                return open[0];
+            }
+
+            throw HostError.InvalidArguments(
+                "document",
+                open.Count == 0
+                    ? "No document is open. Open one with document.open first, or give its id or path."
+                    : "More than one document is open. Give the id or path of the one to use.");
         }
 
         /// <summary>

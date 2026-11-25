@@ -58,6 +58,12 @@ class FakeTransport:
     async def upload_file(self, local_path, remote_path, *, timeout_seconds):
         raise AssertionError("upload_file is not used by the status tests")
 
+    async def download_file(self, remote_path, local_path, *, max_bytes, timeout_seconds):
+        raise AssertionError("download_file is not used by the status tests")
+
+    async def remove_file(self, remote_path, *, timeout_seconds):
+        raise AssertionError("remove_file is not used by the status tests")
+
 
 def probe(present=True, interactive=True, features=None):
     data = {

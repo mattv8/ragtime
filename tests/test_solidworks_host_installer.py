@@ -57,6 +57,12 @@ class Transport:
         self.calls.append(("call", request))
         return {"ok": False}
 
+    async def download_file(self, remote_path, local_path, *, max_bytes, timeout_seconds):
+        raise AssertionError("download_file is not used by installer tests")
+
+    async def remove_file(self, remote_path, *, timeout_seconds):
+        raise AssertionError("remove_file is not used by installer tests")
+
 
 class Status:
     async def host_status(self, config, *, probe_only=False):

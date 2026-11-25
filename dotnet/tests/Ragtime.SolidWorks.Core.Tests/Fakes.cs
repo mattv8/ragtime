@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -223,6 +224,68 @@ namespace Ragtime.SolidWorks.Core.Tests
         {
             Calls.Add(nameof(ListEquations));
             return new List<EquationItem> { new EquationItem { Index = 0, Equation = "\"D1\"=0.02" } };
+        }
+
+        /// <summary>Export requests received, in call order.</summary>
+        public List<ExportRequest> Exports { get; } = new List<ExportRequest>();
+
+        /// <summary>Preview requests received, in call order.</summary>
+        public List<PreviewRequest> Previews { get; } = new List<PreviewRequest>();
+
+        /// <summary>Warnings the next export and preview report.</summary>
+        public List<string> ExportWarnings { get; } = new List<string>();
+
+        /// <summary>When set, an export writes a partial file and throws export_failed.</summary>
+        public bool FailExport { get; set; }
+
+        /// <summary>When set, a preview throws preview_unavailable.</summary>
+        public bool FailPreview { get; set; }
+
+        /// <summary>When set, a preview throws this exception (an unexpected host fault, not a preview failure).</summary>
+        public Exception? PreviewException { get; set; }
+
+        public Action<string>? OnFileWrite { get; set; }
+
+        /// <summary>Writes a small file at the request's target path, as the Readers session does.</summary>
+        public ExportResult ExportModel(ExportRequest request)
+        {
+            Calls.Add(nameof(ExportModel));
+            Exports.Add(request);
+            OnFileWrite?.Invoke(request.TargetPath);
+            File.WriteAllText(request.TargetPath, "export:" + request.Format);
+            if (FailExport)
+            {
+                throw HostError.Coded(ErrorCodes.ExportFailed, "SolidWorks could not save the file.");
+            }
+
+            var role = request.Format == "native" ? "native" : "model";
+            return new ExportResult(
+                new List<ExportedFile> { new ExportedFile(role, request.TargetPath, Path.GetExtension(request.TargetPath).TrimStart('.')) },
+                request.Configuration ?? "Default",
+                ExportWarnings.ToList());
+        }
+
+        /// <summary>Writes a small PNG-named file at the request's target path.</summary>
+        public ExportResult RenderPreview(PreviewRequest request)
+        {
+            Calls.Add(nameof(RenderPreview));
+            Previews.Add(request);
+            OnFileWrite?.Invoke(request.TargetPath);
+            if (PreviewException != null)
+            {
+                throw PreviewException;
+            }
+
+            if (FailPreview)
+            {
+                throw HostError.Coded(ErrorCodes.PreviewUnavailable, "SolidWorks did not render the view.");
+            }
+
+            File.WriteAllBytes(request.TargetPath, new byte[] { 137, 80, 78, 71, 1, 2, 3 });
+            return new ExportResult(
+                new List<ExportedFile> { new ExportedFile("preview", request.TargetPath, "png") },
+                "Default",
+                ExportWarnings.ToList());
         }
 
         private static void RequireSketch(string sketch)

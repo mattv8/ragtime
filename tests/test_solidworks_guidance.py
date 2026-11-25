@@ -16,6 +16,7 @@ TOPIC_IDS = (
     "pdm",
     "studying-models",
     "scripts",
+    "previews",
 )
 GUIDANCE_DIR = Path(guidance.__file__).parent / "guidance"
 MAX_LINES = 150
@@ -111,6 +112,12 @@ CONTRACT_OPERATIONS = (
     "properties.get",
     "mass_properties.get",
     "equations.list",
+)
+
+# Read-only operations that return a preview image or an exported file (previews topic).
+PREVIEW_OPERATIONS = (
+    "model.preview",
+    "model.export",
 )
 
 # Error codes an agent can act on (overview table).
@@ -395,10 +402,45 @@ class SolidWorksAgentWordingTests(unittest.TestCase):
 
 
 class OverviewPointerTests(unittest.TestCase):
-    def test_overview_points_to_pdm_and_studying_models(self) -> None:
+    def test_overview_points_to_pdm_studying_models_and_previews(self) -> None:
         overview = _topic_text("overview")
         self.assertIn("`pdm`", overview)
         self.assertIn("`studying-models`", overview)
+        self.assertIn("`previews`", overview)
+
+
+class PreviewsTopicTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.previews = _topic_text("previews")
+
+    def test_topic_names_both_operations(self) -> None:
+        for operation in PREVIEW_OPERATIONS:
+            with self.subTest(operation=operation):
+                self.assertIn(f"`{operation}`", self.previews)
+
+    def test_topic_lists_every_export_format_and_the_drawing_rule(self) -> None:
+        for format_name in ("`step`", "`stl`", "`3mf`", "`glb`", "`native`"):
+            with self.subTest(format=format_name):
+                self.assertIn(format_name, self.previews)
+        self.assertIn("Drawings support only `native` and `model.preview`", self.previews)
+        self.assertIn("Assemblies support `step`, `3mf`, `glb` and `native`, not `stl`", self.previews)
+
+    def test_topic_names_the_document_argument(self) -> None:
+        self.assertIn("Arguments: `document`", self.previews)
+        self.assertNotIn("`path`", self.previews)
+
+    def test_topic_states_retention_size_and_sign_in(self) -> None:
+        for phrase in ("7 days", "100 MB", "sign-in", "`page_url`"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.previews)
+
+    def test_topic_states_open_document_rule_for_both_modes(self) -> None:
+        self.assertIn("attach mode", self.previews)
+        self.assertIn("`document.open`", self.previews)
+
+    def test_topic_forbids_pasting_paths(self) -> None:
+        self.assertIn("Do not paste file paths", self.previews)
+        self.assertIn("Do not call `model.preview` or `model.export` in a loop", self.previews)
 
 
 if __name__ == "__main__":

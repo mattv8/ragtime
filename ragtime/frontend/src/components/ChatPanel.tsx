@@ -64,6 +64,20 @@ import {
 } from 'lucide-react';
 import { api, type ChatTaskStreamEvent } from '@/api';
 import { formatPublicErrorDetail, getPublicErrorDetail } from '@/api/publicErrorDetail';
+import { parseModelArtifact } from '@/utils/modelArtifact';
+import { ModelArtifactCard } from './ModelArtifactCard';
+import { ModelArtifactModalHost } from './ModelArtifactModalHost';
+import { SolidWorksToolResult } from './SolidWorksToolResult';
+import {
+  solidWorksToolPillName,
+  isSolidWorksToolCall,
+  parseSolidWorksResult,
+} from '@/utils/solidworksToolResult';
+import {
+  ModelArtifactActions,
+  ModelArtifactActionsHost,
+  messageModelArtifacts,
+} from './ModelArtifactActions';
 import { getThemeFontFamily, subscribeToThemeChanges } from '@/theme';
 import type {
   Conversation,
@@ -1324,6 +1338,10 @@ function isVisualizationToolName(toolName?: string): boolean {
 
 function isVisualizationToolCall(toolCall?: Pick<ActiveToolCall, 'tool'>): boolean {
   return isVisualizationToolName(toolCall?.tool);
+}
+
+function isModelArtifactToolCall(toolCall: ActiveToolCall): boolean {
+  return parseModelArtifact(toolCall) !== null;
 }
 
 // `event` is a dynamically-shaped streaming JSON payload from the SSE backend;
@@ -5161,9 +5179,12 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const [isSwitchingVisualizationBranch, setIsSwitchingVisualizationBranch] = useState(false);
   const retryProgressTimers = useRef<number[]>([]);
   const visualToolName = useMemo(() => getToolVisualName(toolCall.tool), [toolCall.tool]);
-  const toolCallPillName = getToolCallPillName(toolCall);
+  const toolCallPillName = isSolidWorksToolCall(toolCall)
+    ? solidWorksToolPillName(toolCall)
+    : getToolCallPillName(toolCall);
   const [isRerunning, setIsRerunning] = useState(false);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
+  const [zoomedImageAlt, setZoomedImageAlt] = useState('Screenshot full view');
   // Per-entry diff state keyed by snapshot+path+writeSignature so a batched
   // tool call can load each file's diff independently and a partial failure
   // does not blank the entire card.
@@ -5254,6 +5275,28 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Effective output (use retry output if available)
   const effectiveOutput = activeOutput || '';
+  const isSolidWorksTool = isSolidWorksToolCall(toolCall);
+  const solidWorksResult = useMemo(
+    () =>
+      isSolidWorksTool
+        ? parseSolidWorksResult(effectiveOutput, toolCall.input, toolCall.status)
+        : null,
+    [effectiveOutput, isSolidWorksTool, toolCall.input, toolCall.status],
+  );
+  const solidWorksResultId = useMemo(() => {
+    if (!isSolidWorksTool) return '';
+    if (eventIndex !== undefined) return `solidworks-result-${messageId ?? 'm'}-${eventIndex}`;
+    const source = `${toolCall.tool}\0${JSON.stringify(toolCall.input)}`;
+    let hash = 2166136261;
+    for (let position = 0; position < source.length; position += 1) {
+      hash = Math.imul(hash ^ source.charCodeAt(position), 16777619);
+    }
+    return `solidworks-result-${messageId ?? 'm'}-${(hash >>> 0).toString(16)}`;
+  }, [eventIndex, isSolidWorksTool, messageId, toolCall.input, toolCall.tool]);
+  const modelArtifact = useMemo(
+    () => (hasErrorInOutput ? null : parseModelArtifact({ ...toolCall, output: effectiveOutput })),
+    [hasErrorInOutput, toolCall, effectiveOutput],
+  );
   const isUserspaceStructuredJsonTool = USERSPACE_STRUCTURED_JSON_TOOL_NAMES.has(toolCall.tool);
 
   // Split into two memos: the searchable string composition (expensive — stringifies
@@ -6551,6 +6594,18 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   };
 
   const renderUserspaceResultBody = (): ReactNode => {
+    if (solidWorksResult) {
+      return (
+        <SolidWorksToolResult
+          parsed={solidWorksResult}
+          rawOutput={effectiveOutput}
+          resultId={solidWorksResultId}
+          maskText={maskHiddenToolNames}
+          artifactShown={Boolean(modelArtifact)}
+          renderMarkdown={(markdown) => <MemoizedMarkdown content={markdown} />}
+        />
+      );
+    }
     if (isKnowledgeSearchToolName(toolCall.tool) && knowledgeSearchOutput) {
       const search = knowledgeSearchOutput;
       const toolTitle =
@@ -8284,11 +8339,14 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 {inputDisplay || toolCall.tool}
               </span>
             ) : (
-              <span className="tool-call-name">{visualToolName}</span>
+              <span className="tool-call-name">{solidWorksResult?.title ?? visualToolName}</span>
             )}
-            {isTerminalCommand && toolCallPillName && (
-              <span className="tool-call-tool-pill" title={toolCallPillName}>
-                {toolCallPillName}
+            {(isTerminalCommand || isSolidWorksTool) && toolCallPillName && (
+              <span
+                className={`tool-call-tool-pill${isSolidWorksTool ? ' tool-call-tool-pill-wide' : ''}`}
+                title={toolCallPillName}
+              >
+                <span className="tool-call-tool-pill-label">{toolCallPillName}</span>
               </span>
             )}
             {toolCall.status === 'running' && toolCall.generating_lines ? (
@@ -8330,6 +8388,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               </div>
             )}
             {inputDisplay &&
+              !isSolidWorksTool &&
               !shouldRenderScreenshotOnly &&
               !userspaceWriteResult &&
               !userspaceReadResult &&
@@ -8582,6 +8641,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             ) : null}
             {(shouldRenderScreenshotOnly ||
               effectiveOutput ||
+              isSolidWorksTool ||
               isUserspaceStructuredJsonTool ||
               isKnowledgeSearchToolName(toolCall.tool)) &&
               !isTerminalCommand &&
@@ -8600,7 +8660,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     alt="Captured User Space screenshot"
                     className="tool-call-screenshot-image"
                     loading="lazy"
-                    onClick={() => setZoomedImage(screenshotPreviewForDisplay.imageUrl)}
+                    onClick={() => {
+                      setZoomedImageAlt('Screenshot full view');
+                      setZoomedImage(screenshotPreviewForDisplay.imageUrl);
+                    }}
                     style={{ cursor: 'zoom-in' }}
                   />
                 </div>
@@ -8610,10 +8673,15 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           </div>
         )}
       </div>
+      {modelArtifact && (
+        <div className="tool-call-model-artifact" data-tool-call-model-artifact={modelArtifact.id}>
+          <ModelArtifactCard artifact={modelArtifact} />
+        </div>
+      )}
       {zoomedImage && (
         <ChatImageModal
           imageUrl={zoomedImage}
-          alt="Screenshot full view"
+          alt={zoomedImageAlt}
           onClose={() => setZoomedImage(null)}
         />
       )}
@@ -8748,6 +8816,19 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
       })
       .filter(Boolean) as ReasoningPart[];
   }, [parts, content, cleanToolCallXml]);
+  const artifactParts = useMemo(() => {
+    if (!showToolCalls) return [];
+    return renderedParts.flatMap((part, index) => {
+      const toolCall = part.toolCall;
+      if (!toolCall) return [];
+      const artifact = parseModelArtifact(toolCall);
+      return artifact ? [{ toolCall, artifact, index }] : [];
+    });
+  }, [renderedParts, showToolCalls]);
+  const artifactIndexes = useMemo(
+    () => new Set(artifactParts.map((part) => part.index)),
+    [artifactParts],
+  );
 
   const cleanedContent = useMemo(() => cleanToolCallXml(content), [content, cleanToolCallXml]);
   const hasInlineToolCalls =
@@ -8877,9 +8958,9 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
   );
 
   // Keep this after all hooks so hook order remains stable across renders.
-  if (visibility === 'hidden' && isComplete) return null;
+  if (visibility === 'hidden' && isComplete && artifactParts.length === 0) return null;
 
-  return (
+  const reasoningBlock = (
     <div className={`reasoning-block ${isComplete ? 'reasoning-complete' : 'reasoning-active'}`}>
       <button className="reasoning-header" onClick={handleToggle} aria-expanded={isExpanded}>
         <BrainCircuit size={14} className="reasoning-icon" />
@@ -8931,7 +9012,7 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
                   </div>
                 );
               }
-              if (!part.toolCall) return null;
+              if (!part.toolCall || artifactIndexes.has(index)) return null;
               return (
                 <div key={index} className="chat-tool-calls reasoning-embedded-tool">
                   <ToolCallDisplay
@@ -8963,6 +9044,16 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
         )}
       </div>
     </div>
+  );
+  return (
+    <>
+      {(visibility !== 'hidden' || !isComplete) && reasoningBlock}
+      {artifactParts.map(({ toolCall, artifact, index }) => (
+        <div className="chat-tool-calls" data-tool-call-model-artifact={artifact.id} key={index}>
+          <ToolCallDisplay toolCall={toolCall} defaultExpanded={false} allowRerun={false} />
+        </div>
+      ))}
+    </>
   );
 });
 
@@ -13476,7 +13567,8 @@ export function ChatPanel({
         if (
           currentReasoning &&
           ev.toolCall.tool !== WORKSPACE_SUBAGENTS_TOOL_ID &&
-          !isVisualizationToolCall(ev.toolCall)
+          !isVisualizationToolCall(ev.toolCall) &&
+          !isModelArtifactToolCall(ev.toolCall)
         ) {
           currentReasoningParts.push({ type: 'tool', toolCall: ev.toolCall });
         } else {
@@ -19071,6 +19163,7 @@ export function ChatPanel({
       className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}${showWorkspaceConversationSelect ? ' chat-panel-workspace' : ''}${isFullscreen ? ' chat-panel-fullscreen' : ''}`}
       style={panelStyle}
     >
+      <ModelArtifactModalHost />
       {/* Conversations Sidebar */}
       {!embedded && showSidebar && (
         <div id="chat-workbench-sidebar" className="chat-sidebar open">
@@ -20040,340 +20133,355 @@ export function ChatPanel({
                                 : undefined
                             }
                           >
-                            <div className={`chat-message chat-message-${msg.role}`}>
-                              <div
-                                className="chat-message-content"
-                                key={editingMessageIdx === idx ? 'editing' : 'viewing'}
-                              >
-                                {editingMessageIdx === idx ? (
-                                  <>
-                                    <RichChatInput
-                                      ref={editRichInputRef}
-                                      segments={editMessageSegments}
-                                      onChange={handleEditSegmentsChange}
-                                      onSubmit={submitEditMessage}
-                                      onCancel={cancelEditMessage}
-                                      onFocus={() => {
-                                        activeComposerRef.current = 'edit';
-                                      }}
-                                      onRemoveReference={handleRemoveEditReference}
-                                      onOpenReference={onOpenContextReference}
-                                      className="chat-message-text chat-message-user-text chat-edit-input"
-                                      ariaLabel="Edit message"
-                                      sendMode={sendMode}
-                                    />
-                                    <div className="chat-message-footer">
-                                      <span className="chat-message-time">
-                                        {formatChatTimestamp(msg.timestamp)}
-                                      </span>
-                                    </div>
-                                  </>
-                                ) : (
-                                  <>
-                                    {/* Render chronological events if available */}
-                                    {msg.role === 'assistant' &&
-                                    msg.events &&
-                                    msg.events.length > 0 ? (
-                                      <>
-                                        {(() => {
-                                          // Render events chronologically, merging only ADJACENT reasoning events
-                                          const result: React.ReactNode[] = [];
-                                          let pendingReasoning = '';
-                                          let pendingReasoningParts: ReasoningPart[] = [];
-                                          let pendingReasoningDurationSeconds: number | undefined;
-                                          let reasoningBlockCount = 0;
-
-                                          const flushReasoning = () => {
-                                            if (!pendingReasoning) return;
-                                            reasoningBlockCount++;
-                                            result.push(
-                                              <ReasoningDisplay
-                                                key={`reasoning-${reasoningBlockCount}`}
-                                                content={pendingReasoning}
-                                                isComplete={true}
-                                                parts={
-                                                  pendingReasoningParts.length > 0
-                                                    ? pendingReasoningParts
-                                                    : undefined
-                                                }
-                                                durationSeconds={pendingReasoningDurationSeconds}
-                                                showToolCalls={showToolCalls}
-                                                workspaceId={workspaceId}
-                                                conversationId={renderedConversation.id}
-                                                onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                                inChatSearchQuery={
-                                                  inChatSearchOpen ? inChatSearchTrimmedQuery : ''
-                                                }
-                                                inChatSearchOptions={activeInChatSearchOptions}
-                                              />,
-                                            );
-                                            pendingReasoning = '';
-                                            pendingReasoningParts = [];
-                                            pendingReasoningDurationSeconds = undefined;
-                                          };
-
-                                          for (let evIdx = 0; evIdx < msg.events.length; evIdx++) {
-                                            const ev = msg.events[evIdx];
-                                            const channel = getChatEventChannel(ev);
-                                            const reasoningContent = getReasoningEventContent(ev);
-                                            if (channel === 'analysis' && reasoningContent) {
-                                              // Accumulate adjacent reasoning
-                                              pendingReasoning +=
-                                                (pendingReasoning ? '\n\n' : '') + reasoningContent;
-                                              const durationSeconds =
-                                                getReasoningEventDurationSeconds(ev);
-                                              if (typeof durationSeconds === 'number') {
-                                                pendingReasoningDurationSeconds = durationSeconds;
-                                              }
-                                              const lastPart =
-                                                pendingReasoningParts[
-                                                  pendingReasoningParts.length - 1
-                                                ];
-                                              if (lastPart && lastPart.type === 'text') {
-                                                lastPart.text =
-                                                  (lastPart.text || '') +
-                                                  (lastPart.text ? '\n\n' : '') +
-                                                  reasoningContent;
-                                              } else {
-                                                pendingReasoningParts.push({
-                                                  type: 'text',
-                                                  text: reasoningContent,
-                                                });
-                                              }
-                                            } else if (
-                                              channel === 'commentary' &&
-                                              ev.type === 'tool' &&
-                                              pendingReasoning &&
-                                              ev.tool !== SUBAGENT_HANDOFF_TOOL_ID &&
-                                              ev.tool !== WORKSPACE_SUBAGENTS_TOOL_ID &&
-                                              !isVisualizationToolName(ev.tool)
-                                            ) {
-                                              pendingReasoningParts.push({
-                                                type: 'tool',
-                                                toolCall: {
-                                                  tool: ev.tool,
-                                                  input: ev.input,
-                                                  output: ev.output,
-                                                  presentation: ev.presentation,
-                                                  connection: ev.connection,
-                                                  mcp: ev.mcp,
-                                                  status: 'complete' as const,
-                                                },
-                                              });
-                                            } else {
-                                              // Final content and visualization artifacts break reasoning adjacency.
-                                              flushReasoning();
-                                              // The subagent handoff is rendered inside the
-                                              // spawn_subagents subagent card (subagent-handoff-output
-                                              // container); never duplicate it as a standalone card in
-                                              // the parent's own message.
-                                              if (
-                                                ev.type === 'tool' &&
-                                                ev.tool === SUBAGENT_HANDOFF_TOOL_ID
-                                              ) {
-                                                continue;
-                                              }
-                                              if (
-                                                channel === 'commentary' &&
-                                                ev.type === 'tool' &&
-                                                showToolCalls
-                                              ) {
-                                                const toolCall = {
-                                                  tool: ev.tool,
-                                                  input: ev.input,
-                                                  output: ev.output,
-                                                  presentation: ev.presentation,
-                                                  connection: ev.connection,
-                                                  mcp: ev.mcp,
-                                                  status: 'complete' as const,
-                                                };
-                                                if (ev.tool === WORKSPACE_SUBAGENTS_TOOL_ID) {
-                                                  result.push(
-                                                    <ToolCallDisplay
-                                                      key={`event-${evIdx}`}
-                                                      toolCall={toolCall}
-                                                      defaultExpanded={false}
-                                                      conversationId={renderedConversation.id}
-                                                      workspaceId={workspaceId}
-                                                      siblingEvents={msg.events}
-                                                      messageId={msg.message_id}
-                                                      messageIndex={idx}
-                                                      eventIndex={evIdx}
-                                                      onLiveVisualizationRefreshSuccess={
-                                                        handleLiveVisualizationRefreshSuccess
-                                                      }
-                                                      onVisualizationDisplayError={
-                                                        toastActions.error
-                                                      }
-                                                      onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                                      onOpenSubagentConversation={
-                                                        openSubagentConversation
-                                                      }
-                                                      inChatSearchQuery={
-                                                        inChatSearchOpen
-                                                          ? inChatSearchTrimmedQuery
-                                                          : ''
-                                                      }
-                                                      inChatSearchOptions={
-                                                        activeInChatSearchOptions
-                                                      }
-                                                    />,
-                                                  );
-                                                  continue;
-                                                }
-                                                result.push(
-                                                  <div
-                                                    key={`event-${evIdx}`}
-                                                    className="chat-tool-calls"
-                                                  >
-                                                    <ToolCallDisplay
-                                                      toolCall={toolCall}
-                                                      defaultExpanded={false}
-                                                      conversationId={renderedConversation.id}
-                                                      workspaceId={workspaceId}
-                                                      siblingEvents={msg.events}
-                                                      messageId={msg.message_id}
-                                                      messageIndex={idx}
-                                                      eventIndex={evIdx}
-                                                      onLiveVisualizationRefreshSuccess={
-                                                        handleLiveVisualizationRefreshSuccess
-                                                      }
-                                                      onVisualizationDisplayError={
-                                                        toastActions.error
-                                                      }
-                                                      onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                                      inChatSearchQuery={
-                                                        inChatSearchOpen
-                                                          ? inChatSearchTrimmedQuery
-                                                          : ''
-                                                      }
-                                                      inChatSearchOptions={
-                                                        activeInChatSearchOptions
-                                                      }
-                                                    />
-                                                  </div>,
-                                                );
-                                              } else if (
-                                                channel === 'final' &&
-                                                ev.type === 'content'
-                                              ) {
-                                                result.push(
-                                                  <div
-                                                    key={`event-${evIdx}`}
-                                                    className="chat-message-text markdown-content"
-                                                  >
-                                                    <MemoizedMarkdown
-                                                      content={ev.content}
-                                                      conversationId={renderedConversation.id}
-                                                      workspaceId={workspaceId}
-                                                      enableTableExports
-                                                    />
-                                                  </div>,
-                                                );
-                                              } else if (ev.type === 'content_protection_denial') {
-                                                const denialAlreadyRendered =
-                                                  msg.events
-                                                    .slice(0, evIdx)
-                                                    .some(
-                                                      (priorEvent) =>
-                                                        priorEvent.type ===
-                                                          'content_protection_denial' &&
-                                                        priorEvent.request_id === ev.request_id,
-                                                    ) ||
-                                                  visibleMessageEntries.some(
-                                                    (priorEntry) =>
-                                                      priorEntry.state === 'ready' &&
-                                                      priorEntry.index < idx &&
-                                                      priorEntry.message.events?.some(
-                                                        (priorEvent) =>
-                                                          priorEvent.type ===
-                                                            'content_protection_denial' &&
-                                                          priorEvent.request_id === ev.request_id,
-                                                      ),
-                                                  );
-                                                if (!denialAlreadyRendered) {
-                                                  result.push(
-                                                    <DenialNotice
-                                                      key={`denial:${ev.request_id}`}
-                                                      reason={ev.public_reason}
-                                                      timestamp={ev.timestamp || msg.timestamp}
-                                                      requestId={ev.request_id}
-                                                      messageId={msg.message_id}
-                                                      onVisible={handleDenialNoticeVisible}
-                                                    />,
-                                                  );
-                                                }
-                                              } else if (ev.type === 'error') {
-                                                result.push(
-                                                  <div
-                                                    key={`event-${evIdx}`}
-                                                    className="chat-message-generation-error"
-                                                    role="status"
-                                                  >
-                                                    <AlertCircle size={14} aria-hidden="true" />
-                                                    <span>
-                                                      Generation failed:{' '}
-                                                      {formatPublicErrorDetail(ev, ev.content)}
-                                                    </span>
-                                                  </div>,
-                                                );
-                                              }
-                                            }
-                                          }
-                                          // Flush any trailing reasoning
-                                          flushReasoning();
-
-                                          return result;
-                                        })()}
-                                      </>
-                                    ) : (
-                                      <>
-                                        {msg.role === 'user' ? (
-                                          <>
-                                            {(() => {
-                                              const { text, attachments } = parseMessageContent(
-                                                msg.content,
-                                              );
-                                              return (
-                                                <>
-                                                  {attachments.length > 0 && (
-                                                    <MessageAttachments
-                                                      attachments={attachments}
-                                                      onImageClick={setModalImageUrl}
-                                                    />
-                                                  )}
-                                                  {text && (
-                                                    <div className="chat-message-text chat-message-user-text">
-                                                      <LinkifiedText text={text} />
-                                                    </div>
-                                                  )}
-                                                </>
-                                              );
-                                            })()}
-                                          </>
-                                        ) : (
-                                          <div className="chat-message-text markdown-content">
-                                            <MemoizedMarkdown
-                                              content={parseMessageContent(msg.content).text}
-                                              conversationId={renderedConversation.id}
-                                              workspaceId={workspaceId}
-                                              enableTableExports
-                                            />
-                                          </div>
-                                        )}
-                                      </>
-                                    )}
-                                    {!isDenialOnlyMessage(msg) && (
+                            <ModelArtifactActionsHost.Provider value={msg.role === 'assistant'}>
+                              <div className={`chat-message chat-message-${msg.role}`}>
+                                <div
+                                  className="chat-message-content"
+                                  key={editingMessageIdx === idx ? 'editing' : 'viewing'}
+                                >
+                                  {editingMessageIdx === idx ? (
+                                    <>
+                                      <RichChatInput
+                                        ref={editRichInputRef}
+                                        segments={editMessageSegments}
+                                        onChange={handleEditSegmentsChange}
+                                        onSubmit={submitEditMessage}
+                                        onCancel={cancelEditMessage}
+                                        onFocus={() => {
+                                          activeComposerRef.current = 'edit';
+                                        }}
+                                        onRemoveReference={handleRemoveEditReference}
+                                        onOpenReference={onOpenContextReference}
+                                        className="chat-message-text chat-message-user-text chat-edit-input"
+                                        ariaLabel="Edit message"
+                                        sendMode={sendMode}
+                                      />
                                       <div className="chat-message-footer">
                                         <span className="chat-message-time">
                                           {formatChatTimestamp(msg.timestamp)}
                                         </span>
                                       </div>
-                                    )}
-                                  </>
-                                )}
+                                    </>
+                                  ) : (
+                                    <>
+                                      {/* Render chronological events if available */}
+                                      {msg.role === 'assistant' &&
+                                      msg.events &&
+                                      msg.events.length > 0 ? (
+                                        <>
+                                          {(() => {
+                                            // Render events chronologically, merging only ADJACENT reasoning events
+                                            const result: React.ReactNode[] = [];
+                                            let pendingReasoning = '';
+                                            let pendingReasoningParts: ReasoningPart[] = [];
+                                            let pendingReasoningDurationSeconds: number | undefined;
+                                            let reasoningBlockCount = 0;
+
+                                            const flushReasoning = () => {
+                                              if (!pendingReasoning) return;
+                                              reasoningBlockCount++;
+                                              result.push(
+                                                <ReasoningDisplay
+                                                  key={`reasoning-${reasoningBlockCount}`}
+                                                  content={pendingReasoning}
+                                                  isComplete={true}
+                                                  parts={
+                                                    pendingReasoningParts.length > 0
+                                                      ? pendingReasoningParts
+                                                      : undefined
+                                                  }
+                                                  durationSeconds={pendingReasoningDurationSeconds}
+                                                  showToolCalls={showToolCalls}
+                                                  workspaceId={workspaceId}
+                                                  conversationId={renderedConversation.id}
+                                                  onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                                  inChatSearchQuery={
+                                                    inChatSearchOpen ? inChatSearchTrimmedQuery : ''
+                                                  }
+                                                  inChatSearchOptions={activeInChatSearchOptions}
+                                                />,
+                                              );
+                                              pendingReasoning = '';
+                                              pendingReasoningParts = [];
+                                              pendingReasoningDurationSeconds = undefined;
+                                            };
+
+                                            for (
+                                              let evIdx = 0;
+                                              evIdx < msg.events.length;
+                                              evIdx++
+                                            ) {
+                                              const ev = msg.events[evIdx];
+                                              const channel = getChatEventChannel(ev);
+                                              const reasoningContent = getReasoningEventContent(ev);
+                                              if (channel === 'analysis' && reasoningContent) {
+                                                // Accumulate adjacent reasoning
+                                                pendingReasoning +=
+                                                  (pendingReasoning ? '\n\n' : '') +
+                                                  reasoningContent;
+                                                const durationSeconds =
+                                                  getReasoningEventDurationSeconds(ev);
+                                                if (typeof durationSeconds === 'number') {
+                                                  pendingReasoningDurationSeconds = durationSeconds;
+                                                }
+                                                const lastPart =
+                                                  pendingReasoningParts[
+                                                    pendingReasoningParts.length - 1
+                                                  ];
+                                                if (lastPart && lastPart.type === 'text') {
+                                                  lastPart.text =
+                                                    (lastPart.text || '') +
+                                                    (lastPart.text ? '\n\n' : '') +
+                                                    reasoningContent;
+                                                } else {
+                                                  pendingReasoningParts.push({
+                                                    type: 'text',
+                                                    text: reasoningContent,
+                                                  });
+                                                }
+                                              } else if (
+                                                channel === 'commentary' &&
+                                                ev.type === 'tool' &&
+                                                pendingReasoning &&
+                                                ev.tool !== SUBAGENT_HANDOFF_TOOL_ID &&
+                                                ev.tool !== WORKSPACE_SUBAGENTS_TOOL_ID &&
+                                                !isVisualizationToolName(ev.tool) &&
+                                                !isModelArtifactToolCall({
+                                                  tool: ev.tool,
+                                                  output: ev.output,
+                                                  connection: ev.connection,
+                                                  status: 'complete',
+                                                })
+                                              ) {
+                                                pendingReasoningParts.push({
+                                                  type: 'tool',
+                                                  toolCall: {
+                                                    tool: ev.tool,
+                                                    input: ev.input,
+                                                    output: ev.output,
+                                                    presentation: ev.presentation,
+                                                    connection: ev.connection,
+                                                    mcp: ev.mcp,
+                                                    status: 'complete' as const,
+                                                  },
+                                                });
+                                              } else {
+                                                // Final content and visualization artifacts break reasoning adjacency.
+                                                flushReasoning();
+                                                // The subagent handoff is rendered inside the
+                                                // spawn_subagents subagent card (subagent-handoff-output
+                                                // container); never duplicate it as a standalone card in
+                                                // the parent's own message.
+                                                if (
+                                                  ev.type === 'tool' &&
+                                                  ev.tool === SUBAGENT_HANDOFF_TOOL_ID
+                                                ) {
+                                                  continue;
+                                                }
+                                                if (
+                                                  channel === 'commentary' &&
+                                                  ev.type === 'tool' &&
+                                                  showToolCalls
+                                                ) {
+                                                  const toolCall = {
+                                                    tool: ev.tool,
+                                                    input: ev.input,
+                                                    output: ev.output,
+                                                    presentation: ev.presentation,
+                                                    connection: ev.connection,
+                                                    mcp: ev.mcp,
+                                                    status: 'complete' as const,
+                                                  };
+                                                  if (ev.tool === WORKSPACE_SUBAGENTS_TOOL_ID) {
+                                                    result.push(
+                                                      <ToolCallDisplay
+                                                        key={`event-${evIdx}`}
+                                                        toolCall={toolCall}
+                                                        defaultExpanded={false}
+                                                        conversationId={renderedConversation.id}
+                                                        workspaceId={workspaceId}
+                                                        siblingEvents={msg.events}
+                                                        messageId={msg.message_id}
+                                                        messageIndex={idx}
+                                                        eventIndex={evIdx}
+                                                        onLiveVisualizationRefreshSuccess={
+                                                          handleLiveVisualizationRefreshSuccess
+                                                        }
+                                                        onVisualizationDisplayError={
+                                                          toastActions.error
+                                                        }
+                                                        onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                                        onOpenSubagentConversation={
+                                                          openSubagentConversation
+                                                        }
+                                                        inChatSearchQuery={
+                                                          inChatSearchOpen
+                                                            ? inChatSearchTrimmedQuery
+                                                            : ''
+                                                        }
+                                                        inChatSearchOptions={
+                                                          activeInChatSearchOptions
+                                                        }
+                                                      />,
+                                                    );
+                                                    continue;
+                                                  }
+                                                  result.push(
+                                                    <div
+                                                      key={`event-${evIdx}`}
+                                                      className="chat-tool-calls"
+                                                    >
+                                                      <ToolCallDisplay
+                                                        toolCall={toolCall}
+                                                        defaultExpanded={false}
+                                                        conversationId={renderedConversation.id}
+                                                        workspaceId={workspaceId}
+                                                        siblingEvents={msg.events}
+                                                        messageId={msg.message_id}
+                                                        messageIndex={idx}
+                                                        eventIndex={evIdx}
+                                                        onLiveVisualizationRefreshSuccess={
+                                                          handleLiveVisualizationRefreshSuccess
+                                                        }
+                                                        onVisualizationDisplayError={
+                                                          toastActions.error
+                                                        }
+                                                        onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                                        inChatSearchQuery={
+                                                          inChatSearchOpen
+                                                            ? inChatSearchTrimmedQuery
+                                                            : ''
+                                                        }
+                                                        inChatSearchOptions={
+                                                          activeInChatSearchOptions
+                                                        }
+                                                      />
+                                                    </div>,
+                                                  );
+                                                } else if (
+                                                  channel === 'final' &&
+                                                  ev.type === 'content'
+                                                ) {
+                                                  result.push(
+                                                    <div
+                                                      key={`event-${evIdx}`}
+                                                      className="chat-message-text markdown-content"
+                                                    >
+                                                      <MemoizedMarkdown
+                                                        content={ev.content}
+                                                        conversationId={renderedConversation.id}
+                                                        workspaceId={workspaceId}
+                                                        enableTableExports
+                                                      />
+                                                    </div>,
+                                                  );
+                                                } else if (
+                                                  ev.type === 'content_protection_denial'
+                                                ) {
+                                                  const denialAlreadyRendered =
+                                                    msg.events
+                                                      .slice(0, evIdx)
+                                                      .some(
+                                                        (priorEvent) =>
+                                                          priorEvent.type ===
+                                                            'content_protection_denial' &&
+                                                          priorEvent.request_id === ev.request_id,
+                                                      ) ||
+                                                    visibleMessageEntries.some(
+                                                      (priorEntry) =>
+                                                        priorEntry.state === 'ready' &&
+                                                        priorEntry.index < idx &&
+                                                        priorEntry.message.events?.some(
+                                                          (priorEvent) =>
+                                                            priorEvent.type ===
+                                                              'content_protection_denial' &&
+                                                            priorEvent.request_id === ev.request_id,
+                                                        ),
+                                                    );
+                                                  if (!denialAlreadyRendered) {
+                                                    result.push(
+                                                      <DenialNotice
+                                                        key={`denial:${ev.request_id}`}
+                                                        reason={ev.public_reason}
+                                                        timestamp={ev.timestamp || msg.timestamp}
+                                                        requestId={ev.request_id}
+                                                        messageId={msg.message_id}
+                                                        onVisible={handleDenialNoticeVisible}
+                                                      />,
+                                                    );
+                                                  }
+                                                } else if (ev.type === 'error') {
+                                                  result.push(
+                                                    <div
+                                                      key={`event-${evIdx}`}
+                                                      className="chat-message-generation-error"
+                                                      role="status"
+                                                    >
+                                                      <AlertCircle size={14} aria-hidden="true" />
+                                                      <span>
+                                                        Generation failed:{' '}
+                                                        {formatPublicErrorDetail(ev, ev.content)}
+                                                      </span>
+                                                    </div>,
+                                                  );
+                                                }
+                                              }
+                                            }
+                                            // Flush any trailing reasoning
+                                            flushReasoning();
+
+                                            return result;
+                                          })()}
+                                        </>
+                                      ) : (
+                                        <>
+                                          {msg.role === 'user' ? (
+                                            <>
+                                              {(() => {
+                                                const { text, attachments } = parseMessageContent(
+                                                  msg.content,
+                                                );
+                                                return (
+                                                  <>
+                                                    {attachments.length > 0 && (
+                                                      <MessageAttachments
+                                                        attachments={attachments}
+                                                        onImageClick={setModalImageUrl}
+                                                      />
+                                                    )}
+                                                    {text && (
+                                                      <div className="chat-message-text chat-message-user-text">
+                                                        <LinkifiedText text={text} />
+                                                      </div>
+                                                    )}
+                                                  </>
+                                                );
+                                              })()}
+                                            </>
+                                          ) : (
+                                            <div className="chat-message-text markdown-content">
+                                              <MemoizedMarkdown
+                                                content={parseMessageContent(msg.content).text}
+                                                conversationId={renderedConversation.id}
+                                                workspaceId={workspaceId}
+                                                enableTableExports
+                                              />
+                                            </div>
+                                          )}
+                                        </>
+                                      )}
+                                      {!isDenialOnlyMessage(msg) && (
+                                        <div className="chat-message-footer">
+                                          <span className="chat-message-time">
+                                            {formatChatTimestamp(msg.timestamp)}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
                               </div>
-                            </div>
+                            </ModelArtifactActionsHost.Provider>
                             {/* Action bar — flat on pane background, outside the bubble */}
                             {(() => {
                               const isEditing = editingMessageIdx === idx;
@@ -20585,6 +20693,12 @@ export function ChatPanel({
                                 return (
                                   <>
                                     <div className="chat-message-actions chat-message-actions-left">
+                                      <ModelArtifactActions
+                                        artifacts={
+                                          showToolCalls ? messageModelArtifacts(msg.events) : []
+                                        }
+                                        menuId={`model-artifact-menu-${entry.key}`}
+                                      />
                                       {branchNav}
                                       {branchNav && (
                                         <span className="chat-message-actions-spacer" />

@@ -583,6 +583,7 @@ Each SolidWorks tool is one AI-agent tool, `solidworks_{tool}`, called with an `
 | `documents.list`, `document.open`, `document.close` | List open documents; open a local `.sldprt`, `.sldasm` or `.slddrw` file read-only; close a document the SolidWorks agent opened | `document.open` and `document.close`: background mode |
 | `model.summary`, `configurations.list`, `features.list`, `feature.get`, `sketch.get`, `dimensions.list`, `equations.list`, `properties.get`, `mass_properties.get` | Read model data | - |
 | `components.list`, `mates.list` | Read assembly structure | An assembly |
+| `model.preview`, `model.export` | Render a PNG of the model; export it as STEP, STL, 3MF, GLB or the native SolidWorks file. Neither saves the document | An open document (attach mode) or `document.open` (background mode) |
 | `pdm.search`, `pdm.lookup` | Search the linked PDM tool's index; look up indexed documents by ID, file name or part number | A linked PDM tool |
 | `pdm.status`, `pdm.folder.list`, `pdm.file.info`, `pdm.variables.get`, `pdm.file.get_latest` | Read live vault state and data cards; copy the latest version of a file, and its references, to the local view | A linked PDM tool and the PDM client, except for `pdm.status` |
 | `pdm.folder.create`, `pdm.file.add`, `pdm.file.checkout`, `pdm.file.undo_checkout`, `pdm.file.checkin`, `pdm.variables.set` | Change files in approved vault folders | **Allow vault changes** and approved folders |
@@ -609,6 +610,10 @@ The `pdm.*` operations follow these rules whatever the settings:
 - Ragtime starts each check-in comment with the tool name and the Ragtime user.
 
 Scripts are not bound by these rules; see [Scripts](#scripts).
+
+#### Previews and exports
+
+`model.preview` renders a PNG of the model, and `model.export` saves it as STEP, STL, 3MF, GLB or the native SolidWorks file (an assembly comes as a zip with its referenced files). In Ragtime chat, a preview appears as a card with a 3D view and a download link; MCP clients get the preview image and a link to the file. Exported files are kept for 7 days and capped at 100 MB each. Downloads and the 3D view need Ragtime sign-in, and the chat model sees the latest preview.
 
 #### Scripts
 

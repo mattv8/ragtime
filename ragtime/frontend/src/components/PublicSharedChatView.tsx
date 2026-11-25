@@ -39,6 +39,7 @@ import { ContextUsagePie } from './shared/ContextUsagePie';
 import { DenialNotice } from './shared/DenialNotice';
 import { UserMenu } from './UserMenu';
 import { UserSpaceSharedView } from './UserSpaceSharedView';
+import { ModelArtifactModalHost } from './ModelArtifactModalHost';
 import { isDenialOnlyMessage } from '@/utils/denialNotices';
 
 const SHARED_CHAT_POLL_INTERVAL_MS = 30000;
@@ -1048,5 +1049,10 @@ export function PublicSharedChatView(props: PublicSharedChatViewProps) {
     );
   }
 
-  return <SharedChatSurface {...props} />;
+  return (
+    <>
+      <ModelArtifactModalHost />
+      <SharedChatSurface {...props} />
+    </>
+  );
 }
