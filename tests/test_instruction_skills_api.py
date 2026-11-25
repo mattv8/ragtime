@@ -3,6 +3,7 @@ import unittest
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 import httpx
@@ -260,17 +261,42 @@ class InstructionSkillRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class InstructionSkillRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_owner_and_runtime_records(self) -> None:
+        from ragtime.skills.contract import is_default_route_owner
+        from ragtime.skills.repository import _owner_filter, enabled_skill_records, owner_exists, to_skill_record
+
+        self.assertTrue(is_default_route_owner("route", "default"))
+        self.assertFalse(is_default_route_owner("tool", "default"))
+        self.assertEqual(_owner_filter("route", "default"), {"defaultRoute": True})
+        self.assertEqual(_owner_filter("route", "other"), {"mcpRouteId": "other"})
+        self.assertEqual(_owner_filter("tool", "default"), {"toolConfigId": "default"})
+        with mock.patch("ragtime.skills.repository.get_db", mock.AsyncMock()) as get_db:
+            self.assertTrue(await owner_exists("route", "default"))
+            get_db.assert_not_awaited()
+
+        def item(name: str, order: int, enabled: bool) -> SimpleNamespace:
+            return SimpleNamespace(id=name, name=name, description="d", content="text", mode="always", sortOrder=order, enabled=enabled)
+
+        items = [item("z", 0, True), item("a", 0, True), item("off", -1, False)]
+        self.assertEqual(
+            to_skill_record(cast(Any, items[0])), {"id": "z", "name": "z", "description": "d", "content": "text", "mode": "always", "sort_order": 0}
+        )
+        self.assertEqual([record["name"] for record in enabled_skill_records(cast(Any, items))], ["a", "z"])
+
     async def test_summary_uses_aggregated_owner_counts(self) -> None:
         from ragtime.skills.repository import instruction_skill_summary
 
         rows = [
-            {"tool_config_id": "tool", "mcp_route_id": None, "total": 2, "enabled": 1},
-            {"tool_config_id": None, "mcp_route_id": "route", "total": 3, "enabled": 0},
+            {"tool_config_id": "tool", "mcp_route_id": None, "default_route": False, "total": 2, "enabled": 1},
+            {"tool_config_id": None, "mcp_route_id": "route", "default_route": False, "total": 3, "enabled": 0},
+            {"tool_config_id": None, "mcp_route_id": None, "default_route": True, "total": 1, "enabled": 1},
         ]
         db = SimpleNamespace(query_raw=mock.AsyncMock(return_value=rows))
         with mock.patch("ragtime.skills.repository.get_db", mock.AsyncMock(return_value=db)):
             result = await instruction_skill_summary()
-        self.assertEqual(result, {"tools": {"tool": {"total": 2, "enabled": 1}}, "routes": {"route": {"total": 3, "enabled": 0}}})
+        self.assertEqual(
+            result, {"tools": {"tool": {"total": 2, "enabled": 1}}, "routes": {"route": {"total": 3, "enabled": 0}, "default": {"total": 1, "enabled": 1}}}
+        )
         query = db.query_raw.await_args.args[0]
         self.assertNotIn("content", query.lower())
         self.assertIn("group by", query.lower())
@@ -299,6 +325,58 @@ class InstructionSkillRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(os.environ.get("INSTRUCTION_SKILLS_TEST_DATABASE_URL"), "Dedicated instruction skills test database not configured")
 class InstructionSkillDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_route_skills_with_database(self) -> None:
+        from ragtime.skills.repository import list_enabled_skill_records
+
+        database = Prisma(datasource={"url": os.environ["INSTRUCTION_SKILLS_TEST_DATABASE_URL"]})
+        await database.connect()
+        route = await database.mcprouteconfig.create(data={"name": "instruction-default-test", "routePath": str(uuid.uuid4())})
+        tool = await database.toolconfig.create(data={"name": "instruction-default-test", "toolType": PrismaToolType.postgres, "connectionConfig": Json({})})
+        prefix = f"test-{uuid.uuid4()}"
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[require_admin] = lambda: None
+        path = "/indexes/mcp-routes/default/skills"
+        data = {"name": prefix, "description": "A guide", "content": "test", "mode": "always"}
+        try:
+            with (
+                mock.patch("ragtime.skills.repository.get_db", mock.AsyncMock(return_value=database)),
+                mock.patch("ragtime.skills.routes.notify_tools_changed"),
+            ):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                    created = await client.post(path, json=data)
+                    self.assertEqual(created.status_code, 201)
+                    skill_id = created.json()["id"]
+                    self.assertEqual((await client.post(path, json=data)).status_code, 409)
+                    second = await client.post(path, json={**data, "name": f"{prefix}-second"})
+                    disabled = await client.post(path, json={**data, "name": f"{prefix}-disabled", "enabled": False})
+                    self.assertEqual(second.status_code, 201)
+                    self.assertEqual(disabled.status_code, 201)
+                    self.assertEqual((await client.put(f"{path}/{skill_id}", json={"content": "updated"})).json()["content"], "updated")
+                    current = (await client.get(path)).json()
+                    ids = [second.json()["id"], skill_id, disabled.json()["id"]]
+                    ids.extend(item["id"] for item in current if item["id"] not in ids)
+                    self.assertEqual((await client.put(f"{path}/order", json={"skill_ids": ids})).status_code, 200)
+                    records = await list_enabled_skill_records("route", "default")
+                    self.assertEqual([item["name"] for item in records if item["name"].startswith(prefix)], [f"{prefix}-second", prefix])
+                    summary = (await client.get("/indexes/skills/summary")).json()
+                    self.assertGreaterEqual(summary["routes"]["default"]["total"], 3)
+                    custom = await client.post(f"/indexes/mcp-routes/{route.id}/skills", json=data)
+                    self.assertEqual(custom.status_code, 201)
+                    await database.mcprouteconfig.delete(where={"id": route.id})
+                    self.assertEqual((await client.get(path)).status_code, 200)
+                    self.assertTrue(any(item["id"] == skill_id for item in (await client.get(path)).json()))
+                    with self.assertRaises(Exception):
+                        await database.instructionskill.create(
+                            data={"name": f"{prefix}-invalid", "description": "d", "content": "", "defaultRoute": True, "toolConfigId": tool.id}
+                        )
+                    self.assertEqual((await client.delete(f"{path}/{skill_id}")).status_code, 200)
+        finally:
+            await database.instructionskill.delete_many(where=cast(Any, {"defaultRoute": True, "name": {"startsWith": prefix}}))
+            await database.mcprouteconfig.delete_many(where={"id": route.id})
+            await database.toolconfig.delete(where={"id": tool.id})
+            await database.disconnect()
+
     async def test_crud_copy_and_summary_with_database(self) -> None:
         database = Prisma(datasource={"url": os.environ["INSTRUCTION_SKILLS_TEST_DATABASE_URL"]})
         await database.connect()
