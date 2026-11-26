@@ -5,6 +5,7 @@ import {
   addApprovedFolder,
   findMatchingView,
   formatPdmSchedule,
+  describePdmLinkedNote,
   getPdmLinkRelations,
   MAX_APPROVED_FOLDERS,
   normalizeVaultFolder,
@@ -498,11 +499,20 @@ describe('getPdmLinkRelations', () => {
       {
         solidworksToolId: 'sw-2',
         solidworksToolName: 'Render PC',
+        solidworksEnabled: true,
         pdmToolId: 'pdm-1',
         allowWrite: true,
         approvedFolderCount: 2,
       },
     ]);
+  });
+
+  it('reports whether the SolidWorks tool is enabled', () => {
+    const disabled = solidworksTool({
+      enabled: false,
+      connection_config: { pdm_tool_id: 'pdm-1' } as ToolConfig['connection_config'],
+    });
+    expect(getPdmLinkRelations([disabled])[0].solidworksEnabled).toBe(false);
   });
 
   it('counts zero folders when none are stored', () => {
@@ -514,6 +524,41 @@ describe('getPdmLinkRelations', () => {
 
   it('ignores PDM tools and SolidWorks tools without a link', () => {
     expect(getPdmLinkRelations([pdmTool, solidworksTool()])).toEqual([]);
+  });
+});
+
+describe('describePdmLinkedNote', () => {
+  const relation = (name: string, solidworksEnabled = true) => ({
+    solidworksToolId: `sw-${name}`,
+    solidworksToolName: name,
+    solidworksEnabled,
+    pdmToolId: 'pdm-1',
+    allowWrite: false,
+    approvedFolderCount: 0,
+  });
+
+  it('omits the note when no SolidWorks tool is enabled', () => {
+    expect(describePdmLinkedNote([])).toBeNull();
+    expect(describePdmLinkedNote([relation('Render PC', false)])).toBeNull();
+  });
+
+  it('names the one enabled SolidWorks tool and skips disabled ones', () => {
+    expect(describePdmLinkedNote([relation('Render PC'), relation('Spare', false)])).toBe(
+      "Served through “Render PC” for callers who can use it. They don't see this tool separately.",
+    );
+  });
+
+  it('lists several enabled tools with a conjunction', () => {
+    expect(describePdmLinkedNote([relation('A'), relation('B')])).toBe(
+      "Served through “A” and “B” for callers who can use either. They don't see this tool separately.",
+    );
+  });
+
+  it('caps the named tools at three and counts the rest', () => {
+    const names = ['A', 'B', 'C', 'D', 'E'].map((name) => relation(name));
+    expect(describePdmLinkedNote(names)).toBe(
+      "Served through “A”, “B”, “C”, and 2 more for callers who can use any of them. They don't see this tool separately.",
+    );
   });
 });
 

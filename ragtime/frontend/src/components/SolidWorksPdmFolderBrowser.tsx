@@ -12,19 +12,49 @@ import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 import { approvedCountLabel } from './SolidWorksApprovedFolders';
 import { PdmMessage } from './shared/PdmMessage';
 
+/** `approve` adds folders to the approved list; `pick` chooses one folder and changes nothing else. */
+export type SolidWorksPdmFolderBrowserMode = 'approve' | 'pick';
+
 export interface SolidWorksPdmFolderBrowserProps {
   toolId: string;
   pdmToolId: string;
   vaultName: string;
   folders: string[];
   vaultRoot: string | null;
-  onChange: (next: string[]) => void;
+  /** Approve mode only: receives the approved list after a folder is added. */
+  onChange?: (next: string[]) => void;
+  /** Pick mode only: receives the chosen vault path. */
+  onPick?: (vaultPath: string) => void;
+  mode?: SolidWorksPdmFolderBrowserMode;
+  /** Prefix for every id in the browser; use a different one when two browsers are mounted. */
+  idPrefix?: string;
   disabled?: boolean;
 }
 
+interface FolderBadge {
+  label: string;
+  tone: 'info' | 'muted' | 'success';
+  title: string;
+}
+
+interface FolderState {
+  reason?: string;
+  badge?: FolderBadge;
+}
+
 const MAX_PAGES = 10;
+const DEFAULT_ID_PREFIX = 'solidworks-pdm-folder-browser';
 const READ_ONLY_REASON =
   "The PDM user can read this folder but can't add and check out files here.";
+const PICK_ROOT_REASON = "Open a folder to use as the parent. The vault root can't be the parent.";
+const PICK_HELP = 'Open a folder, then choose Use as parent.';
+const NOT_CHECKED_REASON =
+  "Rights for this folder aren't checked. Choose Reload folders to try again.";
+const NOT_CHECKED_BADGE: FolderBadge = {
+  label: 'Not checked',
+  tone: 'muted',
+  title: 'Rights for this folder have not been checked.',
+};
 const vaultPath = (path: string) => normalizeMountBrowserPath(path).replace(/\//g, '\\');
 const browserPath = (path: string) => normalizeMountBrowserPath(path);
 
@@ -35,8 +65,12 @@ export function SolidWorksPdmFolderBrowser({
   folders,
   vaultRoot,
   onChange,
+  onPick,
+  mode = 'approve',
+  idPrefix = DEFAULT_ID_PREFIX,
   disabled,
 }: SolidWorksPdmFolderBrowserProps) {
+  const pick = mode === 'pick';
   const [reloadCount, setReloadCount] = useState(0);
   const [children, setChildren] = useState<Record<string, PdmFolderChild>>({});
   const [truncations, setTruncations] = useState<Record<string, { shown: number; total: number }>>(
@@ -125,14 +159,22 @@ export function SolidWorksPdmFolderBrowser({
     }
   }
 
-  function state(path: string) {
+  function pickState(path: string): FolderState {
+    if (path === '/') return { reason: PICK_ROOT_REASON };
+    const child = children[browserPath(path)];
+    if (!child?.rights) return { reason: NOT_CHECKED_REASON, badge: NOT_CHECKED_BADGE };
+    if (!child.rights.read) return { reason: "The PDM user can't see inside this folder." };
+    return {};
+  }
+
+  function approveState(path: string): FolderState {
     const folder = vaultPath(path);
     if (path === '/')
       return { reason: "Open a folder to approve it. The whole vault can't be approved." };
     if (folders.some((item) => vaultFolderKey(item) === vaultFolderKey(folder)))
       return {
         reason: 'This folder is already approved.',
-        badge: { label: 'Approved', tone: 'info' as const, title: 'This folder is approved.' },
+        badge: { label: 'Approved', tone: 'info', title: 'This folder is approved.' },
       };
     const parent = folders.find((item) => isWithinFolder(folder, item));
     if (parent)
@@ -140,54 +182,54 @@ export function SolidWorksPdmFolderBrowser({
         reason: `Already included in ${parent}.`,
         badge: {
           label: 'Included',
-          tone: 'info' as const,
+          tone: 'info',
           title: `Inside the approved folder ${parent}.`,
         },
       };
     const child = children[browserPath(path)];
-    if (!child?.rights)
-      return {
-        reason: "Rights for this folder aren't checked. Choose Reload folders to try again.",
-        badge: {
-          label: 'Not checked',
-          tone: 'muted' as const,
-          title: 'Rights for this folder have not been checked.',
-        },
-      };
+    if (!child?.rights) return { reason: NOT_CHECKED_REASON, badge: NOT_CHECKED_BADGE };
     if (!child.rights.read) return { reason: "The PDM user can't see inside this folder." };
     const normalized = normalizeVaultFolder(folder, vaultRoot);
     if (!normalized.ok)
       return {
         reason: normalized.error,
-        badge: { label: "Can't approve", tone: 'muted' as const, title: normalized.error },
+        badge: { label: "Can't approve", tone: 'muted', title: normalized.error },
       };
     if (!child.write_ready)
       return {
         reason: READ_ONLY_REASON,
         badge: {
           label: 'Read only',
-          tone: 'muted' as const,
+          tone: 'muted',
           title: READ_ONLY_REASON,
         },
       };
     return {
-      reason: undefined,
       badge: {
         label: 'Can change',
-        tone: 'success' as const,
+        tone: 'success',
         title: 'Can add and check out files',
       },
     };
   }
 
+  function state(path: string): FolderState {
+    return pick ? pickState(path) : approveState(path);
+  }
+
   function select(path: string) {
+    if (pick) {
+      onPick?.(vaultPath(path));
+      announce(`Using ${vaultPath(path)} as the parent.`);
+      return;
+    }
     const result = addApprovedFolder(folders, vaultPath(path), vaultRoot);
     if (!result.ok) {
       setFeedback({ text: result.error, info: result.info });
       announce(result.error);
       return;
     }
-    onChange(result.folders);
+    onChange?.(result.folders);
     setFeedback(result.notice ? { text: result.notice, info: true } : null);
     announce(`Added ${result.added}. ${approvedCountLabel(result.folders.length)}`);
     wrapper.current?.querySelector<HTMLInputElement>('.browser-filter-input')?.focus();
@@ -196,18 +238,18 @@ export function SolidWorksPdmFolderBrowser({
   const truncated = truncations[currentPath];
   return (
     <div
-      id="solidworks-pdm-folder-browser"
-      data-testid="solidworks-pdm-folder-browser"
+      id={idPrefix}
+      data-testid={idPrefix}
       role="group"
-      aria-labelledby="solidworks-pdm-folder-browser-label"
+      aria-labelledby={`${idPrefix}-label`}
       ref={wrapper}
     >
-      <div id="solidworks-pdm-folder-browser-header">
-        <span id="solidworks-pdm-folder-browser-label" className="sw-group-label">
+      <div id={`${idPrefix}-header`}>
+        <span id={`${idPrefix}-label`} className="sw-group-label">
           Browse the vault
         </span>
         <button
-          id="solidworks-pdm-folder-browser-reload"
+          id={`${idPrefix}-reload`}
           type="button"
           className="btn btn-secondary btn-sm"
           disabled={disabled}
@@ -235,21 +277,27 @@ export function SolidWorksPdmFolderBrowser({
           Reload folders
         </button>
       </div>
-      <p id="solidworks-pdm-folder-browser-help" className="field-help">
-        Open a folder, then choose Approve this folder. It is added above as a vault path, like{' '}
-        <code>\13_Ragtime</code>.
+      <p id={`${idPrefix}-help`} className="field-help">
+        {pick ? (
+          PICK_HELP
+        ) : (
+          <>
+            Open a folder, then choose Approve this folder. It is added above as a vault path, like{' '}
+            <code>\13_Ragtime</code>.
+          </>
+        )}
       </p>
-      <div id="solidworks-pdm-folder-browser-drilldown">
+      <div id={`${idPrefix}-drilldown`}>
         <ConstrainedPathBrowser
           currentPath=""
           rootPath="/"
           rootLabel={vaultName}
           onBrowsePath={browse}
           onSelectPath={select}
-          defaultExpanded={false}
+          defaultExpanded={pick}
           showFiles={false}
           keepExpandedOnSelect
-          selectLabel="Approve this folder"
+          selectLabel={pick ? 'Use as parent' : 'Approve this folder'}
           filterPlaceholder="Filter folders"
           emptyMessage="No subfolders."
           cacheKey={`${toolId}:${pdmToolId}:${reloadCount}`}
@@ -277,26 +325,20 @@ export function SolidWorksPdmFolderBrowser({
         />
       </div>
       {feedback && (
-        <PdmMessage
-          id="solidworks-pdm-folder-browser-feedback"
-          tone={feedback.info ? 'info' : 'error'}
-        >
+        <PdmMessage id={`${idPrefix}-feedback`} tone={feedback.info ? 'info' : 'error'}>
           {feedback.text}
         </PdmMessage>
       )}
       {truncated && (
-        <PdmMessage id="solidworks-pdm-folder-browser-truncated" tone="info">
+        <PdmMessage id={`${idPrefix}-truncated`} tone="info">
           Showing the first {truncated.shown} of {truncated.total} folders in{' '}
-          {vaultPath(currentPath)}. To approve one that isn't listed, type its path in the box
-          above.
+          {vaultPath(currentPath)}.{' '}
+          {pick
+            ? "To choose one that isn't listed, type its path in the filter box."
+            : "To approve one that isn't listed, type its path in the box above."}
         </PdmMessage>
       )}
-      <p
-        id="solidworks-pdm-folder-browser-status"
-        className="sw-visually-hidden"
-        role="status"
-        aria-live="polite"
-      >
+      <p id={`${idPrefix}-status`} className="sw-visually-hidden" role="status" aria-live="polite">
         <span key={status.revision}>{status.text}</span>
       </p>
     </div>

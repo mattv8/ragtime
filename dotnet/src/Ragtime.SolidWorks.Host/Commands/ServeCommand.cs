@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
@@ -18,6 +19,8 @@ namespace Ragtime.SolidWorks.Host
         private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(5);
         private static readonly TimeSpan ManagerShutdownTimeout = TimeSpan.FromSeconds(15);
         private static readonly TimeSpan ScriptSweepInterval = TimeSpan.FromHours(1);
+        private static readonly TimeSpan CopySweepInterval = TimeSpan.FromHours(1);
+        private static readonly TimeSpan OpenPathsTimeout = TimeSpan.FromSeconds(10);
         private const string WorkFolderRelative = @"RagtimeSolidWorks\work";
         private const string ScriptsRootRelative = @"RagtimeSolidWorks\scripts";
 
@@ -70,9 +73,11 @@ namespace Ragtime.SolidWorks.Host
             }
 
             var scriptsRoot = EnsureScriptsRoot(log);
+            var workFolder = EnsureWorkFolder(log);
             using (var scriptSweeps = StartScriptSweeps(scriptsRoot, log))
             using (var manager = new SolidWorksInstanceManager(new SolidWorksSessionFactory(), log.Write))
             using (var pdm = CreatePdmGateway(log))
+            using (var copySweeps = StartCopySweeps(manager, workFolder, log))
             {
                 var processor = new RequestProcessor(
                     manager,
@@ -84,7 +89,7 @@ namespace Ragtime.SolidWorks.Host
                     unexpectedErrorSink: log.WriteException,
                     pdm: pdm,
                     pdmClaims: FilePdmClaimStore.ForCurrentUser(log.Write),
-                    pdmWorkFolder: EnsureWorkFolder(log),
+                    pdmWorkFolder: workFolder,
                     scriptRunner: CreateScriptRunner(env, scriptsRoot),
                     hostLog: log.Write);
 
@@ -116,7 +121,8 @@ namespace Ragtime.SolidWorks.Host
 
         /// <summary>
         /// Creates %LOCALAPPDATA%\RagtimeSolidWorks\work\ and returns its full path, the folder pdm.file.add may read from
-        /// besides approved vault folders. Null when it cannot be created (failure logged). Never throws.
+        /// besides approved vault folders. Null when it cannot be created, or when the work folder or the folder above it is a
+        /// junction or link (refused and logged; copies and retention are then off). Never throws.
         /// </summary>
         private static string? EnsureWorkFolder(HostLog log)
         {
@@ -130,6 +136,13 @@ namespace Ragtime.SolidWorks.Host
                 }
 
                 var path = Path.GetFullPath(Path.Combine(root, WorkFolderRelative));
+                var linked = CopyRootGuard.FirstLinkedWorkFolder(path);
+                if (linked != null)
+                {
+                    log.Write("work folder refused: the work folder or a folder above it is a junction or link. PDM files outside approved folders and document copies are off.");
+                    return null;
+                }
+
                 Directory.CreateDirectory(path);
                 return path;
             }
@@ -199,6 +212,27 @@ namespace Ragtime.SolidWorks.Host
                 null,
                 ScriptSweepInterval,
                 ScriptSweepInterval);
+        }
+
+        /// <summary>
+        /// Sweeps expired document copies under the work folder's copies tree: once at serve start, then hourly. Dispose the
+        /// timer at shutdown. Null when there is no work folder (copy retention then does nothing, and the log says so).
+        /// </summary>
+        private static System.Threading.Timer? StartCopySweeps(SolidWorksInstanceManager manager, string? workFolder, HostLog log)
+        {
+            if (workFolder == null)
+            {
+                log.Write("copy retention is off: the work folder is unavailable.");
+                return null;
+            }
+
+            var root = CopyRetention.CopiesRoot(workFolder);
+            Func<IReadOnlyList<string?>?> openPaths = () => manager.OpenDocumentPathsOfOwnedInstances(OpenPathsTimeout);
+            return new System.Threading.Timer(
+                _ => CopySweeper.Sweep(root, openPaths, DateTime.UtcNow, log.Write),
+                null,
+                TimeSpan.Zero,
+                CopySweepInterval);
         }
 
         /// <summary>The PDM gateway, or null when it cannot be created: pdm.* then answers pdm_unavailable. Never throws.</summary>

@@ -14,6 +14,17 @@ from ragtime.solidworks import pdm_link
 from ragtime.solidworks.service import SolidworksService
 from ragtime.solidworks.transport import SolidworksTransportError, TransportErrorKind
 
+WRITE_OFF_MESSAGE = (
+    "Vault changes are off for this tool. An admin can turn on Allow changes and approve a folder, or create a sandbox folder, in the tool's PDM settings."
+)
+NO_FOLDER_MESSAGE = "No vault folder is approved for changes. An admin can approve one or create a sandbox folder in the tool's PDM settings."
+READ_MODELS = "Read models (document.open, mates.list, components.list)"
+ATTACH_READ = "Read open documents (documents.list, mates.list)"
+FETCH = "Fetch vault files read-only (pdm.file.get_latest)"
+COPY = "Copy a model to the work folder (document.copy)"
+EDIT = "Edit a copy with a script (script.run, reviewed before it runs)"
+EXPORT = "Export the result (model.export)"
+
 
 class FakeClock:
     def __init__(self):
@@ -74,6 +85,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.settings_loader = patch.object(pdm_link, "load_stored_pdm_settings", AsyncMock(return_value=None))
         self.load_settings = self.settings_loader.start()
         self.addCleanup(self.settings_loader.stop)
+        self.vault_linked_patch = patch.object(pdm_link, "vault_linked", AsyncMock(return_value=False))
+        self.vault_linked = self.vault_linked_patch.start()
+        self.addCleanup(self.vault_linked_patch.stop)
 
     async def execute(self, operation, arguments=None, timeout=None):
         return json.loads(await self.service.execute(self.config, operation, arguments, timeout))
@@ -551,7 +565,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             self.config["connection_config"]["pdm_approved_folders"] = []
             response = await self.execute("pdm.file.checkout")
             self.assertEqual(response["error"]["code"], "pdm_folder_not_approved")
-            self.assertEqual(response["error"]["details"], {"approved_folders": []})
+            self.assertEqual(response["error"]["message"], NO_FOLDER_MESSAGE)
+            self.assertEqual(response["error"]["details"]["approved_folders"], [])
+            self.assertEqual(response["error"]["details"]["setting"], "PDM vault: Approved folders")
             self.assertEqual(self.transport.calls, [])
 
     async def test_pdm_write_refusals_do_not_contact_host_with_cold_cache(self):
@@ -565,8 +581,86 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             for operation in pdm_link.PDM_WRITE_OPERATIONS:
                 response = await self.execute(operation)
                 self.assertEqual(response["error"]["code"], "pdm_folder_not_approved")
-                self.assertEqual(response["error"]["details"], {"approved_folders": []})
+                self.assertEqual(response["error"]["details"]["approved_folders"], [])
         self.assertEqual(self.transport.calls, [])
+
+    async def test_refusal_details_name_the_setting_and_what_still_works(self):
+        self.config["connection_config"] = {}
+        response = await self.execute("change")
+        error = response["error"]
+        self.assertEqual(error["code"], "write_not_allowed")
+        self.assertEqual(error["message"], WRITE_OFF_MESSAGE)
+        self.assertEqual(error["details"]["setting"], "PDM vault: Allow changes")
+        self.assertEqual(error["details"]["where"], "Tool settings > SolidWorks")
+        self.assertEqual(error["details"]["admin_action"], WRITE_OFF_MESSAGE.removeprefix("Vault changes are off for this tool. "))
+        self.assertEqual(error["details"]["still_available"], [READ_MODELS, EXPORT])
+
+    async def test_still_available_follows_attach_link_scripts_and_cached_contract(self):
+        self.vault_linked.return_value = True
+        self.transport.operations = [{"name": "change", "access": "write"}, {"name": "document.copy", "access": "read"}]
+        self.config["connection_config"] = {"pdm_tool_id": "pdm", "allow_scripts": True}
+        await self.execute("describe")
+        self.assertEqual((await self.execute("change"))["error"]["details"]["still_available"], [READ_MODELS, FETCH, COPY, EDIT, EXPORT])
+        self.vault_linked.return_value = False
+        self.config["connection_config"] = {"instance_mode": "attach"}
+        self.assertEqual((await self.execute("change"))["error"]["details"]["still_available"], [ATTACH_READ, EXPORT])
+        self.transport.operations = [{"name": "change", "access": "write"}]
+        self.config["connection_config"] = {}
+        await self.execute("describe")
+        self.assertEqual((await self.execute("change"))["error"]["details"]["still_available"], [READ_MODELS, EXPORT])
+
+    async def test_pdm_write_refusal_lists_linked_capabilities(self):
+        link = pdm_link.PdmLink("id", "tool", "index", "vault")
+        settings = {"enabled": True, "allow_write": False, "pdm_tool_id": "id", "pdm_approved_folders": []}
+        self.load_settings.return_value = settings
+        self.vault_linked.return_value = True
+        with patch.object(pdm_link, "resolve_pdm_link", AsyncMock(return_value=link)):
+            details = (await self.execute("pdm.file.checkout"))["error"]["details"]
+        self.assertEqual(details["setting"], "PDM vault: Allow changes")
+        self.assertEqual(details["still_available"], [READ_MODELS, FETCH, EXPORT])
+
+    async def test_status_survives_a_failed_stored_settings_read(self):
+        self.vault_linked.return_value = True
+        self.config.update(allow_write=True, connection_config={"pdm_tool_id": "pdm", "pdm_approved_folders": ["\\A"]})
+        self.load_settings.side_effect = RuntimeError("db down")
+        with self.assertLogs("ragtime.solidworks.service", level="WARNING") as captured:
+            response = await self.execute("status")
+        self.assertTrue(response["ok"])
+        self.assertEqual(
+            response["result"]["ragtime"],
+            {"scripts_enabled": False, "vault_linked": True, "vault_changes_enabled": True, "approved_folders": ["\\A"]},
+        )
+        self.assertIn("RuntimeError", captured.output[0])
+        self.assertNotIn("db down", captured.output[0])
+
+    async def test_describe_lookup_entry_is_paged_and_names_its_result_fields(self):
+        from ragtime.solidworks.service import _PDM_OPERATIONS
+
+        entry = next(item for item in _PDM_OPERATIONS if item["name"] == "pdm.lookup")
+        self.assertTrue(entry["paged"])
+        for field in ("items", "next_offset", "matched_on", "detail"):
+            self.assertIn(field, entry["result"])
+
+    async def test_status_reports_ragtime_block_from_stored_settings(self):
+        self.vault_linked.return_value = True
+        self.config.update(allow_write=True, connection_config={"pdm_tool_id": "pdm", "pdm_approved_folders": ["\\A"], "allow_scripts": True})
+        response = await self.execute("status")
+        self.assertEqual(
+            response["result"]["ragtime"],
+            {"scripts_enabled": True, "vault_linked": True, "vault_changes_enabled": True, "approved_folders": ["\\A"]},
+        )
+        self.load_settings.return_value = {"enabled": True, "allow_write": False, "pdm_tool_id": "pdm", "pdm_approved_folders": []}
+        response = await self.execute("status")
+        self.assertEqual(
+            response["result"]["ragtime"],
+            {"scripts_enabled": True, "vault_linked": True, "vault_changes_enabled": False, "approved_folders": []},
+        )
+        self.load_settings.side_effect = pdm_link.PdmLinkError("no_link")
+        response = await self.execute("status")
+        self.assertEqual(
+            response["result"]["ragtime"],
+            {"scripts_enabled": True, "vault_linked": False, "vault_changes_enabled": False, "approved_folders": []},
+        )
 
     async def test_pdm_stored_settings_override_stale_config(self):
         link = pdm_link.PdmLink("pdm", "tool", "index", "vault")

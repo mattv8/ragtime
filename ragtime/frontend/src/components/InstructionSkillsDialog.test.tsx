@@ -1,9 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InstructionSkillsDialog } from './InstructionSkillsDialog';
+import type { BuiltinInstructionSkill } from '@/utils/instructionSkills';
 
 const mocks = vi.hoisted(() => ({
   listInstructionSkills: vi.fn(),
+  listBuiltinInstructionSkills: vi.fn(),
   createInstructionSkill: vi.fn(),
   updateInstructionSkill: vi.fn(),
   deleteInstructionSkill: vi.fn(),
@@ -31,7 +33,32 @@ afterEach(cleanup);
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.listInstructionSkills.mockResolvedValue([skill]);
+  mocks.listBuiltinInstructionSkills.mockResolvedValue([]);
 });
+
+const essentials = (overrides: Partial<BuiltinInstructionSkill> = {}): BuiltinInstructionSkill => ({
+  name: 'solidworks-essentials',
+  description: 'Read before any SolidWorks call.',
+  mode: 'always',
+  applies: true,
+  reason: null,
+  overridden: false,
+  ...overrides,
+});
+const scripts = essentials({
+  name: 'solidworks-scripts',
+  description: 'Edit a copy with a script.',
+  mode: 'on_demand',
+  applies: false,
+  reason: 'Needs Allow scripts',
+});
+const builtinRow = (name: string) =>
+  document.querySelector<HTMLElement>(`[data-builtin-skill="${name}"]`);
+const renderDialog = (skills: BuiltinInstructionSkill[] = [], onClose = vi.fn()) => {
+  mocks.listBuiltinInstructionSkills.mockResolvedValue(skills);
+  return render(<InstructionSkillsDialog open owner={owner} ownerName="Tool" onClose={onClose} />);
+};
+const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
 
 describe('InstructionSkillsDialog', () => {
   it('saves only changed editor fields and reports the persisted list', async () => {
@@ -360,5 +387,180 @@ describe('InstructionSkillsDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }));
     await waitFor(() => expect(mocks.deleteInstructionSkill).toHaveBeenCalledWith(owner, 'one'));
     expect(changed).toHaveBeenCalledWith([]);
+  });
+});
+
+describe('InstructionSkillsDialog built-in skills', () => {
+  it('shows no built-in section when the tool has none', async () => {
+    renderDialog([]);
+    await screen.findByLabelText('Description');
+    await settle();
+    expect(document.querySelector('[data-instruction-skills-builtin]')).toBeNull();
+    expect(mocks.listBuiltinInstructionSkills).toHaveBeenCalledWith('tool-1');
+  });
+
+  it('keeps built-ins collapsed behind the toggle when admin skills exist', async () => {
+    renderDialog([essentials(), scripts]);
+    const toggle = await screen.findByRole('button', { name: /Built in \(2\)/ });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('list', { name: 'Built-in skills' })).toBeNull();
+    expect(toggle.textContent).toContain('1 active');
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('list', { name: 'Built-in skills' })).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Ship with Ragtime. You can't edit or turn them off. To change one, create a skill with the same name; yours replaces it.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows read-only rows with active and not-active status as text', async () => {
+    renderDialog([essentials(), scripts]);
+    fireEvent.click(await screen.findByRole('button', { name: /Built in \(2\)/ }));
+    expect(builtinRow('solidworks-essentials')?.dataset.builtinState).toBe('active');
+    expect(builtinRow('solidworks-essentials')?.textContent).toContain('Always');
+    expect(builtinRow('solidworks-essentials')?.querySelector('input')).toBeNull();
+    expect(builtinRow('solidworks-scripts')?.dataset.builtinState).toBe('inactive');
+    expect(builtinRow('solidworks-scripts')?.textContent).toContain('Not active');
+    expect(builtinRow('solidworks-scripts')?.textContent).toContain('Needs Allow scripts');
+    expect(builtinRow('solidworks-scripts')?.textContent).toContain('On demand');
+  });
+
+  it('opens expanded when there are no admin skills', async () => {
+    mocks.listInstructionSkills.mockResolvedValue([]);
+    renderDialog([essentials()]);
+    const list = await screen.findByRole('list', { name: 'Built-in skills' });
+    expect(list).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: /Built in \(1\)/ }).getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
+  it('selects the admin skill that replaces a built-in', async () => {
+    mocks.listInstructionSkills.mockResolvedValue([
+      { ...skill, id: 'admin-1', name: 'solidworks-essentials' },
+    ]);
+    renderDialog([essentials()]);
+    fireEvent.click(await screen.findByRole('button', { name: /Built in \(1\)/ }));
+    expect(builtinRow('solidworks-essentials')?.dataset.builtinState).toBe('replaced');
+    fireEvent.click(screen.getByRole('button', { name: 'Replaced by your skill' }));
+    await waitFor(() =>
+      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe(
+        'solidworks-essentials',
+      ),
+    );
+    expect(screen.getByText('Replaces the built-in skill of the same name.')).toBeTruthy();
+  });
+
+  it('treats a disabled admin skill with the same name as replacing the built-in', async () => {
+    mocks.listInstructionSkills.mockResolvedValue([
+      { ...skill, id: 'admin-1', name: 'solidworks-essentials', enabled: false },
+    ]);
+    renderDialog([essentials()]);
+    fireEvent.click(await screen.findByRole('button', { name: /Built in \(1\)/ }));
+    expect(builtinRow('solidworks-essentials')?.dataset.builtinState).toBe('replaced');
+    expect(builtinRow('solidworks-essentials')?.textContent).not.toContain('Active');
+  });
+
+  it('counts built-ins outside the budget with a note', async () => {
+    renderDialog([essentials()]);
+    await screen.findByRole('button', { name: /Built in \(1\)/ });
+    expect(screen.getByText("Built-in skills aren't counted here.")).toBeTruthy();
+  });
+
+  it('hides the budget note when there are no built-ins', async () => {
+    renderDialog([]);
+    await screen.findByLabelText('Description');
+    await settle();
+    expect(document.getElementById('instruction-skills-budget-builtin-note')).toBeNull();
+  });
+
+  it('keeps the admin list usable when built-ins fail, and retries', async () => {
+    mocks.listBuiltinInstructionSkills
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce([essentials()]);
+    renderDialog();
+    expect(await screen.findByLabelText('Description')).toBeTruthy();
+    await waitFor(() =>
+      expect(document.getElementById('instruction-skills-builtin-error')).not.toBeNull(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByRole('button', { name: /Built in \(1\)/ });
+    expect(mocks.listBuiltinInstructionSkills).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not fetch built-ins for route owners', async () => {
+    render(
+      <InstructionSkillsDialog
+        open
+        owner={{ kind: 'route', id: 'default' }}
+        ownerName="Default"
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByLabelText('Description');
+    expect(mocks.listBuiltinInstructionSkills).not.toHaveBeenCalled();
+  });
+
+  it('closes on Escape from the built-in toggle without a popover', async () => {
+    const close = vi.fn();
+    renderDialog([essentials()], close);
+    fireEvent.keyDown(await screen.findByRole('button', { name: /Built in \(1\)/ }), {
+      key: 'Escape',
+    });
+    expect(close).toHaveBeenCalledOnce();
+  });
+});
+
+describe('InstructionSkillsDialog built-in toggle and status', () => {
+  it('announces loading through the live region and disables the toggle', async () => {
+    mocks.listBuiltinInstructionSkills.mockReturnValue(new Promise(() => {}));
+    render(<InstructionSkillsDialog open owner={owner} ownerName="Tool" onClose={vi.fn()} />);
+    await screen.findByLabelText('Description');
+    await waitFor(() =>
+      expect(document.getElementById('instruction-skills-builtin-status')?.textContent).toBe(
+        'Loading built-in skills…',
+      ),
+    );
+    const toggle = document.getElementById('instruction-skills-builtin-toggle');
+    expect(toggle?.hasAttribute('disabled')).toBe(true);
+    expect(toggle?.hasAttribute('aria-controls')).toBe(false);
+  });
+
+  it('disables the toggle and drops aria-controls when built-ins fail to load', async () => {
+    mocks.listBuiltinInstructionSkills.mockRejectedValue(new Error('down'));
+    render(<InstructionSkillsDialog open owner={owner} ownerName="Tool" onClose={vi.fn()} />);
+    await waitFor(() =>
+      expect(document.getElementById('instruction-skills-builtin-error')).not.toBeNull(),
+    );
+    const toggle = document.getElementById('instruction-skills-builtin-toggle');
+    expect(toggle?.hasAttribute('disabled')).toBe(true);
+    expect(toggle?.hasAttribute('aria-controls')).toBe(false);
+    expect(document.getElementById('instruction-skills-builtin-status')?.textContent).toBe(
+      'Could not load built-in skills.',
+    );
+  });
+
+  it('points aria-controls at the list only while the list is rendered', async () => {
+    renderDialog([essentials()]);
+    const toggle = await screen.findByRole('button', { name: /Built in \(1\)/ });
+    expect(toggle.hasAttribute('aria-controls')).toBe(false);
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-controls')).toBe('instruction-builtin-list');
+    expect(document.getElementById('instruction-builtin-list')).not.toBeNull();
+  });
+});
+
+describe('InstructionSkillsDialog built-in chevron', () => {
+  it('shows no disclosure chevron on the toggle when there are no built-ins to open', async () => {
+    mocks.listBuiltinInstructionSkills.mockRejectedValue(new Error('down'));
+    render(<InstructionSkillsDialog open owner={owner} ownerName="Tool" onClose={vi.fn()} />);
+    await waitFor(() =>
+      expect(document.getElementById('instruction-skills-builtin-error')).not.toBeNull(),
+    );
+    expect(
+      document.getElementById('instruction-skills-builtin-toggle')?.querySelector('svg'),
+    ).toBeNull();
   });
 });

@@ -4079,6 +4079,24 @@ textarea.chat-header-title-input {
 .solidworks-result-table-wrap {
   overflow-x: auto;
 }
+.solidworks-result-diagnosis {
+  display: grid;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+}
+[data-solidworks-list='mates.list'] .tool-result-table {
+  min-width: 0;
+}
+[data-solidworks-list='mates.list'] td:first-child {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+[data-solidworks-missing-references] ul {
+  padding-inline-start: var(--space-md);
+}
+[data-solidworks-missing-references] code {
+  overflow-wrap: anywhere;
+}
 .solidworks-result-path {
   display: block;
   max-width: 100%;

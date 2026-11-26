@@ -118,6 +118,7 @@ describe('SolidWorks results', () => {
     ['documents.list', 'List documents'],
     ['document.open', 'Open document'],
     ['document.close', 'Close document'],
+    ['document.copy', 'Copy model'],
     ['model.export', 'Export model'],
     ['model.preview', 'Preview model'],
     ['model.summary', 'Model summary'],

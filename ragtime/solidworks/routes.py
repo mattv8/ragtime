@@ -11,6 +11,7 @@ from ragtime.solidworks.host_artifact import get_host_artifact, verify_host_arti
 from ragtime.solidworks.host_installer import HostArtifactUnavailableError
 from ragtime.solidworks.pdm_link import normalize_vault_folder
 from ragtime.solidworks.pdm_rights import PdmToolNotFound, pdm_rights_service
+from ragtime.solidworks.pdm_sandbox import create_sandbox
 from ragtime.solidworks.service import solidworks_service
 
 router = APIRouter(prefix="/indexes/solidworks", tags=["SolidWorks"], dependencies=[Depends(require_admin)])
@@ -38,6 +39,27 @@ class PdmFoldersRequest(BaseModel):
         if any(ord(char) < 32 or ord(char) == 127 for char in path):
             raise ValueError("A vault path cannot contain control characters.")
         return path
+
+
+class PdmSandboxRequest(BaseModel):
+    pdm_tool_id: str
+    parent: str
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9 ._-]*$")
+
+    @field_validator("parent")
+    @classmethod
+    def validate_parent(cls, value: str) -> str:
+        value = normalize_vault_folder(value)
+        if value == "\\":
+            raise ValueError("The vault root cannot be the parent.")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value.endswith((".", " ")):
+            raise ValueError("The folder name cannot end in a dot or space.")
+        return value
 
 
 async def _tool_config(tool_id: str) -> dict:
@@ -104,3 +126,12 @@ async def pdm_folders(tool_id: str, body: PdmFoldersRequest):
         return await pdm_rights_service.folders(config, body.pdm_tool_id, body.path, body.offset, body.snapshot)
     except PdmToolNotFound as exc:
         raise HTTPException(status_code=404, detail="PDM tool not found") from exc
+
+
+@router.post("/tools/{tool_id}/pdm/sandbox")
+async def pdm_sandbox(tool_id: str, body: PdmSandboxRequest):
+    try:
+        normalize_vault_folder(body.parent + "\\" + body.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await create_sandbox(tool_id, body.pdm_tool_id, body.parent, body.name)

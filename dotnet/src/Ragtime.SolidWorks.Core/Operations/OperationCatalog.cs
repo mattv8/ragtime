@@ -51,7 +51,7 @@ namespace Ragtime.SolidWorks.Core
                     .Property("path", SchemaTypes.Text("Absolute local drive path ending in .sldprt, .sldasm or .slddrw, such as C:\\Models\\part.sldprt. UNC, \\\\?\\ and relative paths are refused."), required: true)
                     .Property("configuration", SchemaTypes.Text("Configuration to activate. Default: the file's active configuration."))
                     .Build(),
-                result: "The document item (see documents.list)."),
+                result: "The document item (see documents.list), plus load_warnings (names such as read_only, already_open or references_not_found; [] when none) and missing_references (up to 50 referenced paths that are not on disk; [] when none)."),
 
             new OperationDefinition(
                 "document.close",
@@ -64,6 +64,17 @@ namespace Ragtime.SolidWorks.Core
                 result: "{closed: true}."),
 
             new OperationDefinition(
+                "document.copy",
+                "Copies an open document and the files it references into a new folder in the agent work folder (copies\\<id>). Read-only: the source is not modified or saved.",
+                ProtocolInfo.Access.Read,
+                paged: false,
+                argumentsSchema: new ObjectSchema()
+                    .Property("document", SchemaTypes.Document(DocumentArgument), required: true)
+                    .Property("include_references", SchemaTypes.Boolean("Copy the referenced files too; default true."))
+                    .Build(),
+                result: "folder (the new copy folder), path (the copied document), files [{source, path}] (the document first; at most the first 50), count (every copied file), files_truncated (true when count is more than the listed files), warnings. More than 500 files is refused with result_too_large."),
+
+            new OperationDefinition(
                 "model.summary",
                 "Summarises one document: type, counts of features, errors and warnings, material, units.",
                 ProtocolInfo.Access.Read,
@@ -71,7 +82,7 @@ namespace Ragtime.SolidWorks.Core
                 argumentsSchema: new ObjectSchema()
                     .Property("document", SchemaTypes.Document(DocumentArgument), required: true)
                     .Build(),
-                result: "document_id, type, title, path, active_configuration, configuration_count, feature_count, features_with_errors, features_with_warnings, material, custom_property_count, needs_rebuild, units, plus solid_body_count (parts) or component_count and mate_count (assemblies). active_configuration and material are always present, null when there is no value (material is null for a part with no material assigned)."),
+                result: "document_id, type, title, path, active_configuration, configuration_count, feature_count, features_with_errors, features_with_warnings, material, custom_property_count, needs_rebuild, units, plus solid_body_count (parts) or component_count, mate_count and missing_component_count (assemblies). active_configuration and material are always present, null when there is no value (material is null for a part with no material assigned)."),
 
             new OperationDefinition(
                 "configurations.list",
@@ -140,9 +151,10 @@ namespace Ragtime.SolidWorks.Core
                 paged: true,
                 argumentsSchema: new ObjectSchema()
                     .Property("document", SchemaTypes.Document(DocumentArgument), required: true)
+                    .Property("only_problems", SchemaTypes.Boolean("Only mates with an error, a warning, or an entity that does not resolve. Default false."))
                     .Paged()
                     .Build(),
-                result: "Paged items: name, type, alignment, suppressed, error_code, warning, value (optional), entities [{component, entity_type}]."),
+                result: "Paged items: name, type, alignment, suppressed, error_code, error (null when healthy, else {code, name, meaning}), warning, whats_wrong (null when none), value (optional), entities [{component, component_path (null when none), entity_type, resolved}]. An entity SolidWorks cannot return has component \"\", entity_type \"unknown\" and resolved false."),
 
             new OperationDefinition(
                 "components.list",
@@ -152,9 +164,10 @@ namespace Ragtime.SolidWorks.Core
                 argumentsSchema: new ObjectSchema()
                     .Property("document", SchemaTypes.Document(DocumentArgument), required: true)
                     .Property("top_level_only", SchemaTypes.Boolean("Only top-level components. Default true."))
+                    .Property("only_problems", SchemaTypes.Boolean("Only components whose referenced file is missing. Default false."))
                     .Paged()
                     .Build(),
-                result: "Paged items: name, path, configuration, suppressed, hidden, fixed, is_virtual, depth, parent, transform, children_count. parent is null for a top-level component. transform is 16 numbers in SolidWorks MathTransform.ArrayData order: [0-8] rotation matrix row by row, [9-11] translation in metres, [12] scale, [13-15] unused."),
+                result: "Paged items: name, path, configuration, suppressed, hidden, fixed, is_virtual, depth, parent, transform, children_count, file_exists, suppression (resolved, lightweight, suppressed or missing_file; missing_file when the file is not on disk). parent is null for a top-level component. transform is 16 numbers in SolidWorks MathTransform.ArrayData order: [0-8] rotation matrix row by row, [9-11] translation in metres, [12] scale, [13-15] unused."),
 
             new OperationDefinition(
                 "properties.get",

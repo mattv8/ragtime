@@ -203,6 +203,109 @@ namespace Ragtime.SolidWorks.Core.Tests
             Assert.Equal("0", (string?)mate["error_code"]);
             Assert.False((bool)mate["warning"]!);
         }
+
+        [Fact]
+        public void HealthyMateHasNullErrorAndWhatsWrong()
+        {
+            var mate = Wire(new MateItem { Name = "M", Type = "Coincident", Alignment = "Aligned" });
+
+            Assert.True(mate.ContainsKey("error"));
+            Assert.Equal(JTokenType.Null, mate["error"]!.Type);
+            Assert.True(mate.ContainsKey("whats_wrong"));
+            Assert.Equal(JTokenType.Null, mate["whats_wrong"]!.Type);
+        }
+
+        [Fact]
+        public void MateWithErrorSerializesTheErrorObject()
+        {
+            var mate = Wire(new MateItem { Name = "M", Type = "Coincident", Alignment = "Aligned", ErrorCode = "47", WhatsWrong = "Cannot solve." });
+
+            Assert.Equal("47", (string?)mate["error"]!["code"]);
+            Assert.Equal("swFeatureErrorMateIlldefined", (string?)mate["error"]!["name"]);
+            Assert.Equal("Cannot solve.", (string?)mate["whats_wrong"]);
+        }
+
+        [Fact]
+        public void MateEntityAlwaysHasResolvedAndNullableComponentPath()
+        {
+            var entity = Wire(new MateEntity { Component = "", EntityType = "unknown" });
+
+            Assert.True(entity.ContainsKey("component_path"));
+            Assert.Equal(JTokenType.Null, entity["component_path"]!.Type);
+            Assert.False((bool)entity["resolved"]!);
+        }
+
+        [Fact]
+        public void ComponentAlwaysHasFileExistsAndSuppression()
+        {
+            var component = Wire(new ComponentItem { Name = "Part1-1", Transform = new double[16] });
+
+            Assert.False((bool)component["file_exists"]!);
+            Assert.Equal("resolved", (string?)component["suppression"]);
+        }
+
+        [Fact]
+        public void PartSummaryOmitsMissingComponentCount()
+        {
+            var root = Wire(new ModelSummary { Type = "part", SolidBodyCount = 1 });
+
+            Assert.False(root.ContainsKey("missing_component_count"));
+        }
+
+        [Fact]
+        public void AssemblySummaryKeepsMissingComponentCount()
+        {
+            var root = Wire(new ModelSummary { Type = "assembly", ComponentCount = 4, MateCount = 2, MissingComponentCount = 0 });
+
+            Assert.Equal(0, (int)root["missing_component_count"]!);
+        }
+
+        [Fact]
+        public void DocumentOpenResultAlwaysHasLoadWarningsAndMissingReferences()
+        {
+            var result = DocumentOpenResult.From(
+                new DocumentItem { DocumentId = "doc-1", InstanceId = "i1", Title = "A", Path = @"C:\A.sldasm", Type = "assembly" },
+                new SessionDocumentInfo("A", @"C:\A.sldasm", "assembly", null, true, false));
+            var root = Wire(result);
+
+            Assert.Equal(JTokenType.Array, root["load_warnings"]!.Type);
+            Assert.Empty((JArray)root["load_warnings"]!);
+            Assert.Equal(JTokenType.Array, root["missing_references"]!.Type);
+            Assert.Empty((JArray)root["missing_references"]!);
+        }
+
+        [Fact]
+        public void DocumentOpenResultKeepsAtMostFiftyMissingReferences()
+        {
+            var missing = Enumerable.Range(0, 70).Select(i => @"C:\Parts\P" + i + ".sldprt").ToList();
+            var result = DocumentOpenResult.From(
+                new DocumentItem { DocumentId = "doc-1", Title = "A", Path = @"C:\A.sldasm", Type = "assembly" },
+                new SessionDocumentInfo("A", @"C:\A.sldasm", "assembly", null, false, false, missingReferences: missing, loadWarningBits: 0x100000 | 0x2));
+
+            Assert.Equal(50, result.MissingReferences.Count);
+            Assert.Equal(new[] { "read_only", "references_not_found" }, result.LoadWarnings);
+        }
+
+        [Fact]
+        public void DocumentCopyFollowsDocumentCloseInTheCatalog()
+        {
+            var names = OperationCatalog.Create().Select(operation => operation.Name).ToList();
+
+            Assert.Equal(names.IndexOf("document.close") + 1, names.IndexOf("document.copy"));
+            Assert.Equal(ProtocolInfo.Access.Read, OperationCatalog.Create().Single(operation => operation.Name == "document.copy").Access);
+        }
+
+        [Fact]
+        public void DocumentCopyResultKeepsEmptyWarningsAndFilesLists()
+        {
+            var root = Wire(new DocumentCopyResult { Folder = @"C:\Work\copies\x\", Path = @"C:\Work\copies\x\A.sldasm" });
+
+            Assert.Equal(JTokenType.Array, root["warnings"]!.Type);
+            Assert.Equal(JTokenType.Array, root["files"]!.Type);
+            Assert.Equal(0, (int)root["count"]!);
+            Assert.Equal(JTokenType.Boolean, root["files_truncated"]!.Type);
+            Assert.False((bool)root["files_truncated"]!);
+        }
     }
 
     /// <summary>The same shape checked on a processor response line (fake session: a part without material, a healthy feature).</summary>

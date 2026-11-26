@@ -115,31 +115,12 @@ namespace Ragtime.SolidWorks.Readers
                 Suppressed = IsSuppressed(feature),
                 ErrorCode = health.ErrorCode,
                 Warning = health.Warning,
-                WhatsWrong = health.HasError ? WhatsWrong(model, feature) : null,
+                WhatsWrong = health.HasError ? WhatsWrongTable.Read(model).For(Name(feature)) : null,
                 Parents = Names(ComHelper.TryObject(() => feature.GetParents())),
                 Children = Names(feature.GetChildren()),
                 Dimensions = DimensionReader.Describe(new[] { feature }),
                 Sketch = SketchName(feature),
             };
-        }
-
-        /// <summary>
-        /// Text explaining the feature's error, from ModelDocExtension.GetWhatsWrong. The third array is taken as the
-        /// messages, aligned with the feature names (not verified live). Optional: empty when unavailable.
-        /// </summary>
-        private static string WhatsWrong(SW.ModelDoc2 model, SW.Feature feature)
-        {
-            try
-            {
-                model.Extension.GetWhatsWrong(out object names, out object codes, out object messages);
-                var index = ComHelper.Strings(names).IndexOf(Name(feature));
-                var texts = ComHelper.Strings(messages);
-                return index >= 0 && index < texts.Count ? texts[index] : string.Empty;
-            }
-            catch (Exception)
-            {
-                return string.Empty;
-            }
         }
 
         /// <summary>The sketch a feature is built from: its own sub-feature or parent of sketch type.</summary>

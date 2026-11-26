@@ -22,12 +22,16 @@ namespace Ragtime.SolidWorks.Readers
         /// <summary>parentIndex: the parent is not in the listed components (top-level listing).</summary>
         private const int NotListed = -2;
 
+        /// <summary>Entity type of a mate entity SolidWorks cannot return.</summary>
+        private const string UnknownEntityType = "unknown";
+
         /// <summary>Mates of an assembly. Core rejects non-assemblies before calling.</summary>
         public IReadOnlyList<MateItem> ListMates(DocumentRef document) => Run("listing the mates", () =>
         {
             var model = RequireOpenDocument(document);
             RequireAssembly(model);
-            return MateFeatures(model).Select(pair => MateItemOf(pair.Feature, pair.Mate)).ToList();
+            var whatsWrong = WhatsWrongTable.Read(model);
+            return MateFeatures(model).Select(pair => MateItemOf(pair.Feature, pair.Mate, whatsWrong)).ToList();
         });
 
         /// <summary>Components of an assembly; top level only when <paramref name="topLevelOnly"/> is true.</summary>
@@ -74,7 +78,7 @@ namespace Ragtime.SolidWorks.Readers
             return pairs;
         }
 
-        private static MateItem MateItemOf(SW.Feature feature, SW.Mate2 mate)
+        private static MateItem MateItemOf(SW.Feature feature, SW.Mate2 mate, WhatsWrongTable whatsWrong)
         {
             var health = FeatureTree.Health(feature);
             var type = ReaderNames.MateType(mate.Type);
@@ -86,6 +90,7 @@ namespace Ragtime.SolidWorks.Readers
                 Suppressed = FeatureTree.IsSuppressed(feature),
                 ErrorCode = health.ErrorCode,
                 Warning = health.Warning,
+                WhatsWrong = health.HasError ? whatsWrong.For(FeatureTree.Name(feature)) : null,
                 Value = type == "distance" || type == "angle" ? DimensionReader.FirstValue(feature) : null,
                 Entities = MateEntities(mate),
             };
@@ -98,15 +103,61 @@ namespace Ragtime.SolidWorks.Readers
             ComWalk.RequireWithinLimit(count, ComWalk.ItemLimit, "The mate entity list");
             for (var index = 0; index < count; index++)
             {
-                var entity = ComHelper.Require(mate.MateEntity(index), "the mate entity");
-                entities.Add(new MateEntity
-                {
-                    Component = ComHelper.TryText(() => entity.ReferenceComponent?.Name2) ?? string.Empty,
-                    EntityType = ReaderNames.SelectType(entity.ReferenceType2),
-                });
+                entities.Add(MateEntityAt(mate, index));
             }
 
             return entities;
+        }
+
+        /// <summary>
+        /// One mate entity. An entity SolidWorks cannot return (a null result or a read that throws) is listed as unknown
+        /// and unresolved, so one broken reference does not fail the whole list.
+        /// </summary>
+        private static MateEntity MateEntityAt(SW.Mate2 mate, int index)
+        {
+            var entity = ComHelper.TryObject(() => mate.MateEntity(index));
+            if (entity == null)
+            {
+                return new MateEntity
+                {
+                    Component = string.Empty,
+                    ComponentPath = null,
+                    EntityType = UnknownEntityType,
+                    Resolved = false,
+                };
+            }
+
+            var type = ComHelper.TryValue(() => entity.ReferenceType2);
+            var component = ReferenceComponentOf(entity, out var readFailed);
+            var componentName = ComHelper.TryText(() => component?.Name2);
+            return new MateEntity
+            {
+                Component = componentName ?? string.Empty,
+                ComponentPath = MateEntityRules.ComponentPath(componentName),
+                EntityType = type.HasValue ? ReaderNames.SelectType(type.Value) : UnknownEntityType,
+                Resolved = MateEntityRules.Resolved(
+                    readFailed,
+                    component != null,
+                    component != null && ComponentFiles.IsResolved(component)),
+            };
+        }
+
+        /// <summary>
+        /// The reference component of an entity. <paramref name="readFailed"/> is true when the read threw, which is not the
+        /// same as a legitimate null (no reference component, for example an assembly-level plane).
+        /// </summary>
+        private static SW.Component2? ReferenceComponentOf(SW.MateEntity2 entity, out bool readFailed)
+        {
+            try
+            {
+                readFailed = false;
+                return entity.ReferenceComponent;
+            }
+            catch (Exception)
+            {
+                readFailed = true;
+                return null;
+            }
         }
 
         /// <summary>
@@ -198,20 +249,29 @@ namespace Ragtime.SolidWorks.Readers
             return count;
         }
 
-        private static ComponentItem ComponentItemOf(SW.Component2 component, int depth, SW.Component2? parent, int childrenCount) => new ComponentItem
+        private static ComponentItem ComponentItemOf(SW.Component2 component, int depth, SW.Component2? parent, int childrenCount)
         {
-            Name = component.Name2 ?? string.Empty,
-            Path = component.GetPathName() ?? string.Empty,
-            Configuration = component.ReferencedConfiguration ?? string.Empty,
-            Suppressed = component.IsSuppressed(),
-            Hidden = component.Visible == (int)SWC.swComponentVisibilityState_e.swComponentHidden,
-            Fixed = component.IsFixed(),
-            IsVirtual = component.IsVirtual,
-            Depth = depth,
-            Parent = ComHelper.TryText(() => parent?.Name2),
-            Transform = TransformOf(component),
-            ChildrenCount = childrenCount,
-        };
+            var path = component.GetPathName() ?? string.Empty;
+            var fileExists = ComponentFiles.LocalFileExists(path);
+            return new ComponentItem
+            {
+                Name = component.Name2 ?? string.Empty,
+                Path = path,
+                Configuration = component.ReferencedConfiguration ?? string.Empty,
+                Suppressed = component.IsSuppressed(),
+                Hidden = component.Visible == (int)SWC.swComponentVisibilityState_e.swComponentHidden,
+                Fixed = component.IsFixed(),
+                IsVirtual = component.IsVirtual,
+                Depth = depth,
+                Parent = ComHelper.TryText(() => parent?.Name2),
+                Transform = TransformOf(component),
+                ChildrenCount = childrenCount,
+                FileExists = fileExists,
+                Suppression = fileExists
+                    ? ComponentFiles.SuppressionOf(component.GetSuppression2())
+                    : ComponentSuppression.MissingFile,
+            };
+        }
 
         /// <summary>
         /// The component transform as the 16 raw values of MathTransform.ArrayData, in SolidWorks' own order (not

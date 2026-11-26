@@ -1,12 +1,16 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SolidworksHostStatus } from '../api/solidworks';
+import type { PdmSandboxResponse, SolidworksHostStatus } from '../api/solidworks';
 import type { PdmIndexJob, PdmIndexStatusResponse, ToolConfig } from '../types/api';
 import { SolidWorksPdmLinkPanel, type SolidWorksPdmLinkPanelProps } from './SolidWorksPdmLinkPanel';
 
 const checkRights = vi.hoisted(() => vi.fn());
-vi.mock('../api/solidworks', () => ({ solidworksApi: { checkPdmRights: checkRights } }));
+const createSandbox = vi.hoisted(() => vi.fn());
+vi.mock('../api/solidworks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api/solidworks')>()),
+  solidworksApi: { checkPdmRights: checkRights, createPdmSandbox: createSandbox },
+}));
 vi.mock('./SolidWorksPdmFolderBrowser', () => ({
   SolidWorksPdmFolderBrowser: (props: {
     toolId: string;
@@ -14,7 +18,16 @@ vi.mock('./SolidWorksPdmFolderBrowser', () => ({
     vaultName: string;
     folders: string[];
     vaultRoot: string | null;
-  }) => <div data-testid="folder-browser" data-props={JSON.stringify(props)} />,
+    mode?: string;
+    onPick?: (path: string) => void;
+  }) =>
+    props.mode === 'pick' ? (
+      <button type="button" onClick={() => props.onPick?.('\\13_Ragtime')}>
+        Pick 13_Ragtime
+      </button>
+    ) : (
+      <div data-testid="folder-browser" data-props={JSON.stringify(props)} />
+    ),
 }));
 const client = vi.hoisted(() => ({
   listToolConfigs: vi.fn(),
@@ -1058,5 +1071,203 @@ describe('vault rights integration', () => {
       );
       expect(screen.getByTestId('folder-browser')).not.toBe(browser);
     }
+  });
+});
+
+describe('SolidWorksPdmLinkPanel sandbox folder', () => {
+  const SANDBOX_FOLDER = '\\13_Ragtime\\Ragtime Sandbox';
+  const CREATED: PdmSandboxResponse = {
+    folder: SANDBOX_FOLDER,
+    covered: false,
+    approved_folders: [SANDBOX_FOLDER],
+    allow_write: true,
+    scripts_enabled: false,
+  };
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  }
+
+  function sandboxTrigger() {
+    return byId('solidworks-pdm-sandbox-open') as HTMLButtonElement;
+  }
+
+  // Opens the sandbox form, picks the parent through the mocked browser and clicks Create.
+  function submitSandbox() {
+    fireEvent.click(sandboxTrigger());
+    fireEvent.click(screen.getByRole('button', { name: 'Pick 13_Ragtime' }));
+    fireEvent.click(byId('solidworks-pdm-sandbox-create') as HTMLButtonElement);
+  }
+
+  // A saved connection whose PDM tool is linked, indexed and on a ready machine.
+  function renderLinked(
+    approved_folders: string[] = [],
+    overrides: Partial<SolidWorksPdmLinkPanelProps> = {},
+  ) {
+    return renderPanel({
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders },
+      hostStatus: hostWithPdm(PDM_OK),
+      ...overrides,
+    });
+  }
+
+  async function renderReady(approved_folders: string[] = [], overrides = {}) {
+    const props = renderLinked(approved_folders, overrides);
+    await settled('linked_ready');
+    return props;
+  }
+
+  async function submitAndWaitForAllowChanges(props: SolidWorksPdmLinkPanelProps) {
+    submitSandbox();
+    await waitFor(() => expect(props.onAllowChangesChange).toHaveBeenCalledWith(true));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client.listToolConfigs.mockResolvedValue([pdmTool()]);
+    client.getPdmIndexStatus.mockResolvedValue(READY);
+    checkRights.mockResolvedValue({
+      checked: true,
+      user: 'rights.user',
+      root: null,
+      folders: [],
+      error: null,
+    });
+  });
+  afterEach(cleanup);
+
+  it('sits between the Allow changes row and the changes detail', async () => {
+    await renderReady([...LINKED_FOLDERS], { allowChanges: true });
+    const row = byId('solidworks-allow-changes-row') as HTMLElement;
+    expect(row.nextElementSibling?.id).toBe('solidworks-pdm-sandbox');
+    expect(byId('solidworks-pdm-sandbox')?.nextElementSibling?.id).toBe(
+      'solidworks-pdm-changes-detail',
+    );
+  });
+
+  it('is rendered while Allow changes is off, because the action turns it on', async () => {
+    await renderReady();
+    expect(byId('solidworks-pdm-sandbox')).not.toBeNull();
+    expect(sandboxTrigger().disabled).toBe(false);
+  });
+
+  it('explains why the trigger is disabled when the PDM tool is disabled', async () => {
+    client.listToolConfigs.mockResolvedValue([pdmTool({ enabled: false })]);
+    renderLinked();
+    await settled('linked_disabled');
+    expect(sandboxTrigger().disabled).toBe(true);
+    expect(textOf('solidworks-pdm-sandbox-reason')).toBe('Enable the PDM tool first.');
+  });
+
+  it('explains why the trigger is disabled until the machine is ready', async () => {
+    renderLinked([], { hostStatus: null });
+    await settled('linked_ready');
+    expect(sandboxTrigger().disabled).toBe(true);
+    expect(textOf('solidworks-pdm-sandbox-reason')).toBe(
+      'Install and start the SolidWorks agent and log in to the vault view to browse the vault.',
+    );
+  });
+
+  it('explains why the trigger is disabled before the connection is saved', async () => {
+    renderLinked([], { toolId: null });
+    await settled('linked_ready');
+    expect(textOf('solidworks-pdm-sandbox-reason')).toBe(
+      'Save the connection first to browse the vault.',
+    );
+  });
+
+  it('adds the new folder to the draft and turns Allow changes on', async () => {
+    createSandbox.mockResolvedValue(CREATED);
+    const props = await renderReady(['\\13_Other']);
+    await submitAndWaitForAllowChanges(props);
+    expect(props.onChange).toHaveBeenCalledWith({
+      pdm_tool_id: 'pdm-a',
+      approved_folders: ['\\13_Other', SANDBOX_FOLDER],
+    });
+    expect(createSandbox).toHaveBeenCalledWith('sw-a', {
+      pdm_tool_id: 'pdm-a',
+      parent: '\\13_Ragtime',
+      name: 'Ragtime Sandbox',
+    });
+  });
+
+  it('does not duplicate a folder that is already in the draft', async () => {
+    createSandbox.mockResolvedValue(CREATED);
+    const props = await renderReady([SANDBOX_FOLDER]);
+    await submitAndWaitForAllowChanges(props);
+    expect(props.onChange).toHaveBeenCalledWith({
+      pdm_tool_id: 'pdm-a',
+      approved_folders: [SANDBOX_FOLDER],
+    });
+  });
+
+  it('leaves the draft alone when a draft folder already covers the sandbox', async () => {
+    createSandbox.mockResolvedValue({ ...CREATED, covered: true });
+    const props = await renderReady(['\\13_Ragtime']);
+    await submitAndWaitForAllowChanges(props);
+    expect(props.onChange).toHaveBeenCalledWith({
+      pdm_tool_id: 'pdm-a',
+      approved_folders: ['\\13_Ragtime'],
+    });
+  });
+
+  it('drops draft folders inside the new folder, which now covers them', async () => {
+    createSandbox.mockResolvedValue(CREATED);
+    const props = await renderReady([`${SANDBOX_FOLDER}\\Old`, '\\13_Other']);
+    await submitAndWaitForAllowChanges(props);
+    expect(props.onChange).toHaveBeenCalledWith({
+      pdm_tool_id: 'pdm-a',
+      approved_folders: ['\\13_Other', SANDBOX_FOLDER],
+    });
+  });
+
+  it('merges into the draft as it is when the request returns, not as it was at the click', async () => {
+    const request = deferred<PdmSandboxResponse>();
+    createSandbox.mockReturnValue(request.promise);
+    const props: SolidWorksPdmLinkPanelProps = {
+      toolId: 'sw-a',
+      value: { pdm_tool_id: 'pdm-a', approved_folders: [] },
+      onChange: vi.fn(),
+      allowChanges: false,
+      onAllowChangesChange: vi.fn(),
+      hostStatus: hostWithPdm(PDM_OK),
+    };
+    const { rerender } = render(<SolidWorksPdmLinkPanel {...props} />);
+    await settled('linked_ready');
+    submitSandbox();
+    rerender(
+      <SolidWorksPdmLinkPanel
+        {...props}
+        value={{ pdm_tool_id: 'pdm-a', approved_folders: ['\\13_Edited'] }}
+      />,
+    );
+    request.resolve(CREATED);
+    await waitFor(() => expect(props.onAllowChangesChange).toHaveBeenCalledWith(true));
+    expect(props.onChange).toHaveBeenLastCalledWith({
+      pdm_tool_id: 'pdm-a',
+      approved_folders: ['\\13_Edited', SANDBOX_FOLDER],
+    });
+  });
+
+  it('reports busy to the wizard while the sandbox request runs', async () => {
+    const request = deferred<PdmSandboxResponse>();
+    createSandbox.mockReturnValue(request.promise);
+    const onBusyChange = vi.fn();
+    await renderReady([], { onBusyChange });
+    submitSandbox();
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+    request.resolve(CREATED);
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
+  });
+
+  it('shows whether Allow scripts is on in the sandbox copy', async () => {
+    await renderReady([], { allowScripts: true });
+    fireEvent.click(sandboxTrigger());
+    expect(textOf('solidworks-pdm-sandbox-scripts')).toContain('Allow scripts is on.');
   });
 });

@@ -15,6 +15,21 @@ from ragtime.solidworks.service import SolidworksService, _invalid_script_field
 from ragtime.solidworks.tool import build_solidworks_tool_description
 
 
+def test_scripts_off_refusal_names_the_setting():
+    transport = AsyncMock()
+    denied = json.loads(asyncio.run(SolidworksService(transport_factory=transport).execute({}, "script.run", {})))
+    error = denied["error"]
+    assert error["code"] == "scripts_not_allowed"
+    assert error["message"] == "Scripts are off for this tool. An admin can turn on Allow scripts in the tool's SolidWorks settings."
+    assert error["details"]["setting"] == "Allow scripts"
+    assert error["details"]["where"] == "Tool settings > SolidWorks"
+    assert error["details"]["still_available"] == [
+        "Read models (document.open, mates.list, components.list)",
+        "Export the result (model.export)",
+    ]
+    transport.assert_not_called()
+
+
 def test_gate_and_validation_precede_review_and_transport():
     transport = AsyncMock()
     service = SolidworksService(transport_factory=transport)
@@ -125,7 +140,7 @@ def test_script_config_default_and_round_trip():
 
 def test_description_does_not_claim_read_only_with_scripts_enabled():
     description = build_solidworks_tool_description({"connection_config": {"allow_scripts": True}})
-    assert "Scripts allowed." in description
+    assert "Scripts: on." in description
     assert "Read-only." not in description
 
 

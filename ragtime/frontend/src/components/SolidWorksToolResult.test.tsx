@@ -317,3 +317,192 @@ describe('SolidWorksToolResult', () => {
     expect(screen.getByTestId('markdown').textContent).toBe('Guide');
   });
 });
+
+function headersOf(root: ParentNode | null | undefined): (string | null)[] {
+  return Array.from(root?.querySelectorAll('th') ?? []).map((th) => th.textContent);
+}
+
+function factValue(root: ParentNode, term: string): string | undefined {
+  const dt = Array.from(root.querySelectorAll('dt')).find((item) => item.textContent === term);
+  return dt?.nextElementSibling?.textContent ?? undefined;
+}
+
+describe('SolidWorks operation fields', () => {
+  it('shows a copied model with its folder, file count and warnings as text', () => {
+    const view = show({
+      operation: 'document.copy',
+      result: {
+        folder: 'C:\\work\\copies\\a1',
+        path: 'C:\\work\\copies\\a1\\CU.SLDASM',
+        count: 12,
+        files: [],
+        warnings: ['Missing source: C:\\PDM\\Bracket.SLDPRT'],
+      },
+    });
+    const copy = view.container.querySelector('[data-solidworks-copy]');
+    expect(factValue(copy as Element, 'Folder')).toBe('C:\\work\\copies\\a1');
+    expect(factValue(copy as Element, 'Model')).toBe('C:\\work\\copies\\a1\\CU.SLDASM');
+    expect(factValue(copy as Element, 'Files')).toBe('12');
+    expect(Array.from(copy?.querySelectorAll('code') ?? []).map((code) => code.title)).toContain(
+      'C:\\work\\copies\\a1',
+    );
+    expect(screen.getByText('Missing source: C:\\PDM\\Bracket.SLDPRT')).toBeDefined();
+  });
+
+  it("stacks a mate's error, what is wrong and entities under its name", () => {
+    const view = show({
+      operation: 'mates.list',
+      result: {
+        items: [
+          {
+            name: 'Coincident1',
+            type: 'coincident',
+            suppressed: false,
+            error: {
+              code: '7',
+              name: 'swMateErrorBroken',
+              meaning: 'The mate references a missing part.',
+            },
+            whats_wrong: 'Reference missing',
+            entities: [
+              {
+                component: 'Part1-1',
+                component_path: 'Sub-1/Part1-1',
+                entity_type: 'face',
+                resolved: false,
+              },
+            ],
+          },
+          {
+            name: 'Distance1',
+            type: 'distance',
+            suppressed: false,
+            error: null,
+            whats_wrong: null,
+            entities: [],
+          },
+        ],
+        total: 2,
+        offset: 0,
+      },
+    });
+    const list = view.container.querySelector('[data-solidworks-list="mates.list"]');
+    expect(headersOf(list)).toEqual(['Name', 'Type', 'Suppressed']);
+    const rows = Array.from(list?.querySelectorAll('tbody tr') ?? []);
+    const diagnosis = rows[0].querySelector('[data-solidworks-mate-diagnosis]');
+    expect(diagnosis?.textContent).toContain('swMateErrorBroken');
+    expect(diagnosis?.textContent).toContain('The mate references a missing part.');
+    expect(diagnosis?.textContent).toContain("What's wrong: Reference missing");
+    expect(diagnosis?.textContent).toContain('Sub-1/Part1-1');
+    expect(diagnosis?.textContent).toContain('Unresolved');
+    expect(rows[1].querySelector('[data-solidworks-mate-diagnosis]')).toBeNull();
+  });
+
+  it('labels missing files and lightweight components', () => {
+    show({
+      operation: 'components.list',
+      result: {
+        items: [
+          {
+            name: 'Bracket-1',
+            configuration: 'Default',
+            file_exists: false,
+            suppression: 'missing_file',
+            children: 0,
+          },
+          {
+            name: 'Plate-1',
+            configuration: 'Default',
+            file_exists: true,
+            suppression: 'lightweight',
+            children: 0,
+          },
+        ],
+        total: 2,
+        offset: 0,
+      },
+    });
+    expect(screen.getByText('Missing file').closest('td')?.textContent).toContain('Bracket-1');
+    expect(screen.getByText('Lightweight').closest('td')?.textContent).toContain('Plate-1');
+  });
+
+  it('shows load warnings and missing reference paths from an opened document', () => {
+    const view = show({
+      operation: 'document.open',
+      result: {
+        title: 'CU-IDB0061',
+        type: 'assembly',
+        document_id: 'doc-1',
+        path: 'C:\\PDM\\CU-IDB0061.SLDASM',
+        load_warnings: ['references_not_found'],
+        missing_references: ['C:\\HAM-PDM\\Bracket.SLDPRT', 'C:\\HAM-PDM\\Plate.SLDPRT'],
+      },
+    });
+    expect(screen.getByText('References not found')).toBeDefined();
+    expect(screen.getByText('Missing references (2)')).toBeDefined();
+    expect(
+      view.container.querySelector(
+        '[data-solidworks-missing-references] code[title$="Plate.SLDPRT"]',
+      ),
+    ).not.toBeNull();
+  });
+
+  it('omits the missing-reference block when every reference resolves', () => {
+    const view = show({
+      operation: 'document.open',
+      result: { title: 'Part', document_id: 'doc-2', load_warnings: [], missing_references: [] },
+    });
+    expect(view.container.querySelector('[data-solidworks-missing-references]')).toBeNull();
+  });
+});
+
+describe('SolidWorks results from older agents', () => {
+  it('keeps the mates table of agent 0.5.0, which omits the error and entity fields', () => {
+    const view = show({
+      operation: 'mates.list',
+      result: {
+        items: [
+          {
+            name: 'Coincident1',
+            type: 'coincident',
+            suppressed: false,
+            error_code: '0',
+            warning: false,
+            entities: [{ component: 'Part1-1', entity_type: 'face' }],
+          },
+        ],
+        total: 1,
+        offset: 0,
+      },
+    });
+    const headers = Array.from(view.container.querySelectorAll('th')).map((th) => th.textContent);
+    expect(headers).toEqual(['Name', 'Type', 'Suppressed']);
+    expect(view.container.textContent).not.toContain('undefined');
+    expect(view.container.textContent).not.toContain('Unresolved');
+    expect(view.container.querySelector('[data-solidworks-mate-diagnosis]')).toBeNull();
+  });
+
+  it('shows no missing-file or lightweight marks for components without the new fields', () => {
+    const view = show({
+      operation: 'components.list',
+      result: {
+        items: [{ name: 'Bracket-1', configuration: 'Default', suppressed: false, children: 0 }],
+        total: 1,
+        offset: 0,
+      },
+    });
+    expect(view.container.textContent).not.toContain('undefined');
+    expect(view.container.textContent).not.toContain('Missing file');
+    expect(view.container.textContent).not.toContain('Lightweight');
+  });
+
+  it('renders an opened document without load warnings or missing references', () => {
+    const view = show({
+      operation: 'document.open',
+      result: { title: 'Part1', type: 'part', document_id: 'doc-1', path: 'C:\\Part1.SLDPRT' },
+    });
+    expect(view.container.textContent).not.toContain('undefined');
+    expect(view.container.textContent).not.toContain('Missing references');
+    expect(view.container.querySelector('[data-solidworks-missing-references]')).toBeNull();
+  });
+});

@@ -22,6 +22,10 @@ namespace Ragtime.SolidWorks.Core.Tests
             yield return new object[] { "document.open", "{\"path\":\"C:\\\\Models\\\\part.sldprt\"}" };
             yield return new object[] { "document.open", "{\"path\":\"C:\\\\Models\\\\a.SLDASM\",\"configuration\":\"Default\"}" };
             yield return new object[] { "document.close", "{\"document\":\"doc-1\"}" };
+            yield return new object[] { "document.copy", "{\"document\":\"doc-1\"}" };
+            yield return new object[] { "document.copy", "{\"document\":\"C:\\\\Models\\\\Bracket.sldasm\",\"include_references\":false}" };
+            yield return new object[] { "mates.list", "{\"document\":\"doc-1\",\"only_problems\":true}" };
+            yield return new object[] { "components.list", "{\"document\":\"doc-1\",\"only_problems\":false}" };
             yield return new object[] { "model.summary", "{\"document\":\"C:\\\\Models\\\\part.sldprt\"}" };
             yield return new object[] { "configurations.list", "{\"document\":\"doc-1\",\"offset\":0,\"limit\":500}" };
             yield return new object[] { "features.list", "{\"document\":\"doc-1\",\"include_system\":true,\"types\":[\"Extrusion\"]}" };
@@ -65,6 +69,11 @@ namespace Ragtime.SolidWorks.Core.Tests
             yield return new object[] { "document.open", "{}", "path" };
             yield return new object[] { "document.open", "{\"path\":\"C:\\\\a.sldprt\",\"bogus\":1}", "bogus" };
             yield return new object[] { "document.close", "{}", "document" };
+            yield return new object[] { "document.copy", "{}", "document" };
+            yield return new object[] { "document.copy", "{\"document\":\"doc-1\",\"include_references\":\"yes\"}", "include_references" };
+            yield return new object[] { "document.copy", "{\"document\":\"doc-1\",\"folder\":\"C:\\\\x\"}", "folder" };
+            yield return new object[] { "mates.list", "{\"document\":\"doc-1\",\"only_problems\":\"yes\"}", "only_problems" };
+            yield return new object[] { "components.list", "{\"document\":\"doc-1\",\"only_problems\":1}", "only_problems" };
             yield return new object[] { "model.summary", "{\"document\":\"\"}", "document" };
             yield return new object[] { "configurations.list", "{\"document\":\"doc-1\",\"offset\":-1}", "offset" };
             yield return new object[] { "features.list", "{\"document\":\"doc-1\",\"types\":[1]}", "types[0]" };
@@ -223,7 +232,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             Assert.Equal(1, result.Protocol);
             Assert.Equal(TestData.HostVersion, result.HostVersion);
-            Assert.Equal(32, result.Operations.Count);
+            Assert.Equal(33, result.Operations.Count);
             var writes = new[] { "pdm.folder.create", "pdm.file.add", "pdm.file.checkout", "pdm.file.undo_checkout", "pdm.file.checkin", "pdm.variables.set" };
             Assert.All(result.Operations, op => Assert.Equal(op.Name == "script.run" ? "script" : writes.Contains(op.Name) ? "write" : "read", op.Access));
             Assert.DoesNotContain(result.Operations, op => op.Name == "host.shutdown");
@@ -317,7 +326,7 @@ namespace Ragtime.SolidWorks.Core.Tests
 
             var response = await h.CallAsync("describe");
 
-            Assert.Equal(32, ((JArray)response["result"]!["operations"]!).Count);
+            Assert.Equal(33, ((JArray)response["result"]!["operations"]!).Count);
         }
     }
 }

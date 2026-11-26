@@ -40,22 +40,27 @@ def _always_sections(skills: list[SkillRecord]) -> list[str]:
 
 
 def tool_skill_lines(config: dict[str, Any]) -> str:
-    skills = config.get("skills") or []
+    owners = [config]
+    if config.get("pdm_link"):
+        owners.append(config["pdm_link"])
+    skills = [(owner, skill) for owner in owners for skill in owner.get("skills") or []]
     if not skills:
         return ""
-    always = [skill for skill in skills if skill["mode"] == SKILL_MODE_ALWAYS]
-    inline = _fits_inline(always)
+    always = [skill for _, skill in skills if skill["mode"] == SKILL_MODE_ALWAYS]
+    admin_always = [skill for skill in always if not str(skill.get("id", "")).startswith("builtin:")]
+    inline = _fits_inline(admin_always)
+    inline_always = [skill for skill in always if inline or str(skill.get("id", "")).startswith("builtin:")]
     lines = ["Skills:"]
-    for skill in skills:
-        uri = build_skill_uri(SKILL_OWNER_TOOL, str(config["id"]), skill["name"])
+    for owner, skill in skills:
+        uri = build_skill_uri(SKILL_OWNER_TOOL, str(owner["id"]), skill["name"])
         if skill["mode"] != SKILL_MODE_ALWAYS:
             lines.append(f"- {skill['name']}: {_short_description(skill['description'])} (load with {READ_SKILL_TOOL_NAME}, uri {uri})")
-        elif inline:
+        elif skill in inline_always:
             lines.append(f"- {skill['name']} (always applied; text below)")
         else:
             lines.append(f"- {skill['name']} (always applied): before using this tool, call {READ_SKILL_TOOL_NAME} with uri {uri}.")
-    if always and inline:
-        lines.extend(["", "Always follow these instructions when using this tool:", *_always_sections(always)])
+    if inline_always:
+        lines.extend(["", "Always follow these instructions when using this tool:", *_always_sections(inline_always)])
     return "\n" + "\n".join(lines)
 
 
@@ -65,9 +70,12 @@ def visible_skills(definitions: list[Any], route_id: str | None, route_skills: l
         config = definition.tool_config
         if not config.get("id"):
             continue
-        for skill in config.get("skills") or []:
-            uri = build_skill_uri(SKILL_OWNER_TOOL, str(config["id"]), skill["name"])
-            visible[uri] = (skill, f"tool {config.get('name', config['id'])}")
+        for owner in (config, config.get("pdm_link") or {}):
+            if not owner.get("id"):
+                continue
+            for skill in owner.get("skills") or []:
+                uri = build_skill_uri(SKILL_OWNER_TOOL, str(owner["id"]), skill["name"])
+                visible[uri] = (skill, f"tool {owner.get('name', owner['id'])}")
     if route_id:
         for skill in route_skills:
             uri = build_skill_uri(SKILL_OWNER_ROUTE, route_id, skill["name"])

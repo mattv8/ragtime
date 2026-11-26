@@ -5,7 +5,11 @@ import { api } from '@/api';
 import { INSTRUCTION_SKILL_LIMITS as LIMITS, INSTRUCTION_SKILL_NAME_PATTERN } from '@/types';
 import type { InstructionSkill, InstructionSkillOwner, InstructionSkillMode } from '@/types';
 import { estimateTokens, estimateTokensForLength } from '@/utils/contextUsage';
-import { DEFAULT_MCP_ROUTE_OWNER_ID } from '@/utils/instructionSkills';
+import {
+  DEFAULT_MCP_ROUTE_OWNER_ID,
+  builtinSkillState,
+  type BuiltinInstructionSkill,
+} from '@/utils/instructionSkills';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { ToastContainer, useToast } from './shared/Toast';
 
@@ -97,6 +101,11 @@ export function InstructionSkillsDialog({
   const [dragId, setDragId] = useState<string | null>(null);
   const [drop, setDrop] = useState<{ id: string; position: 'before' | 'after' } | null>(null);
   const [retry, setRetry] = useState(0);
+  const [builtins, setBuiltins] = useState<BuiltinInstructionSkill[]>([]);
+  const [builtinsLoading, setBuiltinsLoading] = useState(false);
+  const [builtinsError, setBuiltinsError] = useState(false);
+  const [builtinsExpanded, setBuiltinsExpanded] = useState<boolean | null>(null);
+  const [builtinsRetry, setBuiltinsRetry] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -161,6 +170,7 @@ export function InstructionSkillsDialog({
     if (!open) return;
     generation.current += 1;
     setBusy(false);
+    setBuiltinsExpanded(null);
     openerRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     rootRef.current?.focus();
@@ -214,6 +224,28 @@ export function InstructionSkillsDialog({
       active = false;
     };
   }, [open, owner.id, owner.kind, retry]);
+
+  useEffect(() => {
+    if (!open || owner.kind !== 'tool') return;
+    let active = true;
+    setBuiltins([]);
+    setBuiltinsError(false);
+    setBuiltinsLoading(true);
+    api
+      .listBuiltinInstructionSkills(owner.id)
+      .then((items) => {
+        if (active) setBuiltins(items);
+      })
+      .catch(() => {
+        if (active) setBuiltinsError(true);
+      })
+      .finally(() => {
+        if (active) setBuiltinsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open, owner.id, owner.kind, builtinsRetry]);
 
   useEffect(() => {
     if (pending) document.getElementById('instruction-skills-unsaved-confirm')?.focus();
@@ -512,6 +544,129 @@ export function InstructionSkillsDialog({
     </button>
   );
   const noItems = !loading && !loadError && !skills.length && !draft;
+  const adminSkillNames = loading || loadError ? null : new Set(skills.map((item) => item.name));
+  const builtinRows = builtins.map((item) => ({
+    item,
+    state: builtinSkillState(item, adminSkillNames),
+  }));
+  const builtinActiveCount = builtinRows.filter((row) => row.state === 'active').length;
+  const builtinsOpen = builtinsExpanded ?? noItems;
+  const builtinListOpen = builtinsOpen && builtins.length > 0;
+  const builtinStatus = builtinsLoading
+    ? 'Loading built-in skills…'
+    : builtinsError
+      ? 'Could not load built-in skills.'
+      : '';
+  const builtinSection = () => {
+    if (owner.kind !== 'tool') return null;
+    if (!builtinsLoading && !builtinsError && !builtins.length) return null;
+    return (
+      <section
+        id="instruction-skills-builtin"
+        className="instruction-skills-builtin"
+        data-instruction-skills-builtin
+      >
+        <button
+          id="instruction-skills-builtin-toggle"
+          type="button"
+          className="instruction-builtin-toggle"
+          aria-expanded={builtinListOpen}
+          aria-controls={builtinListOpen ? 'instruction-builtin-list' : undefined}
+          disabled={!builtins.length}
+          onClick={() => setBuiltinsExpanded(!builtinListOpen)}
+        >
+          <span>{builtins.length ? `Built in (${number(builtins.length)})` : 'Built in'}</span>
+          {builtins.length > 0 && (
+            <span className="instruction-builtin-summary">{number(builtinActiveCount)} active</span>
+          )}
+          {builtins.length > 0 &&
+            (builtinListOpen ? (
+              <ChevronUp size={14} aria-hidden="true" />
+            ) : (
+              <ChevronDown size={14} aria-hidden="true" />
+            ))}
+        </button>
+        {builtinsLoading && (
+          <p id="instruction-skills-builtin-loading" className="field-help">
+            Loading built-in skills…
+          </p>
+        )}
+        {builtinsError && (
+          <p id="instruction-skills-builtin-error" className="field-help">
+            Could not load built-in skills.{' '}
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              onClick={() => {
+                setBuiltinsError(false);
+                setBuiltinsRetry((count) => count + 1);
+              }}
+            >
+              Retry
+            </button>
+          </p>
+        )}
+        {builtinListOpen && (
+          <>
+            <p id="instruction-skills-builtin-help" className="field-help">
+              Ship with Ragtime. You can&apos;t edit or turn them off. To change one, create a skill
+              with the same name; yours replaces it.
+            </p>
+            <ul
+              id="instruction-builtin-list"
+              className="instruction-builtin-list"
+              aria-label="Built-in skills"
+            >
+              {builtinRows.map(({ item, state }) => {
+                const adminSkill = skills.find((entry) => entry.name === item.name);
+                return (
+                  <li
+                    key={item.name}
+                    className="instruction-builtin-row"
+                    data-builtin-skill={item.name}
+                    data-builtin-state={state}
+                  >
+                    <div className="instruction-builtin-head">
+                      <span className="instruction-skill-row-name">{item.name}</span>
+                      <span
+                        className={`tool-badge ${item.mode === 'always' ? 'instruction-skill-badge-always' : ''}`}
+                      >
+                        {item.mode === 'always' ? 'Always' : 'On demand'}
+                      </span>
+                    </div>
+                    <span className="instruction-builtin-desc" title={item.description}>
+                      {item.description}
+                    </span>
+                    <div className="instruction-builtin-status">
+                      {state === 'replaced' && adminSkill ? (
+                        <button
+                          type="button"
+                          className="instruction-builtin-link"
+                          data-builtin-replaced-by={item.name}
+                          onClick={() => select(adminSkill)}
+                        >
+                          Replaced by your skill
+                        </button>
+                      ) : state === 'replaced' ? (
+                        <span>Replaced by your skill</span>
+                      ) : state === 'active' ? (
+                        <span className="tool-badge">Active</span>
+                      ) : (
+                        <>
+                          <span className="tool-badge">Not active</span>
+                          {item.reason && <span>{item.reason}</span>}
+                        </>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
+        )}
+      </section>
+    );
+  };
 
   return (
     <div
@@ -569,6 +724,7 @@ export function InstructionSkillsDialog({
               <div>
                 {newButton('New skill')} {uploadButton('Upload .md or .txt')}
               </div>
+              {builtinSection()}
             </div>
           ) : (
             <>
@@ -751,9 +907,15 @@ export function InstructionSkillsDialog({
                     </li>
                   )}
                 </ol>
+                {builtinSection()}
                 <div id="instruction-skills-budget" className="instruction-skills-budget">
                   Sent on every call: ≈ {number(alwaysTokens)} tokens ({number(total)} of{' '}
                   {number(LIMITS.alwaysIncludeBudgetChars)} characters)
+                  {builtins.length > 0 && (
+                    <p id="instruction-skills-budget-builtin-note" className="field-help">
+                      Built-in skills aren&apos;t counted here.
+                    </p>
+                  )}
                   <div
                     id="instruction-skills-budget-meter"
                     className="instruction-skills-meter"
@@ -837,6 +999,11 @@ export function InstructionSkillsDialog({
                               ? 'Use lowercase letters, digits and single hyphens.'
                               : '')}
                       </p>
+                      {builtins.some((item) => item.name === fields.name) && (
+                        <p id="instruction-skill-name-builtin-note" className="field-help">
+                          Replaces the built-in skill of the same name.
+                        </p>
+                      )}
                     </div>
                     <div className="form-group">
                       <div className="instruction-skill-label-row">
@@ -1031,6 +1198,14 @@ export function InstructionSkillsDialog({
           role="status"
         >
           {announcement}
+        </span>
+        {/* Mounted empty with the dialog; the built-in status fills in after the fetch starts. */}
+        <span
+          id="instruction-skills-builtin-status"
+          className="instruction-skills-visually-hidden"
+          role="status"
+        >
+          {owner.kind === 'tool' ? builtinStatus : ''}
         </span>
         <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
       </div>

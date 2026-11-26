@@ -165,6 +165,9 @@ COPY runtime/ /ragtime/runtime/
 COPY tests/ /ragtime/tests/
 # tests/test_solidworks_protocol.py checks the host's request limit against Ragtime's.
 COPY dotnet/src/Ragtime.SolidWorks.Core/Wire/CallRequestArgument.cs /ragtime/dotnet/src/Ragtime.SolidWorks.Core/Wire/
+# tests/test_solidworks_guidance.py checks guidance operation names and script members against the agent.
+COPY dotnet/src/Ragtime.SolidWorks.Core/Operations/OperationCatalog.cs /ragtime/dotnet/src/Ragtime.SolidWorks.Core/Operations/
+COPY dotnet/src/Ragtime.SolidWorks.Scripting/ScriptContext.cs /ragtime/dotnet/src/Ragtime.SolidWorks.Scripting/
 COPY .github/actions/ /ragtime/.github/actions/
 COPY .github/workflows/ /ragtime/.github/workflows/
 

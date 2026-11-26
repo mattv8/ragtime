@@ -13,6 +13,8 @@ const text = (value: unknown) =>
   value == null ? '—' : typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value);
 const records = (value: unknown): RecordValue[] =>
   Array.isArray(value) ? value.map(record).filter((item) => Object.keys(item).length > 0) : [];
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 const pill = (value: ReactNode, tone: 'muted' | 'error' | 'warning' | 'success' = 'muted') => (
   <span
     className={`badge ${{ muted: 'badge-muted', error: 'failed', warning: 'solidworks-result-badge-warning', success: 'completed' }[tone]}`}
@@ -245,6 +247,56 @@ function StatePills({ item }: { item: RecordValue }) {
   );
 }
 
+/** Pills for a component's file and suppression state, shown beside its name. */
+function ComponentFlags({ item }: { item: RecordValue }) {
+  if (item.file_exists !== false && item.suppression !== 'lightweight') return null;
+  return (
+    <span className="solidworks-result-meta">
+      {item.file_exists === false && pill('Missing file', 'error')}
+      {item.suppression === 'lightweight' && pill('Lightweight')}
+    </span>
+  );
+}
+
+/** Mate entities that carry resolution data (agent 0.6.0+). */
+const hasResolution = (entity: RecordValue) => 'resolved' in entity || 'component_path' in entity;
+
+/**
+ * A mate's error, what's wrong and entities, stacked under its name. Each line
+ * appears only when the agent sent it, so 0.5.0 output shows no diagnosis block.
+ */
+function MateDiagnosis({ item }: { item: RecordValue }) {
+  const error = record(item.error);
+  const hasError = Object.keys(error).length > 0;
+  const whatsWrong = typeof item.whats_wrong === 'string' ? item.whats_wrong : null;
+  const entities = records(item.entities).filter(hasResolution);
+  if (!hasError && !whatsWrong && !entities.length) return null;
+  return (
+    <div className="solidworks-result-diagnosis" data-solidworks-mate-diagnosis>
+      {hasError && (
+        <span className="solidworks-result-meta">
+          {pill(text(error.name ?? error.code), 'error')}
+          {error.meaning != null && <span>{text(error.meaning)}</span>}
+        </span>
+      )}
+      {whatsWrong && <span>What&apos;s wrong: {whatsWrong}</span>}
+      {entities.length > 0 && (
+        <span className="solidworks-result-meta">
+          <span>Entities</span>
+          {entities.map((entity, index) => (
+            <Fragment key={`${text(entity.component_path ?? entity.component)}-${index}`}>
+              <code title={text(entity.component_path ?? entity.component)}>
+                {text(entity.component_path ?? (entity.component || entity.entity_type))}
+              </code>
+              {entity.resolved === false && pill('Unresolved', 'error')}
+            </Fragment>
+          ))}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function ListResult({ operation, result }: { operation: string; result: RecordValue }) {
   const listKey = Object.keys(result).find((key) => Array.isArray(result[key]));
   const items = records(listKey ? result[listKey] : []);
@@ -299,6 +351,12 @@ function ListResult({ operation, result }: { operation: string; result: RecordVa
                         <span className="solidworks-result-path" title={item.path}>
                           {item.path}
                         </span>
+                      )}
+                      {key === 'name' && operation === 'mates.list' && (
+                        <MateDiagnosis item={item} />
+                      )}
+                      {key === 'name' && operation === 'components.list' && (
+                        <ComponentFlags item={item} />
                       )}
                     </td>
                   ))}
@@ -504,6 +562,51 @@ function ResultBody({
             </>
           )}
         </dl>
+        {strings(result.load_warnings).map((warning) => (
+          <p className="solidworks-result-note" key={warning}>
+            <Info size={12} />
+            {label(warning)}
+          </p>
+        ))}
+        {strings(result.missing_references).length > 0 && (
+          <div data-solidworks-missing-references>
+            <p className="solidworks-result-note">
+              <Info size={12} />
+              Missing references ({strings(result.missing_references).length})
+            </p>
+            <ul>
+              {strings(result.missing_references).map((path) => (
+                <li key={path}>
+                  <code title={path}>{path}</code>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (parsed.operation === 'document.copy') {
+    return (
+      <div data-solidworks-copy>
+        <dl className="solidworks-result-facts">
+          <dt>Folder</dt>
+          <dd>
+            <code title={text(result.folder)}>{text(result.folder)}</code>
+          </dd>
+          <dt>Model</dt>
+          <dd>
+            <code title={text(result.path)}>{text(result.path)}</code>
+          </dd>
+          <dt>Files</dt>
+          <dd>{text(result.count)}</dd>
+        </dl>
+        {strings(result.warnings).map((warning) => (
+          <p className="solidworks-result-note" key={warning}>
+            <Info size={12} />
+            {warning}
+          </p>
+        ))}
       </div>
     );
   }

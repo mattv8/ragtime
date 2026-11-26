@@ -29,7 +29,7 @@ class SolidworksWiringTests(unittest.IsolatedAsyncioTestCase):
             tools = await components.build_tools_from_runtime_config(self.config)
 
         self.assertEqual(tools, [fake_tool])
-        factory.assert_called_once_with({**self.config, "pdm_link_name": None}, "design_shop_2024")
+        factory.assert_called_once_with({**self.config, "pdm_link_name": None, "pdm_link": None}, "design_shop_2024")
         self.assertEqual(components._derive_config_tool_names(self.config), {"solidworks_design_shop_2024"})
         self.assertEqual(components._content_protection_tool_ids(), {"solidworks_design_shop_2024": "sw-1"})
 
@@ -71,7 +71,7 @@ class SolidworksWiringTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(tool.name, MCPToolAdapter()._build_tool_name(self.config))
             result = await tool.ainvoke({"operation": "guide", "arguments": {"topic": "overview"}, "timeout": 12})
         self.assertEqual(result, response)
-        execute.assert_awaited_once_with({**self.config, "pdm_link_name": None}, "guide", {"topic": "overview"}, 12)
+        execute.assert_awaited_once_with({**self.config, "pdm_link_name": None, "pdm_link": None}, "guide", {"topic": "overview"}, 12)
 
     async def test_runtime_factory_includes_enabled_pdm_name(self):
         from ragtime.indexer.models import ToolConfig, ToolType
@@ -83,7 +83,7 @@ class SolidworksWiringTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.solidworks.tool.create_solidworks_tool") as factory,
         ):
             await RAGComponents()._create_solidworks_tool(config, "design", "sw-1")
-        factory.assert_called_once_with({**config, "pdm_link_name": "Vault"}, "design")
+        factory.assert_called_once_with({**config, "pdm_link_name": "Vault", "pdm_link": None}, "design")
 
     async def test_mcp_description_receives_usable_pdm_name(self):
         from ragtime.indexer.models import ToolConfig, ToolType

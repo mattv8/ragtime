@@ -72,6 +72,66 @@ namespace Ragtime.SolidWorks.Runtime
             }
         }
 
+        /// <summary>
+        /// Paths of the documents open in the instances the host started, for the copy retention sweep. Each such instance
+        /// answers on its own STA thread within <paramref name="timeout"/>. Returns null when one of them does not answer or
+        /// cannot be listed (the caller then keeps every copy). Attached instances are not asked. Never starts or attaches.
+        /// </summary>
+        public IReadOnlyList<string?>? OpenDocumentPathsOfOwnedInstances(TimeSpan timeout)
+        {
+            var items = new List<WorkItem<IReadOnlyList<string?>?>>();
+            lock (_lock)
+            {
+                foreach (var record in _records.Values.Where(candidate => candidate.Owned && candidate.State != InstanceState.Stopped))
+                {
+                    var item = new WorkItem<IReadOnlyList<string?>?>(() => InstanceStartup.OpenDocumentPaths(record, _log), null);
+                    if (record.Stuck || !record.Worker.TryEnqueue(item))
+                    {
+                        AbandonAll(items);
+                        return null;
+                    }
+
+                    items.Add(item);
+                }
+            }
+
+            try
+            {
+                var tasks = items.Select(item => item.Task).ToArray();
+                if (!Task.WaitAll(tasks, timeout))
+                {
+                    AbandonAll(items);
+                    return null;
+                }
+
+                var paths = new List<string?>();
+                foreach (var task in tasks)
+                {
+                    var listed = task.Result;
+                    if (listed == null)
+                    {
+                        return null;
+                    }
+
+                    paths.AddRange(listed);
+                }
+
+                return paths;
+            }
+            catch (AggregateException)
+            {
+                return null;
+            }
+        }
+
+        private static void AbandonAll(IEnumerable<WorkItem<IReadOnlyList<string?>?>> items)
+        {
+            foreach (var item in items)
+            {
+                item.TryAbandon();
+            }
+        }
+
         /// <inheritdoc />
         public async Task<InstanceRun<T>> RunAsync<T>(
             InstanceTarget target,

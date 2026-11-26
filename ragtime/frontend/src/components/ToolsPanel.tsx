@@ -12,7 +12,6 @@ import type {
   MountSourceAffectedWorkspacesResponse,
   UserCloudOAuthAccount,
   InstructionSkill,
-  InstructionSkillCount,
   InstructionSkillOwner,
   InstructionSkillSummary,
 } from '@/types';
@@ -44,6 +43,7 @@ import { toToolAccessGroupOptions, toToolAccessUserOptions } from '@/utils/toolA
 import {
   EMPTY_INSTRUCTION_SKILL_SUMMARY,
   countInstructionSkills,
+  describeInstructionSkillCount,
   restoreFocusIfLost,
 } from '@/utils/instructionSkills';
 import {
@@ -264,11 +264,6 @@ function getToolSearchText(tool: ToolConfig): string {
   ]
     .filter(Boolean)
     .join(' ');
-}
-
-function describeInstructionSkillCount(count: InstructionSkillCount | undefined): string {
-  if (!count || count.total === 0) return 'None yet';
-  return `${count.total} attached, ${count.enabled} enabled`;
 }
 
 interface ToolsPanelProps {
@@ -2196,6 +2191,7 @@ export function ToolsPanel({
                           <span data-instruction-skills-menu-description>
                             {describeInstructionSkillCount(
                               instructionSkillSummary.tools[contextTool.id],
+                              contextTool.tool_type,
                             )}
                           </span>
                         ),

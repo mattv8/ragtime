@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Newtonsoft.Json.Linq;
@@ -206,7 +207,18 @@ namespace Ragtime.SolidWorks.Runtime
         /// Lists the paths of the open documents that have unsaved changes, on the STA thread. Returns null when the
         /// documents could not be listed. An instance without an application has no open documents.
         /// </summary>
-        public static IReadOnlyList<string>? UnsavedDocumentPaths(InstanceRecord record, Action<string> log)
+        public static IReadOnlyList<string>? UnsavedDocumentPaths(InstanceRecord record, Action<string> log) =>
+            ListDocumentPaths(record, log, unsavedOnly: true)?.Select(path => path ?? string.Empty).ToList();
+
+        /// <summary>
+        /// Lists the paths of every open document, on the STA thread. Returns null when the documents could not be listed.
+        /// A document whose path cannot be read gives a null entry, so the copy retention sweep fails closed (review finding 3);
+        /// a document with no path (unsaved) gives an empty string.
+        /// </summary>
+        public static IReadOnlyList<string?>? OpenDocumentPaths(InstanceRecord record, Action<string> log) =>
+            ListDocumentPaths(record, log, unsavedOnly: false);
+
+        private static IReadOnlyList<string?>? ListDocumentPaths(InstanceRecord record, Action<string> log, bool unsavedOnly)
         {
             var application = record.App;
             if (application == null)
@@ -214,7 +226,7 @@ namespace Ragtime.SolidWorks.Runtime
                 return new List<string>();
             }
 
-            var unsaved = new List<string>();
+            var paths = new List<string?>();
             SW.ModelDoc2? document = null;
             try
             {
@@ -228,9 +240,16 @@ namespace Ragtime.SolidWorks.Runtime
                         return null;
                     }
 
-                    if (SafeSaveFlag(document, log))
+                    if (unsavedOnly)
                     {
-                        unsaved.Add(SafePath(document));
+                        if (SafeSaveFlag(document, log))
+                        {
+                            paths.Add(SafePath(document));
+                        }
+                    }
+                    else
+                    {
+                        paths.Add(OpenPathOf(document));
                     }
 
                     var next = document.GetNext() as SW.ModelDoc2;
@@ -238,7 +257,7 @@ namespace Ragtime.SolidWorks.Runtime
                     document = next;
                 }
 
-                return unsaved;
+                return paths;
             }
             catch (COMException error)
             {
@@ -554,6 +573,22 @@ namespace Ragtime.SolidWorks.Runtime
             catch (COMException)
             {
                 return "(unnamed document)";
+            }
+        }
+
+        /// <summary>
+        /// The path of an open document for the retention sweep: empty when the document has no path, null when the path
+        /// cannot be read (the sweep then deletes nothing).
+        /// </summary>
+        private static string? OpenPathOf(SW.ModelDoc2 document)
+        {
+            try
+            {
+                return document.GetPathName() ?? string.Empty;
+            }
+            catch (Exception)
+            {
+                return null;
             }
         }
 

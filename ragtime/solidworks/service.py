@@ -38,6 +38,13 @@ AGENT_FAILED_MESSAGE = "The SolidWorks agent could not complete the requested op
 AGENT_MESSAGE_MAX_CHARS = 500
 AGENT_DETAILS_MAX_CHARS = 2000
 UNKNOWN_OPERATION_MESSAGE = "The SolidWorks agent does not offer this operation; call describe for the operation list."
+_SETTINGS_WHERE = "Tool settings > SolidWorks"
+_WRITE_OFF_ACTION = "An admin can turn on Allow changes and approve a folder, or create a sandbox folder, in the tool's PDM settings."
+_WRITE_OFF_MESSAGE = f"Vault changes are off for this tool. {_WRITE_OFF_ACTION}"
+_NO_FOLDER_ACTION = "An admin can approve one or create a sandbox folder in the tool's PDM settings."
+_NO_FOLDER_MESSAGE = f"No vault folder is approved for changes. {_NO_FOLDER_ACTION}"
+_SCRIPTS_ACTION = "An admin can turn on Allow scripts in the tool's SolidWorks settings."
+_SCRIPTS_MESSAGE = f"Scripts are off for this tool. {_SCRIPTS_ACTION}"
 logger = logging.getLogger(__name__)
 _ARTIFACT_PATH = re.compile(
     r'^[A-Za-z]:\\(?:[^\\/:*?"<>|]+\\)+AppData\\Local\\RagtimeSolidWorks\\work\\[A-Za-z0-9][A-Za-z0-9._-]{0,127}$',
@@ -54,6 +61,8 @@ _GUIDE_OPERATION = {
 }
 
 _LIMIT_SCHEMA = {"type": "integer", "minimum": 1, "maximum": 25, "default": 10}
+_OFFSET_SCHEMA = {"type": "integer", "minimum": 0, "maximum": 1000, "default": 0}
+_DOCUMENT_TYPE_SCHEMA = {"type": "string", "pattern": "^[sS][lL][dD]([pP][rR][tT]|[aA][sS][mM]|[dD][rR][wW])$"}
 _PDM_OPERATIONS = [
     {
         "name": "pdm.search",
@@ -64,7 +73,7 @@ _PDM_OPERATIONS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "minLength": 1, "maxLength": 500},
-                "document_type": {"type": "string", "pattern": "^[sS][lL][dD]([pP][rR][tT]|[aA][sS][mM]|[dD][rR][wW])$"},
+                "document_type": _DOCUMENT_TYPE_SCHEMA,
                 "limit": _LIMIT_SCHEMA,
             },
             "required": ["query"],
@@ -76,7 +85,7 @@ _PDM_OPERATIONS = [
         "name": "pdm.lookup",
         "summary": "Look up indexed PDM documents.",
         "access": "read",
-        "paged": False,
+        "paged": True,
         "arguments": {
             "type": "object",
             "properties": {
@@ -84,12 +93,15 @@ _PDM_OPERATIONS = [
                 "filename": {"type": "string", "minLength": 1, "maxLength": 260},
                 "part_number": {"type": "string", "minLength": 1, "maxLength": 260},
                 "configuration": {"type": "string", "minLength": 1, "maxLength": 260},
+                "document_type": _DOCUMENT_TYPE_SCHEMA,
+                "offset": _OFFSET_SCHEMA,
+                "detail": {"type": "string", "enum": ["summary", "full"], "default": "summary"},
                 "limit": _LIMIT_SCHEMA,
             },
             "anyOf": [{"required": [key]} for key in ("document_id", "filename", "part_number")],
             "additionalProperties": False,
         },
-        "result": "Indexed vault document details.",
+        "result": "items with matched_on (summary by default; detail=full for every field), next_offset (null on the last page), index, note, truncated when trimmed.",
     },
 ]
 
@@ -158,6 +170,29 @@ def _tool_key(config: dict) -> str | None:
     """Cache key for a tool; tools without an id are never cached."""
     tool_id = config.get("id")
     return tool_id if isinstance(tool_id, str) and tool_id else None
+
+
+def _refusal_details(setting: str, admin_action: str, still_available: list[str], **extra: object) -> dict:
+    return {"setting": setting, "where": _SETTINGS_WHERE, "admin_action": admin_action, "still_available": still_available, **extra}
+
+
+def _contract_operation_names(contract: dict | None) -> set:
+    operations = ((contract or {}).get("result") or {}).get("operations") or []
+    return {item.get("name") for item in operations}
+
+
+async def _still_available(connection: dict, contract: dict | None) -> list[str]:
+    """Capabilities that still work for this tool, from its settings and the cached agent contract."""
+    attach = connection.get("instance_mode") == "attach"
+    available = ["Read open documents (documents.list, mates.list)" if attach else "Read models (document.open, mates.list, components.list)"]
+    if await pdm_link.vault_linked(connection):
+        available.append("Fetch vault files read-only (pdm.file.get_latest)")
+    if not attach and "document.copy" in _contract_operation_names(contract):
+        available.append("Copy a model to the work folder (document.copy)")
+    if connection.get("allow_scripts"):
+        available.append("Edit a copy with a script (script.run, reviewed before it runs)")
+    available.append("Export the result (model.export)")
+    return available
 
 
 class SolidworksService:
@@ -230,12 +265,12 @@ class SolidworksService:
         if safe_operation in pdm_link.PDM_ADMIN_OPERATIONS:
             return self._error(safe_operation, "unknown_operation", f"There is no operation named '{safe_operation}'. Call describe for the list.")
         if operation == "script.run":
-            if not (config.get("connection_config") or {}).get("allow_scripts", False):
-                return self._error(operation, "scripts_not_allowed", "Scripts are not enabled for this tool.")
+            connection = config.get("connection_config") or {}
+            if not connection.get("allow_scripts", False):
+                return await self._scripts_refused(operation, connection, self._cached_contract(_tool_key(config)))
             field = _invalid_script_field(arguments, timeout)
             if field or arguments is None:
                 return self._error(operation, "invalid_arguments", "Invalid script argument.", {"field": field or "arguments"})
-            connection = config.get("connection_config") or {}
             try:
                 encode_request(build_request(operation, arguments, self._context(connection, bool(config.get("allow_write", False)), 600)))
             except SolidworksProtocolError:
@@ -318,12 +353,13 @@ class SolidworksService:
             deadline = self.clock() + budget
             connection = config.get("connection_config") or {}
             allow_write = bool(config.get("allow_write", False))
-            if operation in pdm_link.PDM_WRITE_OPERATIONS:
-                if not allow_write:
-                    return self._error(operation, "write_not_allowed", "Enable write access for this operation.")
-                if not connection.get("pdm_approved_folders"):
-                    return self._error(operation, "pdm_folder_not_approved", "No PDM folders are approved.", {"approved_folders": []})
             key = _tool_key(config)
+            if operation in pdm_link.PDM_WRITE_OPERATIONS:
+                cached = self._cached_contract(key)
+                if not allow_write:
+                    return await self._write_refused(operation, connection, cached)
+                if not connection.get("pdm_approved_folders"):
+                    return await self._no_folder_refused(operation, connection, cached)
 
             async def work(ticket):
                 if ticket.waited and self._remaining(deadline) < MIN_OPERATION_SECONDS:
@@ -381,7 +417,7 @@ class SolidworksService:
                 return denied
             entry = next(item for item in contract["result"]["operations"] if item.get("name") == operation)
             if operation.startswith("pdm.") and entry.get("access") == "write" and not connection.get("pdm_approved_folders"):
-                return self._error(operation, "pdm_folder_not_approved", "No PDM folders are approved.", {"approved_folders": []})
+                return await self._no_folder_refused(operation, connection, contract)
         remaining = self._remaining(deadline)
         if fetched and remaining < MIN_OPERATION_SECONDS:
             return self._error(operation, "operation_timeout", "The operation timed out; check the SolidWorks agent and the timeout.")
@@ -399,6 +435,7 @@ class SolidworksService:
             return self._agent_error(operation, response.get("error"))
         if operation == "status" and response.get("ok"):
             response["result"]["scripts_enabled"] = bool(connection.get("allow_scripts", False))
+            response["result"]["ragtime"] = await self._ragtime_status(config, connection)
         return self._json(response)
 
     async def _fetch_artifacts(self, response, transport, config, deadline):
@@ -530,7 +567,8 @@ class SolidworksService:
         return self._error(operation, "host_updating", message, {key: state.get(key) for key in ("state", "installed_version", "target_version")})
 
     async def _validate_contract(self, contract, operation, allow_write, fetched, transport, key, context, deadline, config):
-        denied = self._check_contract(contract, operation, allow_write)
+        connection = config.get("connection_config") or {}
+        denied = await self._check_contract(contract, operation, allow_write, connection)
         missing = not any(item.get("name") == operation for item in contract["result"]["operations"])
         if missing and self._outdated_contract(contract):
             if not fetched:
@@ -540,7 +578,7 @@ class SolidworksService:
                 contract = await self._describe(transport, key, context(), self._remaining(deadline), config)
                 if not contract.get("ok"):
                     return contract, self._json(contract), fetched
-                denied = self._check_contract(contract, operation, allow_write)
+                denied = await self._check_contract(contract, operation, allow_write, connection)
                 missing = not any(item.get("name") == operation for item in contract["result"]["operations"])
             if missing and self._outdated_contract(contract):
                 if (config.get("connection_config") or {}).get("auto_update_host", True) is not False:
@@ -562,15 +600,54 @@ class SolidworksService:
     def _remaining(self, deadline: float) -> float:
         return deadline - self.clock()
 
-    def _check_contract(self, contract: dict, operation: str, allow_write: bool) -> str | None:
+    async def _check_contract(self, contract: dict, operation: str, allow_write: bool, connection: dict) -> str | None:
         """Return an error envelope when the host contract does not allow the operation, else None."""
         entry = next((item for item in contract["result"]["operations"] if item.get("name") == operation), None)
         if entry is None:
             message = "Update the SolidWorks agent to use PDM operations." if operation.startswith("pdm.") else UNKNOWN_OPERATION_MESSAGE
             return self._error(operation, "unknown_operation", message)
         if entry.get("access") == "write" and not allow_write:
-            return self._error(operation, "write_not_allowed", "Enable write access for this operation.")
+            return await self._write_refused(operation, connection, contract)
         return None
+
+    async def _write_refused(self, operation: str, connection: dict, contract: dict | None) -> str:
+        details = _refusal_details("PDM vault: Allow changes", _WRITE_OFF_ACTION, await _still_available(connection, contract))
+        return self._error(operation, "write_not_allowed", _WRITE_OFF_MESSAGE, details)
+
+    async def _no_folder_refused(self, operation: str, connection: dict, contract: dict | None) -> str:
+        details = _refusal_details("PDM vault: Approved folders", _NO_FOLDER_ACTION, await _still_available(connection, contract), approved_folders=[])
+        return self._error(operation, "pdm_folder_not_approved", _NO_FOLDER_MESSAGE, details)
+
+    async def _scripts_refused(self, operation: str, connection: dict, contract: dict | None) -> str:
+        details = _refusal_details("Allow scripts", _SCRIPTS_ACTION, await _still_available(connection, contract))
+        return self._error(operation, "scripts_not_allowed", _SCRIPTS_MESSAGE, details)
+
+    @staticmethod
+    async def _ragtime_status(config: dict, connection: dict) -> dict:
+        """Ragtime-side facts from the stored tool. A failed read falls back to the request config."""
+        stored: dict | None
+        try:
+            stored = await pdm_link.load_stored_pdm_settings(config)
+        except pdm_link.PdmLinkError:
+            stored = {"enabled": False, "allow_write": False, "pdm_tool_id": None, "pdm_approved_folders": []}
+        except Exception as exc:
+            logger.warning("Could not read the stored SolidWorks settings for status (%s); using the request config.", type(exc).__name__)
+            stored = None
+        if stored is None:
+            stored = {
+                "enabled": True,
+                "allow_write": bool(config.get("allow_write", False)),
+                "pdm_tool_id": connection.get("pdm_tool_id"),
+                "pdm_approved_folders": connection.get("pdm_approved_folders") or [],
+            }
+        linked = bool(stored["enabled"]) and await pdm_link.vault_linked({"pdm_tool_id": stored["pdm_tool_id"]})
+        folders = list(stored["pdm_approved_folders"])
+        return {
+            "scripts_enabled": bool(connection.get("allow_scripts", False)),
+            "vault_linked": linked,
+            "vault_changes_enabled": linked and bool(stored["allow_write"]) and bool(folders),
+            "approved_folders": folders,
+        }
 
     @staticmethod
     def _context(connection: dict, allow_write: bool, remaining_seconds: float) -> dict:

@@ -98,16 +98,51 @@ export interface PdmFoldersResponse {
   error: { code: string; message: string } | null;
 }
 
+export interface PdmSandboxRequest {
+  pdm_tool_id: string;
+  parent: string;
+  name: string;
+}
+
+export interface PdmSandboxResponse {
+  folder: string;
+  /** Always a new folder: true, or absent. An existing name is a `sandbox_exists` error. */
+  created?: true;
+  /** True when the folder already sits inside an approved folder, so the list did not change. */
+  covered: boolean;
+  approved_folders: string[];
+  allow_write: true;
+  scripts_enabled: boolean;
+}
+
+/** Error codes the sandbox route can return; `pdm_rights_missing` also carries `missing`. */
+export const PDM_SANDBOX_ERROR_CODES = [
+  'pdm_link_not_saved',
+  'sandbox_overlap',
+  'sandbox_exists',
+  'tool_disabled',
+  'pdm_rights_missing',
+  'sandbox_conflict',
+  'host_not_running',
+  'host_updating',
+  'operation_timeout',
+  'pdm_error',
+] as const;
+export type PdmSandboxErrorCode = (typeof PDM_SANDBOX_ERROR_CODES)[number];
+
 /** An HTTP error from the SolidWorks API. `status` lets callers tell e.g. the artifact 503 apart. */
 export class SolidworksApiError extends Error {
   readonly status: number;
   readonly code: string | undefined;
+  /** Rights the PDM user lacks, for `pdm_rights_missing`; empty otherwise. */
+  readonly missing: readonly string[];
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, missing: readonly string[] = []) {
     super(message);
     this.name = 'SolidworksApiError';
     this.status = status;
     this.code = code;
+    this.missing = missing;
   }
 }
 
@@ -124,12 +159,27 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     const body: { detail?: unknown } = await response.json().catch(() => ({}));
     const detail = body.detail;
+    // FastAPI reports a 422 as a list of problems; the first one carries the readable message.
+    if (Array.isArray(detail)) {
+      const first = detail[0] as { msg?: unknown } | undefined;
+      throw new SolidworksApiError(
+        typeof first?.msg === 'string'
+          ? first.msg
+          : `Request failed with status ${response.status}`,
+        response.status,
+      );
+    }
     if (detail && typeof detail === 'object') {
-      const { message, code } = detail as { message?: unknown; code?: unknown };
+      const { message, code, missing } = detail as {
+        message?: unknown;
+        code?: unknown;
+        missing?: unknown;
+      };
       throw new SolidworksApiError(
         typeof message === 'string' ? message : `Request failed with status ${response.status}`,
         response.status,
         typeof code === 'string' ? code : undefined,
+        Array.isArray(missing) ? missing.filter((item) => typeof item === 'string') : [],
       );
     }
     throw new SolidworksApiError(
@@ -158,6 +208,12 @@ export const solidworksApi = {
     signal?: AbortSignal,
   ) =>
     request<PdmFoldersResponse>(`/tools/${encodeURIComponent(toolId)}/pdm/folders`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
+  createPdmSandbox: (toolId: string, body: PdmSandboxRequest, signal?: AbortSignal) =>
+    request<PdmSandboxResponse>(`/tools/${encodeURIComponent(toolId)}/pdm/sandbox`, {
       method: 'POST',
       body: JSON.stringify(body),
       signal,

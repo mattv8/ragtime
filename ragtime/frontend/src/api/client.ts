@@ -263,6 +263,7 @@ import type {
 } from '@/types';
 import { getThemeSnapshot } from '@/theme/themeSnapshot';
 import { ArtifactRequestError, type ModelArtifact } from '@/utils/modelArtifact';
+import type { BuiltinInstructionSkill } from '@/utils/instructionSkills';
 import { formatPublicErrorDetail, getPublicErrorDetail } from './publicErrorDetail';
 import {
   sessionLifecycle,
@@ -2467,6 +2468,13 @@ export const api = {
   async listInstructionSkills(owner: InstructionSkillOwner): Promise<InstructionSkill[]> {
     const response = await apiFetch(instructionSkillsPath(owner));
     return handleResponse<InstructionSkill[]>(response);
+  },
+
+  async listBuiltinInstructionSkills(toolId: string): Promise<BuiltinInstructionSkill[]> {
+    const response = await apiFetch(
+      `${API_BASE}/tools/${encodeURIComponent(toolId)}/skills/builtin`,
+    );
+    return handleResponse<BuiltinInstructionSkill[]>(response);
   },
 
   async createInstructionSkill(

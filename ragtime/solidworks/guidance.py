@@ -13,6 +13,21 @@ GUIDE_TOPICS: tuple[dict[str, str], ...] = (
         "when_to_read": "Read first: what the tool does, the call shape, error codes and units.",
     },
     {
+        "id": "essentials",
+        "title": "Essentials: call shape, units, skills and refusals",
+        "when_to_read": "Read first when no skill is loaded: the call shape, units, which skill matches each task, and what to do when a call is refused.",
+    },
+    {
+        "id": "find-model",
+        "title": "Find a model: names, SKUs and vault search",
+        "when_to_read": "Find a model or file when its name, part number or SKU does not match a vault file, or the search returns many candidates.",
+    },
+    {
+        "id": "repair-assembly",
+        "title": "Repair an assembly on a copy",
+        "when_to_read": "Diagnose an assembly with broken mates, missing components or rebuild errors, then repair a copy with a script.",
+    },
+    {
         "id": "documents",
         "title": "Documents, properties and mass",
         "when_to_read": "Open or list documents; read summaries, configurations, custom properties, equations or mass properties.",
@@ -71,6 +86,17 @@ def _read_topic_file(topic_id: str) -> str:
     return (_GUIDANCE_DIR / _TOPIC_FILES[topic_id]).read_text(encoding="utf-8")
 
 
+def _valid_topics_message() -> str:
+    return f"Valid topics: {', '.join(_TOPIC_FILES)}."
+
+
+def read_topic_markdown(topic_id: str) -> str:
+    """Return the markdown of one topic. Raises ValueError for an unknown id."""
+    if topic_id not in _TOPIC_FILES:
+        raise ValueError(f"Unknown guide topic '{topic_id}'. {_valid_topics_message()}")
+    return _read_topic_file(topic_id)
+
+
 def read_guide(topic: str | None) -> dict:
     """Return the topic list, the resolved topic id and its markdown.
 
@@ -78,10 +104,9 @@ def read_guide(topic: str | None) -> dict:
     """
     topic_id = _normalise_topic(topic)
     if topic_id not in _TOPIC_FILES:
-        valid = ", ".join(_TOPIC_FILES)
-        raise ValueError(f"Unknown guide topic '{topic}'. Valid topics: {valid}.")
+        raise ValueError(f"Unknown guide topic '{topic}'. {_valid_topics_message()}")
     return {
         "topics": [dict(entry) for entry in GUIDE_TOPICS],
         "topic": topic_id,
-        "markdown": _read_topic_file(topic_id),
+        "markdown": read_topic_markdown(topic_id),
     }

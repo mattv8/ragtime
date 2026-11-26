@@ -59,11 +59,18 @@ namespace Ragtime.SolidWorks.Core
                     return Page(session.ListDimensions(reference, ArgumentReader.OptionalString(arguments, "feature")), arguments, context);
 
                 case "mates.list":
-                    return Page(session.ListMates(reference), arguments, context);
+                    return Page(
+                        ModelListings.Mates(
+                            session.ListMates(reference),
+                            ArgumentReader.OptionalBoolean(arguments, "only_problems", false)),
+                        arguments,
+                        context);
 
                 case "components.list":
                     return Page(
-                        session.ListComponents(reference, ArgumentReader.OptionalBoolean(arguments, "top_level_only", true)),
+                        ModelListings.Components(
+                            session.ListComponents(reference, ArgumentReader.OptionalBoolean(arguments, "top_level_only", true)),
+                            ArgumentReader.OptionalBoolean(arguments, "only_problems", false)),
                         arguments,
                         context);
 
@@ -75,6 +82,9 @@ namespace Ragtime.SolidWorks.Core
 
                 case "equations.list":
                     return Page(session.ListEquations(reference), arguments, context);
+
+                case DocumentCopy.Operation:
+                    return DocumentCopy.Execute(session, document, arguments, context, workFolder);
 
                 default:
                     throw new InvalidOperationException($"No handler is registered for operation '{operation}'.");

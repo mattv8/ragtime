@@ -196,8 +196,14 @@ describe('ToolsPanel', () => {
     render(<ToolsPanel />);
     await screen.findByText('PDM Tool');
     const row = screen.queryByTestId(`pdm-linked-from-${pdmTool.id}`);
-    if (linked) expect(row?.textContent).toBe('Used by:CAD workstation');
-    else expect(row).toBeNull();
+    if (!linked) {
+      expect(row).toBeNull();
+      return;
+    }
+    expect(row?.querySelector('.schema-stats-value')?.textContent).toBe('CAD workstation');
+    expect(document.getElementById(`tool-${pdmTool.id}-pdm-linked-note`)?.textContent).toBe(
+      "Served through “CAD workstation” for callers who can use it. They don't see this tool separately.",
+    );
   });
 
   it.each([true, false])(
@@ -241,8 +247,12 @@ describe('ToolsPanel', () => {
     ]);
     render(<ToolsPanel />);
     fireEvent.contextMenu(await screen.findByRole('heading', { name: 'PDM Tool' }));
-    expect(screen.getByTestId(`pdm-linked-from-${pdmTool.id}`).textContent).toBe(
-      'Used by:CAD workstation, Second workstation',
+    const linkedRow = screen.getByTestId(`pdm-linked-from-${pdmTool.id}`);
+    expect(linkedRow.querySelector('.schema-stats-value')?.textContent).toBe(
+      'CAD workstation, Second workstation',
+    );
+    expect(linkedRow.querySelector('[data-pdm-linked-note]')?.textContent).toContain(
+      'for callers who can use either.',
     );
     fireEvent.click(
       within(document.querySelector('.userspace-tool-context-menu') as HTMLElement).getByRole(

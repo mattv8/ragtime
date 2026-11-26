@@ -556,7 +556,7 @@ A **SolidWorks** tool lets AI agents read SolidWorks models on a Windows machine
 1. In **Tools**, click **Add Tool** and select **SolidWorks**.
 2. In **Configure Connection**, choose **Quick Connect** and run the installation command on the Windows machine as the account that uses SolidWorks, or enter an existing SSH connection manually.
 3. In the **SolidWorks** step, click **Install agent**. Ragtime uploads the agent package, verifies its SHA-256 hash, installs it in `%LOCALAPPDATA%\RagtimeSolidWorks\host` (the folder keeps its old name) for that account only, and registers a logon task that starts it. Wait until the **SolidWorks agent** panel shows **Running**. If the automatic install fails, follow **Install manually instead**.
-4. Set the [options](#solidworks-options). Optionally link a PDM vault ([PDM vault access](#pdm-vault-access)) and turn on **Allow scripts** ([Scripts](#scripts)).
+4. Set the [options](#solidworks-options). Optionally link a PDM vault ([PDM vault access](#pdm-vault-access)), create a [sandbox folder](#sandbox-folder) if agents should change vault files, and turn on **Allow scripts** ([Scripts](#scripts)).
 5. Click **Test Connection**, then complete the remaining wizard steps and save.
 
 When the Ragtime image includes a newer agent version than the installed one, Ragtime updates the agent by itself once it is idle: no request is running, none has run for five minutes, and no document is open in a SolidWorks instance the agent started. The **Keep the agent up to date** switch on the tool (on by default) turns this off. **Update agent** in the agent panel updates at once. Either way, the update closes the SolidWorks instances the agent started. A failed update restores the previous version and is retried later. Ragtime never installs an older agent. While the agent is running, **Uninstall agent** stops it, removes its logon task and deletes the agent folder; logs, the work folder and PDM check-out records under `%LOCALAPPDATA%\RagtimeSolidWorks` remain. Deleting the tool does not uninstall the agent, so uninstall it first if you want it removed from the machine.
@@ -571,7 +571,7 @@ When the Ragtime image includes a newer agent version than the installed one, Ra
 | **Timeout** | 15–3,600 seconds per call. Calls over about 120 seconds may be cut off by the web proxy. | 100 seconds |
 | **Close idle after** | 1–1,440 minutes without a call, for background instances. The next call starts a new instance in about 10 seconds. | 15 minutes |
 | **Allow scripts** | On or off ([Scripts](#scripts)) | Off |
-| **Allow vault changes** | On or off; needs a linked PDM tool and approved folders ([PDM vault access](#pdm-vault-access)) | Off |
+| **Allow vault changes** | On or off; needs a linked PDM tool and approved folders ([PDM vault access](#pdm-vault-access)). A [sandbox folder](#sandbox-folder) approves a folder and turns this on in one step | Off |
 
 #### Agent operations
 
@@ -580,14 +580,27 @@ Each SolidWorks tool is one AI-agent tool, `solidworks_{tool}`, called with an `
 | Operations | Purpose | Requires |
 |------------|---------|----------|
 | `guide`, `describe`, `status` | Guidance topics, the operation list with argument schemas, SolidWorks agent and instance state | - |
-| `documents.list`, `document.open`, `document.close` | List open documents; open a local `.sldprt`, `.sldasm` or `.slddrw` file read-only; close a document the SolidWorks agent opened | `document.open` and `document.close`: background mode |
+| `documents.list`, `document.open`, `document.close` | List open documents; open a local `.sldprt`, `.sldasm` or `.slddrw` file read-only, reporting its `load_warnings` and `missing_references`; close a document the SolidWorks agent opened | `document.open` and `document.close`: background mode |
+| `document.copy` | Copy an open document and its references into a new folder under the work folder's `copies` folder. The source is never saved or renamed (see **Copies** below the table) | An open document. The repair routine also needs `document.open`, so background mode |
 | `model.summary`, `configurations.list`, `features.list`, `feature.get`, `sketch.get`, `dimensions.list`, `equations.list`, `properties.get`, `mass_properties.get` | Read model data | - |
-| `components.list`, `mates.list` | Read assembly structure | An assembly |
+| `components.list`, `mates.list` | Read assembly structure. `only_problems: true` returns only the broken items: components whose file is missing, and mates with an error, a warning or an unresolved entity. A mate's `error` gives the SolidWorks error name and its meaning, and `whats_wrong` gives the feature's message | An assembly |
 | `model.preview`, `model.export` | Render a PNG of the model; export it as STEP, STL, 3MF, GLB or the native SolidWorks file. Neither saves the document | An open document (attach mode) or `document.open` (background mode) |
-| `pdm.search`, `pdm.lookup` | Search the linked PDM tool's index; look up indexed documents by ID, file name or part number | A linked PDM tool |
+| `pdm.search`, `pdm.lookup` | Search the linked PDM tool's index; look up indexed documents by ID, file name or part number, with filters and paging ([lookup](#pdm-vault-access)) | A linked PDM tool |
 | `pdm.status`, `pdm.folder.list`, `pdm.file.info`, `pdm.variables.get`, `pdm.file.get_latest` | Read live vault state and data cards; copy the latest version of a file, and its references, to the local view | A linked PDM tool and the PDM client, except for `pdm.status` |
 | `pdm.folder.create`, `pdm.file.add`, `pdm.file.checkout`, `pdm.file.undo_checkout`, `pdm.file.checkin`, `pdm.variables.set` | Change files in approved vault folders | **Allow vault changes** and approved folders |
 | `script.run` | Compile and run a C# 5 script against SolidWorks | **Allow scripts** |
+
+A refused call says what to change and what still works: its `error.details` holds the `setting`, an `admin_action` and `still_available`. The refusals tied to a setting are `write_not_allowed` (**Allow vault changes**), `pdm_folder_not_approved` (no approved folder) and `scripts_not_allowed` (**Allow scripts**).
+
+**Copies.** `document.copy` writes its folder under the work folder's `copies` folder. The agent deletes copy folders older than 7 days when it starts and once an hour, and keeps a folder that holds a document open in an instance it started. A copy is refused above 2 GiB, when the `copies` folder would exceed 10 GiB, or when less than 5 GiB would stay free on the volume.
+
+#### Built-in skills
+
+Ragtime ships SolidWorks skills with the code: how to find a model, repair an assembly, write scripts, and more. Their text is the same as the guide topics that `guide` returns, and agents receive them through the same channels as admin skills ([Agent guidance and instruction skills](#agent-guidance-and-instruction-skills)). Admins see them in the tool's **Skills** dialog under **Built in**, marked **Active** or **Not active** with the reason. They are not stored in the database, so exports, copies and skill counts leave them out.
+
+- **Essentials** always applies, and its text is part of the tool description.
+- **Scripts** needs **Allow scripts**, and **PDM** needs a linked PDM tool. Without them, those skills are not active.
+- To replace a built-in skill, add an admin skill with the same name. The built-in stays replaced while that skill exists, enabled or disabled. To turn a built-in off, add a disabled skill with its name.
 
 #### PDM vault access
 
@@ -600,6 +613,10 @@ The PDM section of the **SolidWorks** step shows both: the linked PDM tool with 
 
 Everyone who can use the SolidWorks tool can search the linked vault, whatever the PDM tool's own access settings. A PDM tool set up from the SolidWorks step starts with chat and workspace access denied. Deleting or disabling the linked PDM tool turns off the SolidWorks tool's vault access.
 
+When a caller can use a SolidWorks tool that links a PDM tool, the PDM tool is not listed to that caller, in chat or over MCP, and its `search_{tool}` and `lookup_{tool}` tools are not offered. The SolidWorks tool carries the PDM tool's description and skills instead, and its `pdm.search` and `pdm.lookup` operations cover the same index. Callers who cannot use the SolidWorks tool still see the PDM tool.
+
+**Lookup and search.** `pdm.lookup` takes `document_id`, `filename` or `part_number` (at least one), with optional `configuration`, `document_type` (`SLDPRT`, `SLDASM` or `SLDDRW`), `limit` (1–25, default 10), `offset` (0–1,000) and `detail` (`summary`, the default, or `full`). Results rank an exact file name first (with or without the extension), then names that start with the term, then other CAD files, then the rest. Each item has `matched_on` (`filename`, `part_number`, `properties` or `document_id`). `next_offset` is the offset of the next page, or null on the last page. `pdm.search` with a single word that contains a digit, such as a part number, returns up to five file-name matches first (`match: "filename"`), then semantic matches (`match: "semantic"`).
+
 **Allow vault changes** is off by default. When it is on, agents can create folders, add files, check out, set data-card values, check in and undo their own check-outs, only inside the approved folders. Type vault-relative paths such as `\Projects\Fixtures`, or pick folders in the wizard's vault browser. Each approved folder includes its subfolders; up to 25 are allowed. Paths must use plain ASCII characters, and the vault root itself cannot be approved.
 
 The `pdm.*` operations follow these rules whatever the settings:
@@ -611,13 +628,21 @@ The `pdm.*` operations follow these rules whatever the settings:
 
 Scripts are not bound by these rules; see [Scripts](#scripts).
 
+#### Sandbox folder
+
+To let agents change vault files without approving a folder that already exists, an admin can create a sandbox folder once the PDM link is saved. In the SolidWorks step's PDM settings, choose **Create sandbox folder…**, pick the parent folder in the vault browser and enter a folder name. The default is **Ragtime Sandbox**; a name may use letters, digits, spaces, dots, hyphens and underscores, up to 64 characters, and must not end in a dot or a space. **Create folder** creates the folder in the vault through the SolidWorks agent, approves it and turns on **Allow changes**, in one step. It does not change **Allow scripts**.
+
+- The PDM user on the machine needs read, add-folder, add-file and check-out rights on the parent folder. Otherwise nothing is created, and the form names the missing rights.
+- A name that already exists in the parent folder is refused, and so is a folder that contains an approved folder. A folder inside an approved folder is created without changing the approved list.
+- Ragtime never deletes vault folders. A PDM administrator removes a sandbox folder when it is no longer needed.
+
 #### Previews and exports
 
 `model.preview` renders a PNG of the model, and `model.export` saves it as STEP, STL, 3MF, GLB or the native SolidWorks file (an assembly comes as a zip with its referenced files). In Ragtime chat, a preview appears as a card with a 3D view and a download link; MCP clients get the preview image and a link to the file. Exported files are kept for 7 days and capped at 100 MB each. Downloads and the 3D view need Ragtime sign-in, and the chat model sees the latest preview.
 
 #### Scripts
 
-With **Allow scripts** on, AI agents can call `script.run` to compile and run a C# 5 script against SolidWorks in a separate worker process on the machine. AI agents use scripts to create or change models, save them in the SolidWorks agent's work folder, then add and check them in with the PDM operations.
+With **Allow scripts** on, AI agents can call `script.run` to compile and run a C# 5 script against SolidWorks in a separate worker process on the machine. AI agents use scripts to create or change models, save them in the SolidWorks agent's work folder, then add and check them in with the PDM operations. With **Allow scripts** off, `script.run` is refused with `scripts_not_allowed`, and the built-in skills that need scripts are not active.
 
 Scripts are not sandboxed: they run as the Windows account, with its file, network and PDM rights. In attach mode they act on the user's open SolidWorks session. Content protection reviews each script before it runs when its coverage rules include the tool; with content protection off, scripts run without review. A run is limited to the tool's timeout or 600 seconds, whichever is lower, and a script that times out may already have changed open documents.
 
@@ -777,7 +802,7 @@ The schemas below list the primary fields; several tools also accept optional fi
 | `ssh_shell` | `{command, reason}` |
 | `ssh_transfer` | `{source, destination, content?, encoding?, overwrite?, recursive?, reason?, timeout?, workspace_id?}`; copies between authorized SSH connections, inline content, and workspace text files. |
 | `filesystem_indexer` | `{query, max_results}` |
-| `solidworks_pdm` | `search_{tool}`: `{query, document_type}`; Chat also provides `lookup_{tool}` for exact indexed-snapshot lookup. |
+| `solidworks_pdm` | `search_{tool}`: `{query, document_type}`; Chat also provides `lookup_{tool}` for exact indexed-snapshot lookup. Not listed to a caller who can also use a SolidWorks tool that links it, which offers the same index as `pdm.search` and `pdm.lookup`. |
 | `solidworks` | `solidworks_{tool}`: `{operation, arguments?, timeout?}`; call `guide`, then `describe` for the operation list ([details](#agent-operations)). |
 | `knowledge_search` | `{query, index_name}` |
 | `schema_search` | `{prompt, limit}` |
@@ -798,7 +823,7 @@ How agents receive them:
 
 - **Custom route:** always-applied skills are included in full in the server instructions.
 - **Default `/mcp` route:** always-applied skills are included in full, unless content protection applies to the caller. Then they are listed with an instruction to load them first, so their text passes the same check as `read_skill`.
-- **Tool:** an always-applied tool skill is included in the tool description while the tool's always-applied skills total 1,500 characters or less. Otherwise the description tells the agent to load them first.
+- **Tool:** an always-applied tool skill is included in the tool description while the tool's admin always-applied skills total 1,500 characters or less. Otherwise the description tells the agent to load them first. Built-in always-applied skills, such as SolidWorks essentials, are always included.
 - **Other skills** are listed and loaded with `read_skill` or `resources/read` when relevant.
 
 Default-route skills reach only callers that can use the general tool catalog. Workspace-only development credentials (`rtdev_`) do not receive them, and neither do sign-ins outside the default route's allowed group. They are served only on the HTTP `/mcp` endpoint, not on the stdio server.

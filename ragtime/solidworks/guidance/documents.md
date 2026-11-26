@@ -20,6 +20,19 @@ If you get `document_not_open`, call `document.open` with the path first.
 The document is opened read-only and silently. A missing file gives `document_not_found`;
 UNC or relative paths give `invalid_arguments`.
 
+The result adds `load_warnings`, the names of the SolidWorks open warnings (for example
+`references_not_found`; `[]` when there are none), and `missing_references`, up to 50 referenced
+paths that are not on disk. A document with missing references still opens. Read both before you
+trust a mate or component list.
+
+**`document.copy`** `document` (an open document: `doc-N` or its full path), `include_references`
+(default true). Packs the open document and its references into a new folder under the work folder
+(`<work folder>\copies\<id>\`) and returns `{folder, path, files, count, warnings}`. `path` is the
+copy of the top file; `files` lists each `source` and its copied `path`. The source is never saved or
+changed. Use the copy when you need to edit a model: see `repair-assembly`. `warnings` lists missing
+source files and references that were left outside the copy. More than 500 files fails with
+`result_too_large`. Copies older than 7 days are removed automatically.
+
 **`document.close`** `document`. Closes a document the SolidWorks agent (the Ragtime program on the
 Windows machine) opened (`opened_by_host` true) and returns `{closed: true}`. It never saves. Use it
 when you are finished, because background instances hold a licence. Documents the user opened are
@@ -28,8 +41,9 @@ refused with `invalid_arguments`.
 **`model.summary`** `document`. One call to see what the model is. Key fields:
 `type`, `title`, `active_configuration`, `configuration_count`, `feature_count`,
 `features_with_errors`, `features_with_warnings`, `material`, `custom_property_count`,
-`needs_rebuild`, `units`. Parts also have `solid_body_count`; assemblies have `component_count`
-and `mate_count`. Read this before any large listing.
+`needs_rebuild`, `units`. Parts also have `solid_body_count`; assemblies have `component_count`,
+`mate_count` and `missing_component_count` (components whose file is not on this machine). Read this
+before any large listing.
 
 **`configurations.list`** `document` (paged). Items: `name`, `is_active`, `description`, `parent`.
 

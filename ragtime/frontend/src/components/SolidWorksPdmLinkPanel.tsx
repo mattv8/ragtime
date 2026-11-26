@@ -10,11 +10,12 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { api } from '../api/client';
-import type { SolidworksHostStatus } from '../api/solidworks';
+import type { PdmSandboxResponse, SolidworksHostStatus } from '../api/solidworks';
 import { usePdmTools } from '../hooks/usePdmTools';
 import { usePdmRights } from '../hooks/usePdmRights';
 import type { RightsState } from '../utils/solidworksPdmRights';
 import { SolidWorksPdmFolderBrowser } from './SolidWorksPdmFolderBrowser';
+import { SolidWorksPdmSandboxSetup, type SandboxTarget } from './SolidWorksPdmSandboxSetup';
 import type {
   PdmIndexJob,
   PdmIndexStatusResponse,
@@ -23,8 +24,10 @@ import type {
 } from '../types/api';
 import {
   findMatchingView,
+  isWithinFolder,
   resolveLinkState,
   resolveMachineState,
+  vaultFolderKey,
   type PdmLinkState,
   type PdmMachineState,
   type PdmViewFacts,
@@ -53,8 +56,10 @@ export interface SolidWorksPdmLinkPanelProps {
   allowChanges: boolean;
   onAllowChangesChange: (next: boolean) => void;
   hostStatus: SolidworksHostStatus | null;
+  /** The tool's Allow scripts setting, read only here: the sandbox copy says whether scripts are on. */
+  allowScripts?: boolean;
   disabled?: boolean;
-  /** True while the setup form is running (blocks Back/Continue like the host actions). */
+  /** True while the setup form or the sandbox action runs (blocks Back/Continue like the host actions). */
   onBusyChange?: (busy: boolean) => void;
   /** For the Review step: the resolved tool and its index status. */
   onTargetChange?: (target: PdmTarget | null) => void;
@@ -136,6 +141,37 @@ const formatDate = (iso: string) => new Date(iso).toLocaleString();
 export function formatLastIndexed(status: PdmIndexStatusResponse | null): string {
   if (!status) return 'Unknown';
   return status.last_indexed ? formatDate(status.last_indexed) : 'Never';
+}
+
+/**
+ * Adds a sandbox folder to the draft. A draft folder the new one sits inside is already covered, so
+ * it stays; a draft folder inside the new one is dropped, since the new folder now covers it.
+ */
+function withApprovedFolder(folders: string[], folder: string): string[] {
+  const covered = folders.some(
+    (item) => vaultFolderKey(item) === vaultFolderKey(folder) || isWithinFolder(folder, item),
+  );
+  if (covered) return folders;
+  return [...folders.filter((item) => !isWithinFolder(item, folder)), folder];
+}
+
+/** Why the sandbox action cannot run yet; the same conditions as the folder browser's help. */
+function sandboxBlockReason(input: {
+  toolId: string | null;
+  linkedTool: ToolConfig | undefined;
+  loading: boolean;
+  database: string | null;
+  machineState: PdmMachineState;
+}): string | null {
+  if (!input.toolId) return 'Save the connection first to browse the vault.';
+  if (!input.linkedTool || input.loading || !input.database) {
+    return 'Wait for the search index tool to load.';
+  }
+  if (!input.linkedTool.enabled) return 'Enable the PDM tool first.';
+  if (input.machineState !== 'ready') {
+    return 'Install and start the SolidWorks agent and log in to the vault view to browse the vault.';
+  }
+  return null;
 }
 
 function linkPill(state: PdmLinkState, status: PdmIndexStatusResponse | null): Pill {
@@ -285,6 +321,7 @@ export function SolidWorksPdmLinkPanel({
   allowChanges,
   onAllowChangesChange,
   hostStatus,
+  allowScripts = false,
   disabled,
   onBusyChange,
   onTargetChange,
@@ -312,12 +349,15 @@ export function SolidWorksPdmLinkPanel({
   const lastRights = useRef<string | undefined>(undefined);
   const previousLink = useRef(value.pdm_tool_id);
   const requestedLink = useRef<string | null | undefined>(undefined);
+  const busyParts = useRef({ setup: false, sandbox: false });
+  const latestValue = useRef(value);
 
   useEffect(() => {
     busyCallback.current = onBusyChange;
     targetCallback.current = onTargetChange;
     resolutionCallback.current = onResolutionChange;
     rightsCallback.current = onRightsChange;
+    latestValue.current = value;
   });
 
   const linkedId = value.pdm_tool_id;
@@ -481,11 +521,22 @@ export function SolidWorksPdmLinkPanel({
     }
   }, [formOpen, loading, linkedTool, linkedId, disabled]);
 
-  // Stable identity: the setup form lists this callback in an effect dependency.
-  const reportSetupBusy = useCallback((busy: boolean) => {
-    setSetupBusy(busy);
-    busyCallback.current?.(busy);
+  // Stable identity: the setup form and the sandbox action list these callbacks in dependencies.
+  const publishBusy = useCallback((part: 'setup' | 'sandbox', busy: boolean) => {
+    busyParts.current = { ...busyParts.current, [part]: busy };
+    busyCallback.current?.(busyParts.current.setup || busyParts.current.sandbox);
   }, []);
+  const reportSetupBusy = useCallback(
+    (busy: boolean) => {
+      setSetupBusy(busy);
+      publishBusy('setup', busy);
+    },
+    [publishBusy],
+  );
+  const reportSandboxBusy = useCallback(
+    (busy: boolean) => publishBusy('sandbox', busy),
+    [publishBusy],
+  );
 
   const selectTool = (nextId: string | null) => {
     if (nextId === linkedId) return;
@@ -574,6 +625,28 @@ export function SolidWorksPdmLinkPanel({
 
   const changeFolders = (approved_folders: string[]) =>
     onChange({ pdm_tool_id: linkedId, approved_folders });
+
+  // Merges only the new folder into the draft (U3): a later Save keeps it, and unsaved edits stay.
+  const handleSandboxCreated = (result: PdmSandboxResponse) => {
+    const current = latestValue.current;
+    onChange({
+      pdm_tool_id: current.pdm_tool_id,
+      approved_folders: withApprovedFolder(current.approved_folders, result.folder),
+    });
+    onAllowChangesChange(true);
+  };
+
+  const sandboxBlock = sandboxBlockReason({
+    toolId,
+    linkedTool,
+    loading,
+    database,
+    machineState,
+  });
+  const sandboxTarget: SandboxTarget | null =
+    toolId && linkedId && database && sandboxBlock === null
+      ? { toolId, pdmToolId: linkedId, vaultName: database }
+      : null;
 
   const toolOptions = loading ? (
     <option value="">Loading…</option>
@@ -1104,6 +1177,14 @@ export function SolidWorksPdmLinkPanel({
                 : 'Off: search, get latest and open only'}
             </span>
           </div>
+          <SolidWorksPdmSandboxSetup
+            target={sandboxTarget}
+            unavailableReason={sandboxBlock}
+            allowScripts={allowScripts}
+            disabled={disabled || setupBusy || pending !== null}
+            onBusyChange={reportSandboxBusy}
+            onCreated={handleSandboxCreated}
+          />
           {allowChanges && (
             <div id="solidworks-pdm-changes-detail" className="sw-subsection">
               <div id="solidworks-pdm-identity">

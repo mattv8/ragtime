@@ -199,7 +199,7 @@ namespace Ragtime.SolidWorks.Core
                         ErrorCodes.WriteNotAllowed,
                         $"'{definition.Name}' changes SolidWorks state, which this tool's configuration does not allow.");
                 case ProtocolInfo.Access.Script when !request.Context.AllowScripts:
-                    throw HostError.Coded(ErrorCodes.ScriptsNotAllowed, "Scripts are not enabled for this tool.");
+                    throw HostError.Coded(ErrorCodes.ScriptsNotAllowed, "Scripts are off for this tool. An admin can turn on Allow scripts in the tool's SolidWorks settings.");
             }
 
             ArgumentValidator.Validate(definition.ArgumentsSchema, request.Arguments);
@@ -350,11 +350,11 @@ namespace Ragtime.SolidWorks.Core
                 target,
                 context,
                 deadline,
-                session => session.OpenReadOnlySilent(path, configuration),
+                session => session.OpenReadOnlySilent(path, configuration, deadline),
                 cancellationToken).ConfigureAwait(false);
 
             var entry = _documents.Register(run.Instance.InstanceId, run.Value, openedByHost: !run.Value.WasAlreadyOpen);
-            return new Outcome(Fits(entry.ToItem(), context), HostInfoOf(run.Instance));
+            return new Outcome(Fits(DocumentOpenResult.From(entry.ToItem(), run.Value), context), HostInfoOf(run.Instance));
         }
 
         private InstanceTarget ChooseOpenTarget(RequestContext context)
@@ -452,6 +452,11 @@ namespace Ragtime.SolidWorks.Core
             {
                 // Refuses bad arguments before a SolidWorks instance is started for the call.
                 ModelFiles.Parse(definition.Name, arguments, document, _pdmWorkFolder);
+            }
+
+            if (definition.Name == DocumentCopy.Operation)
+            {
+                DocumentCopy.RequireWorkFolder(_pdmWorkFolder);
             }
 
             var run = await RunOnInstanceAsync(
