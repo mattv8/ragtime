@@ -723,6 +723,13 @@ button.sw-inline-link {
   border-color: var(--color-input-focus);
   box-shadow: 0 0 0 3px var(--color-primary-light);
 }
+/* Forced colors drop the border colour and shadow above, so the focused box needs an outline. */
+@media (forced-colors: active) {
+  .sw-chip-input:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
 /* The id outranks Modern's long `input:not(...)` box rule; the chip box draws the border. */
 .sw-chip-input #solidworks-pdm-folder-input {
   flex: 1 1 10rem;
@@ -788,5 +795,128 @@ button.sw-inline-link {
     content: '';
     position: absolute;
     inset: -13px;
+  }
+}
+/* Approving a folder the PDM user can't change is allowed, so the chip itself carries the warning. */
+.sw-chip[data-sw-rights='missing_write'],
+.sw-chip[data-sw-rights='not_found'] {
+  border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+}
+
+/* Vault folder suggestions under the approved-folder box. */
+.sw-combobox {
+  position: relative;
+}
+.sw-suggest {
+  position: absolute;
+  inset-inline: 0;
+  top: 100%;
+  z-index: var(--z-dropdown);
+  margin-top: var(--space-xs);
+  max-height: min(15rem, 40vh);
+  overflow: auto;
+  background: var(--color-widget, var(--color-surface));
+  border: 1px solid var(--color-border-strong, var(--color-border));
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+.sw-suggest-heading {
+  margin: 0;
+  padding: var(--space-sm) var(--space-sm) var(--space-xs);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+.sw-suggest-heading code,
+.sw-suggest-status code {
+  font-family: var(--font-mono);
+}
+.sw-suggest-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--space-xs);
+}
+.sw-suggest-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-sm);
+  cursor: pointer;
+}
+.sw-suggest-option:hover {
+  background: var(--color-surface-hover);
+}
+.sw-suggest-option[aria-selected='true'] {
+  background: var(--color-primary-light);
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+.sw-suggest-option[aria-disabled='true'] {
+  cursor: default;
+}
+.sw-suggest-option[aria-disabled='true']:hover {
+  background: transparent;
+}
+.sw-suggest-option[aria-disabled='true'] .sw-suggest-name {
+  color: var(--color-text-secondary);
+}
+.sw-suggest-icon {
+  flex: none;
+  color: var(--color-text-secondary);
+}
+.sw-suggest-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sw-suggest-name strong {
+  color: var(--color-text-strong);
+}
+.sw-suggest-drill {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+}
+.sw-suggest-drill:hover,
+.sw-suggest-option[aria-selected='true'] .sw-suggest-drill {
+  color: var(--color-text-strong);
+}
+.sw-suggest-drill:hover {
+  background: var(--color-surface-active);
+}
+.sw-suggest-status {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: var(--space-sm);
+  background: var(--color-widget, var(--color-surface));
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+.sw-suggest-list + .sw-suggest-status {
+  border-top: 1px solid var(--color-border);
+}
+.sw-suggest-status > .rc-polling-indicator {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 0.125em;
+}
+#solidworks-pdm-folder-suggest-retry {
+  margin: 0 var(--space-sm) var(--space-sm);
+}
+@media (pointer: coarse) {
+  .sw-suggest-option {
+    min-height: 44px;
+  }
+  /* Extends the chevron's hit area to 44px without changing the visual size. */
+  .sw-suggest-drill::after {
+    content: '';
+    position: absolute;
+    inset: -12px;
   }
 }
