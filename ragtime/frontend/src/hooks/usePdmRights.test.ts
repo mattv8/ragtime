@@ -39,6 +39,81 @@ describe('usePdmRights', () => {
   });
   afterEach(() => vi.useRealTimers());
 
+  it('keeps covered folders during debounce and request, then updates all folders', async () => {
+    const item = { path: '\\A', checked: true, exists: true, rights: null, write_ready: true };
+    let finish!: (value: PdmRightsResponse) => void;
+    api.checkPdmRights
+      .mockResolvedValueOnce({ ...response, folders: [item] })
+      .mockImplementationOnce(
+        () =>
+          new Promise<PdmRightsResponse>((resolve) => {
+            finish = resolve;
+          }),
+      );
+    const { result, rerender } = renderHook((props) => usePdmRights(props), {
+      initialProps: initial,
+    });
+    await advance();
+    rerender({ ...initial, folders: ['\\a', '\\B'] });
+    expect(result.current.state.folders).toEqual({ '\\a': 'write_ready', '\\b': 'not_checked' });
+    expect(result.current.loading).toBe(true);
+    await advance();
+    expect(result.current.state.folders).toEqual({ '\\a': 'write_ready', '\\b': 'not_checked' });
+    expect(result.current.loading).toBe(true);
+    await act(async () => finish({ ...response, folders: [item, { ...item, path: '\\B' }] }));
+    expect(result.current.state.folders).toEqual({ '\\a': 'write_ready', '\\b': 'write_ready' });
+    expect(result.current.loading).toBe(false);
+    rerender({ ...initial, folders: ['\\B'] });
+    expect(result.current.state.folders).toEqual({ '\\b': 'write_ready' });
+  });
+
+  it.each([{ toolId: 'other' }, { pdmToolId: 'other' }, { enabled: false }])(
+    'discards carried rights when identity or activity changes: %j',
+    async (change) => {
+      api.checkPdmRights.mockResolvedValue({
+        ...response,
+        folders: [{ path: '\\A', checked: true, exists: true, rights: null, write_ready: true }],
+      });
+      const { result, rerender } = renderHook((props) => usePdmRights(props), {
+        initialProps: initial,
+      });
+      await advance();
+      expect(result.current.state.folders['\\a']).toBe('write_ready');
+      rerender({ ...initial, ...change });
+      expect(result.current.state.folders['\\a']).toBe('not_checked');
+      expect(result.current.state.user).toBeNull();
+      rerender(initial);
+      expect(result.current.state.folders['\\a']).toBe('not_checked');
+    },
+  );
+
+  it('preserves root semantics while changes are disabled and does not carry old errors', async () => {
+    api.checkPdmRights.mockResolvedValueOnce({
+      ...response,
+      folders: [{ path: '\\A', checked: true, exists: true, rights: null, write_ready: true }],
+    });
+    const { result, rerender } = renderHook((props) => usePdmRights(props), {
+      initialProps: initial,
+    });
+    await advance();
+    rerender({ ...initial, allowChanges: false });
+    expect(result.current.state.folders['\\a']).toBe('not_checked');
+    expect(result.current.state.root).toBe('ok');
+    expect(result.current.state.user).toBe('Alice');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('does not carry a previous error to a new key', async () => {
+    api.checkPdmRights.mockRejectedValueOnce(new Error('offline'));
+    const { result, rerender } = renderHook((props) => usePdmRights(props), {
+      initialProps: initial,
+    });
+    await advance();
+    expect(result.current.error).toBe('offline');
+    rerender({ ...initial, folders: ['\\B'] });
+    expect(result.current.error).toBeNull();
+  });
+
   it('debounces rapid changes and sends only the latest folders', async () => {
     const { rerender, result } = renderHook((props) => usePdmRights(props), {
       initialProps: initial,
