@@ -8,17 +8,14 @@ The tool can be linked to one PDM vault. Two kinds of data are then available:
   asked from the PDM client now. Use it to confirm state before you act or report it.
 
 `describe` lists the `pdm.*` operations whenever the installed SolidWorks agent (the Ragtime
-program on the Windows machine) supports them, linked or not. Every one except `pdm.status`
-answers `pdm_not_linked` without a link. `pdm.search` and `pdm.lookup` appear only when a link resolves.
-On an older SolidWorks agent its `pdm.*` operations answer `unknown_operation`; see the errors below.
+program on the Windows machine) supports them. Every one except `pdm.status` answers `pdm_not_linked` without a link;
+`pdm.search` and `pdm.lookup` appear only when a link resolves. An older SolidWorks agent answers `unknown_operation`;
+see the errors below.
 
 ## Vault paths
 
-Give paths in one of two forms:
-
-- Vault-relative, starting with a backslash: `\13_Ragtime\Block1.SLDPRT`. A lone `\` is the
-  vault root. Prefer this form.
-- Absolute, under the vault's local view: `C:\PDM\13_Ragtime\Block1.SLDPRT`.
+Prefer vault-relative paths that start with a backslash (`\13_Ragtime\Block1.SLDPRT`; a lone `\` is
+the vault root). Absolute paths under the vault's local view also work (`C:\PDM\13_Ragtime\Block1.SLDPRT`).
 
 Paths with `..`, UNC paths (`\\server\share\...`) and other drives are refused.
 
@@ -28,13 +25,12 @@ to `document.open` once `exists_locally` is true.
 
 ## Operations
 
-Access: `index` reads the vault index, `read` asks the PDM client, `write` changes the vault and
-is allowed only in approved folders.
+Access: `index` reads the vault index, `read` asks the PDM client, `write` changes the vault (approved folders only).
 
 | Operation | Access | Arguments | Result |
 |---|---|---|---|
-| `pdm.search` | index | `query` (1-500 chars), `document_type?` (`SLDPRT`, `SLDASM`, `SLDDRW`), `limit?` (1-25, default 10) | `items` (`document_id`, `filename`, `document_type`, `part_number`, `description`, `revision`, `vault_paths`, `configurations`, `bom_count`), `index`, `note` |
-| `pdm.lookup` | index | one or more of `document_id`, `filename`, `part_number`; `configuration?`, `limit?` | `items` with `document_values`, `configurations` (`{name, values}`), `bom`, `warnings`; `index`, `note` |
+| `pdm.search` | index | `query` (1-500 chars), `document_type?` (`SLDPRT`, `SLDASM`, `SLDDRW`), `limit?` (1-25, default 10) | `items` (`document_id`, `filename`, `document_type`, `part_number`, `description`, `revision`, `vault_paths`, `configurations`, `bom_count`, `match`), `index`, `note` |
+| `pdm.lookup` | index | one or more of `document_id`, `filename`, `part_number`; `document_type?`, `configuration?`, `limit?` (1-25), `offset?` (0-1,000), `detail?` (`summary` default, or `full`) | `items` (summary: `document_id`, `filename`, `document_type`, `part_number`, `description`, `revision`, `vault_paths`, `configuration_names`, `configuration_count`, `bom_count`, `matched_on`), `next_offset`, `index`, `note`, `truncated?` |
 | `pdm.status` | read | none | `client_installed`, `client_version`, `views`, `work_folder`, `linked` (`vault`, `root`, `logged_in`, `user`, `writes_enabled`, `approved_folders`, `problem`) or null |
 | `pdm.folder.list` | read | `path` (folder), `limit?`, `offset?`, `snapshot?` | paged `items`: `name`, `kind` (`file` or `folder`), `vault_path`, `latest_version`, `local_version`, `checked_out`; folders first |
 | `pdm.file.info` | read | `path` (file) | `vault_path`, `local_path`, `name`, `file_id`, `exists_locally`, `local_version`, `latest_version`, `checked_out`, `checked_out_by`, `checked_out_on`, `checked_out_here`, `checked_out_by_tool`, `workflow_state`, `in_approved_folder` |
@@ -50,8 +46,6 @@ is allowed only in approved folders.
 Lists are paged like every other list: `limit`, `offset`, `next_offset` and `snapshot` (see `paging`).
 
 ## Examples
-
-One call per line; the arguments are the ones in the table.
 
 ```json
 {"operation": "pdm.search", "arguments": {"query": "bracket", "document_type": "SLDPRT", "limit": 5}}
@@ -73,8 +67,6 @@ the folder's local view is added in place; a source in the work folder is copied
 3. `pdm.file.get_latest` for that `path`. Read `skipped` (see Get latest below).
 4. `document.open` with `path` set to `file.local_path`.
 
-The index can be stale, so confirm with `pdm.file.info` before you report what the vault holds.
-
 ## Get latest
 
 `pdm.file.get_latest` never overwrites local work. Each file it does not copy is listed in `skipped`:
@@ -91,9 +83,8 @@ A link (symbolic link or junction) in the local path of the file or any referenc
 
 ## Write rules
 
-Writes need both: changes enabled for this tool by the admin, and the target folder approved.
-Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
-`in_approved_folder` in `pdm.file.info`.
+Writes need changes enabled for this tool and an approved target folder. Check `linked.writes_enabled`
+and `linked.approved_folders` in `pdm.status`, and `in_approved_folder` in `pdm.file.info`.
 
 - Anything outside the approved folders is refused with `pdm_folder_not_approved`. Do not work
   around it (no other path, no other folder). Tell the user which folder would need approval.
@@ -138,10 +129,18 @@ Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
 
 ### Existing file
 
-1. `pdm.file.checkout`.
-2. Make the change. The user edits the model in SolidWorks; you can set data-card values with
-   `pdm.variables.set`.
-3. `pdm.file.checkin` with a comment.
+No operation replaces an existing vault file with a copy, so never overwrite the local file with a
+repaired copy. To set data-card values: `pdm.file.checkout`, `pdm.variables.set`, then `pdm.file.checkin`
+with a comment. To change geometry, add the repaired copy under a new name (`pdm.file.add`, then check
+it in as a new file) and say the original is unchanged, or deliver the copy and ask the user (`repair-assembly`).
+
+## When vault changes are off
+
+Reads work, and so does editing a copy with a script when scripts are on (`repair-assembly`). Every
+vault write is refused with `write_not_allowed` or `pdm_folder_not_approved`; do not retry. An admin
+can turn on "PDM vault: Allow changes" and approve a folder, or create a sandbox folder, in the tool's
+PDM settings (`error.details.admin_action`). Until then, the work stays on the machine: give the user
+the copy's `path` from `document.copy`, or a native export of the open copy from `model.export`.
 
 ## Errors and what to do
 
@@ -153,7 +152,7 @@ Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
 | `pdm_unavailable` `view_missing` | The computer has no local view of this vault. The user must set it up in the PDM client. |
 | `pdm_unavailable` `login_failed` | The automatic login to the vault failed. Report it; the admin must check the login on that computer. |
 | `pdm_unavailable` `busy` | An earlier PDM call is still running. Retry later; do not loop. |
-| `pdm_folder_not_approved` | Target outside the approved folders, or none approved (`approved_folders` lists them). Tell the user which folder would need approval. Do not work around it. |
+| `pdm_folder_not_approved` | Target outside the approved folders, or none approved (`approved_folders` lists them). Tell the user which folder would need approval, or that an admin can create a sandbox folder. Do not work around it. |
 | `pdm_not_found` | The file or folder is not in the vault (`vault_path`). Find the right path with `pdm.search` or `pdm.folder.list`. |
 | `pdm_conflict` `already_exists` | The name is taken in the vault. Use another name or report it. Never overwrite. |
 | `pdm_conflict` `local_file_exists` | A file is already on disk where the add would put it. Nothing was overwritten. Do not retry with tricks (other spellings, copies, links, moved files). Pick another name, or ask the user. |
@@ -166,5 +165,5 @@ Check `linked.writes_enabled` and `linked.approved_folders` in `pdm.status`, and
 | `invalid_arguments` on `comment` or on a path or name | The comment has control characters or is empty; or a path or name uses non-ASCII characters ("Vault changes are limited to paths with plain ASCII characters."), is malformed, or goes through a symbolic link or junction. Fix it or report it; do not repeat the call. |
 | `operation_timeout` on a vault change | The outcome is unknown: the change may or may not have happened. Read the state with `pdm.file.info` or `pdm.folder.list` first, and retry only if the change is missing. |
 | `unknown_operation` on `pdm.*` | The SolidWorks agent predates PDM support and is not updated automatically (the tool's **Keep the agent up to date** is off). Tell the user: "Open the SolidWorks agent panel in the tool's settings and choose Update agent to use PDM operations." Do not retry. While Ragtime is updating the SolidWorks agent, the answer is `host_updating` instead. |
-| `write_not_allowed` | Changes are not enabled for this tool. Do not retry; tell the user. |
+| `write_not_allowed` | Vault changes are off for this tool. Do not retry. Read `error.details` (`admin_action`, `still_available`) and tell the user; see "When vault changes are off". |
 | `result_too_large` on `pdm.file.get_latest` | More than 500 files. Set `include_references` to false or fetch fewer files. |

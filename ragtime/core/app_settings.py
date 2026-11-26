@@ -274,31 +274,36 @@ class SettingsCache:
         db = await get_db()
         prisma_configs = await db.toolconfig.find_many(where={"enabled": True}, order={"createdAt": "desc"}, include={"instructionSkills": True})
 
+        from ragtime.skills.builtin import apply_builtin_skills
+
         self._enabled_tool_configs = [
-            {
-                "id": cfg.id,
-                "name": cfg.name,
-                "tool_type": cfg.toolType,
-                "description": cfg.description,
-                "connection_config": _decrypt_tool_connection_config(cfg.toolType, dict(cfg.connectionConfig)),
-                "max_results": cfg.maxResults,
-                "timeout_max_seconds": getattr(cfg, "timeoutMaxSeconds", 300),
-                "allow_write": cfg.allowWrite,
-                "skills": [
-                    {
-                        "id": item.id,
-                        "name": item.name,
-                        "description": item.description,
-                        "content": item.content,
-                        "mode": item.mode,
-                        "sort_order": item.sortOrder,
-                    }
-                    for item in sorted(
-                        (item for item in (getattr(cfg, "instructionSkills", None) or []) if item.enabled),
-                        key=lambda item: (item.sortOrder, item.name),
-                    )
-                ],
-            }
+            apply_builtin_skills(
+                {
+                    "id": cfg.id,
+                    "name": cfg.name,
+                    "tool_type": cfg.toolType,
+                    "description": cfg.description,
+                    "connection_config": _decrypt_tool_connection_config(cfg.toolType, dict(cfg.connectionConfig)),
+                    "max_results": cfg.maxResults,
+                    "timeout_max_seconds": getattr(cfg, "timeoutMaxSeconds", 300),
+                    "allow_write": cfg.allowWrite,
+                    "skills": [
+                        {
+                            "id": item.id,
+                            "name": item.name,
+                            "description": item.description,
+                            "content": item.content,
+                            "mode": item.mode,
+                            "sort_order": item.sortOrder,
+                        }
+                        for item in sorted(
+                            (item for item in (getattr(cfg, "instructionSkills", None) or []) if item.enabled),
+                            key=lambda item: (item.sortOrder, item.name),
+                        )
+                    ],
+                },
+                {item.name for item in (getattr(cfg, "instructionSkills", None) or [])},
+            )
             for cfg in prisma_configs
         ]
         return self._enabled_tool_configs

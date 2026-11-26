@@ -4,7 +4,7 @@ import logging
 import time
 from collections.abc import Callable
 
-from ragtime.indexer.models import ToolType
+from ragtime.indexer.models import ToolConfig, ToolType
 from ragtime.indexer.repository import repository
 from ragtime.solidworks.host_activity import HostUpdatingError, host_activity, host_key
 from ragtime.solidworks.host_status import _MESSAGES, _host_context, _status_timeout_seconds
@@ -112,8 +112,9 @@ class PdmRightsService:
     def __init__(self, transport_factory: Callable[[dict], SolidworksTransport] = SshSolidworksTransport):
         self.transport_factory = transport_factory
 
-    async def _context(self, config: dict, pdm_tool_id: str) -> tuple[dict | None, int]:
-        tool = await repository.get_tool_config(pdm_tool_id)
+    async def pdm_context(self, config: dict, pdm_tool_id: str, tool: ToolConfig | None = None) -> tuple[dict | None, int]:
+        if tool is None:
+            tool = await repository.get_tool_config(pdm_tool_id)
         if tool is None or tool.tool_type != ToolType.SOLIDWORKS_PDM:
             raise PdmToolNotFound
         vault = (tool.connection_config or {}).get("database")
@@ -153,7 +154,7 @@ class PdmRightsService:
             logger.warning("PDM host call failed: %s", type(exc).__name__)
             return None, _error("internal_error")
 
-    async def rights(self, config: dict, pdm_tool_id: str, folders: list[str]) -> dict:
+    async def rights(self, config: dict, pdm_tool_id: str, folders: list[str], *, tool: ToolConfig | None = None) -> dict:
         paths = ["\\"]
         seen = {"\\"}
         for folder in folders:
@@ -161,7 +162,7 @@ class PdmRightsService:
             if path.casefold() not in seen:
                 seen.add(path.casefold())
                 paths.append(path)
-        context, timeout = await self._context(config, pdm_tool_id)
+        context, timeout = await self.pdm_context(config, pdm_tool_id, tool)
         items = [_unchecked(path) for path in paths]
         error = _error("pdm_vault_invalid") if context is None else None
         user = None
@@ -207,7 +208,7 @@ class PdmRightsService:
 
     async def folders(self, config: dict, pdm_tool_id: str, path: str, offset: int, snapshot: str | None) -> dict:
         empty = {"items": [], "offset": offset, "next_offset": None, "total": 0, "snapshot": None}
-        context, timeout = await self._context(config, pdm_tool_id)
+        context, timeout = await self.pdm_context(config, pdm_tool_id)
         if context is None:
             return {**empty, "error": _error("pdm_vault_invalid")}
         arguments = {"path": path, "offset": offset, "limit": 50}

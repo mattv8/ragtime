@@ -9,6 +9,8 @@ import pytest
 from ragtime.indexer import pdm_service
 from ragtime.indexer.repository import repository
 from ragtime.solidworks.pdm_link import (
+    SEMANTIC_UNAVAILABLE_NOTE,
+    TOO_LARGE_NOTE,
     PdmArgumentError,
     PdmLink,
     PdmLinkError,
@@ -18,6 +20,7 @@ from ragtime.solidworks.pdm_link import (
     normalize_vault_folder,
     pdm_context_tool_id,
     validate_approved_folders,
+    vault_linked,
 )
 
 
@@ -121,6 +124,13 @@ def test_context_tool_id(tool_id, expected):
         ("pdm.lookup", {"filename": "x", "configuration": 1}),
         ("pdm.lookup", {"document_id": 1, "limit": 0}),
         ("pdm.lookup", {"document_id": 1, "extra": 1}),
+        ("pdm.lookup", {"document_id": 1, "offset": 1001}),
+        ("pdm.lookup", {"document_id": 1, "offset": -1}),
+        ("pdm.lookup", {"document_id": 1, "offset": True}),
+        ("pdm.lookup", {"document_id": 1, "detail": "all"}),
+        ("pdm.lookup", {"document_id": 1, "document_type": "PDF"}),
+        ("pdm.lookup", {"document_id": 1, "document_type": None}),
+        ("pdm.search", {"query": "x", "offset": 1}),
     ],
 )
 @run_async
@@ -130,29 +140,138 @@ async def test_index_invalid_arguments(operation, args):
 
 
 @run_async
-async def test_index_results_and_narrowing(monkeypatch):
-    search = AsyncMock(return_value=[{"filename": "A"}])
-    lookup = AsyncMock(return_value=[{"document_values": {"x": "y"}, "configurations": [{"name": "Default"}, {"name": "@"}, {"name": "Other"}]}])
+async def test_index_search_passes_document_type_and_returns_no_paging(monkeypatch):
+    search = AsyncMock(return_value=pdm_service.SearchResult([{"filename": "A"}], False))
     monkeypatch.setattr(pdm_service, "search_pdm_documents", search)
-    monkeypatch.setattr(pdm_service, "lookup_pdm_document_states", lookup)
     monkeypatch.setattr(pdm_service, "get_pdm_index_summary", AsyncMock(return_value={"last_indexed_at": None, "document_count": 1}))
     link = PdmLink("id", "tool", "index", "vault")
     result = await execute_index_operation({}, link, "pdm.search", {"query": " bolt ", "document_type": "sldprt"})
     search.assert_awaited_once_with("bolt", "index", "SLDPRT", 10)
+    assert result["items"] == [{"filename": "A"}]
     assert result["index"] == {"tool": "tool", "last_indexed_at": None, "document_count": 1}
     assert result["note"] == "Indexed snapshot of checked-in vault data; it can lag the vault. Use pdm.file.info for live state."
-    result = await execute_index_operation({}, link, "pdm.lookup", {"filename": "A", "configuration": "default"})
-    assert result["items"][0]["configurations"] == [{"name": "Default"}]
-    result = await execute_index_operation({}, link, "pdm.lookup", {"document_id": 1, "configuration": "@"})
-    assert result["items"][0]["configurations"] == []
-    assert result["items"][0]["document_values"] == {"x": "y"}
+    assert "next_offset" not in result
+
+
+@run_async
+async def test_index_lookup_passes_paging_filters_and_configuration(monkeypatch):
+    page = AsyncMock(return_value=pdm_service.LookupPage([{"matched_on": "filename"}], [1], True, 1))
+    monkeypatch.setattr(pdm_service, "lookup_pdm_document_page", page)
+    monkeypatch.setattr(pdm_service, "get_pdm_index_summary", AsyncMock(return_value={"last_indexed_at": None, "document_count": 1}))
+    link = PdmLink("id", "tool", "index", "vault")
+    result = await execute_index_operation(
+        {}, link, "pdm.lookup", {"filename": "A", "configuration": "default", "document_type": "sldasm", "offset": 25, "detail": "full", "limit": 5}
+    )
+    page.assert_awaited_once_with("index", None, "A", None, limit=5, offset=25, document_type="SLDASM", configuration="default", detail="full")
+    assert result["items"] == [{"matched_on": "filename"}]
+    assert result["next_offset"] == 26
+
+
+@run_async
+async def test_index_lookup_next_offset_is_null_on_last_page(monkeypatch):
+    monkeypatch.setattr(pdm_service, "lookup_pdm_document_page", AsyncMock(return_value=pdm_service.LookupPage([{"document_id": 1}], [1], False, 1)))
+    monkeypatch.setattr(pdm_service, "get_pdm_index_summary", AsyncMock(return_value={"last_indexed_at": None, "document_count": 1}))
+    result = await execute_index_operation({}, PdmLink("id", "tool", "index", "vault"), "pdm.lookup", {"document_id": 1})
+    assert result["next_offset"] is None
+    assert "truncated" not in result
 
 
 @run_async
 async def test_index_truncates_utf8_bytes(monkeypatch):
-    monkeypatch.setattr(pdm_service, "search_pdm_documents", AsyncMock(return_value=[{"text": "é" * 10000}] * 3))
+    monkeypatch.setattr(pdm_service, "search_pdm_documents", AsyncMock(return_value=pdm_service.SearchResult([{"text": "é" * 10000}] * 3, False)))
     monkeypatch.setattr(pdm_service, "get_pdm_index_summary", AsyncMock(return_value={"last_indexed_at": None, "document_count": 3}))
     result = await execute_index_operation({}, PdmLink("id", "tool", "index", "vault"), "pdm.search", {"query": "x"})
     assert result["truncated"] is True
     assert len(result["items"]) == 1
     assert len(json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode()) <= 32768
+
+
+@run_async
+async def test_index_lookup_trim_keeps_paging_past_trimmed_rows(monkeypatch):
+    rows = [{"text": "é" * 10000}] * 3
+    monkeypatch.setattr(pdm_service, "lookup_pdm_document_page", AsyncMock(return_value=pdm_service.LookupPage(rows, [1, 2, 3], False, 3)))
+    monkeypatch.setattr(pdm_service, "get_pdm_index_summary", AsyncMock(return_value={"last_indexed_at": None, "document_count": 3}))
+    result = await execute_index_operation({}, PdmLink("id", "tool", "index", "vault"), "pdm.lookup", {"filename": "A", "offset": 10})
+    assert result["truncated"] is True
+    assert len(result["items"]) == 1
+    assert result["next_offset"] == 11
+    assert len(json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode()) <= 32768
+
+
+def _good_state(document_id: int, **extra: object) -> dict:
+    return {
+        "document_id": document_id,
+        "filename": f"A{document_id}.SLDPRT",
+        "document_type": "SLDPRT",
+        "target_revision": 1,
+        "folder_paths": [],
+        "configurations": [],
+        "bom_components": [],
+        "warnings": [],
+        **extra,
+    }
+
+
+def _good_row(document_id: int, **extra: object) -> dict:
+    return {"document_id": document_id, "state_json": _good_state(document_id, **extra), "extracted_at": None}
+
+
+BAD_ROW = {"document_id": 0, "state_json": "{not json", "extracted_at": None}
+
+
+@run_async
+async def test_lookup_paging_past_unparseable_rows_neither_repeats_nor_stalls(monkeypatch):
+    monkeypatch.setattr(pdm_service, "get_pdm_index_summary", AsyncMock(return_value={"last_indexed_at": None, "document_count": 4}))
+    link = PdmLink("id", "tool", "index", "vault")
+    monkeypatch.setattr(
+        pdm_service, "get_db", AsyncMock(return_value=SimpleNamespace(query_raw=AsyncMock(return_value=[_good_row(1), BAD_ROW, _good_row(3), _good_row(4)])))
+    )
+    result = await execute_index_operation({}, link, "pdm.lookup", {"filename": "A", "limit": 3})
+    assert [item["document_id"] for item in result["items"]] == [1, 3]
+    assert result["next_offset"] == 3  # row 4 is next; row 3 is not repeated
+
+    monkeypatch.setattr(pdm_service, "get_db", AsyncMock(return_value=SimpleNamespace(query_raw=AsyncMock(return_value=[BAD_ROW] * 4))))
+    result = await execute_index_operation({}, link, "pdm.lookup", {"filename": "A", "limit": 3, "offset": 6})
+    assert result["items"] == []
+    assert result["next_offset"] == 9
+
+
+@run_async
+async def test_full_item_over_budget_returns_guidance_and_advances(monkeypatch):
+    monkeypatch.setattr(pdm_service, "get_pdm_index_summary", AsyncMock(return_value={"last_indexed_at": None, "document_count": 1}))
+    monkeypatch.setattr(
+        pdm_service, "get_db", AsyncMock(return_value=SimpleNamespace(query_raw=AsyncMock(return_value=[_good_row(1, warnings=["w" * 40000])])))
+    )
+    result = await execute_index_operation({}, PdmLink("id", "tool", "index", "vault"), "pdm.lookup", {"document_id": 1, "detail": "full", "offset": 5})
+    assert result["items"] == []
+    assert result["truncated"] is True
+    assert result["next_offset"] == 6
+    assert result["note"] == TOO_LARGE_NOTE == "One item is too large for detail=full; use detail=summary or document_id."
+
+
+@run_async
+async def test_unavailable_semantic_search_is_noted_and_keeps_filename_hits(monkeypatch):
+    monkeypatch.setattr(pdm_service, "search_pdm_documents", AsyncMock(return_value=pdm_service.SearchResult([{"document_id": 7, "match": "filename"}], True)))
+    monkeypatch.setattr(pdm_service, "get_pdm_index_summary", AsyncMock(return_value={"last_indexed_at": None, "document_count": 1}))
+    result = await execute_index_operation({}, PdmLink("id", "tool", "index", "vault"), "pdm.search", {"query": "IDB0061"})
+    assert result["note"] == SEMANTIC_UNAVAILABLE_NOTE
+    assert result["items"] == [{"document_id": 7, "match": "filename"}]
+
+
+@run_async
+async def test_vault_linked_requires_an_enabled_solidworks_pdm_tool():
+    assert await vault_linked({}) is False
+    with patch.object(repository, "get_tool_config", AsyncMock()) as get:
+        assert await vault_linked({"pdm_tool_id": None}) is False
+        get.assert_not_awaited()
+    cases = [
+        (None, False),
+        (SimpleNamespace(tool_type="solidworks_pdm", enabled=True), True),
+        (SimpleNamespace(tool_type="solidworks_pdm", enabled=False), False),
+        (SimpleNamespace(tool_type="other", enabled=True), False),
+    ]
+    for record, expected in cases:
+        with patch.object(repository, "get_tool_config", AsyncMock(return_value=record)):
+            assert await vault_linked({"pdm_tool_id": "pdm"}) is expected
+    with patch.object(repository, "get_tool_config", AsyncMock(side_effect=RuntimeError("down"))):
+        assert await vault_linked({"pdm_tool_id": "pdm"}) is False

@@ -23,7 +23,7 @@ def client():
 
 def test_all_routes_require_admin():
     api_routes = [route for route in routes.router.routes if isinstance(route, APIRoute)]
-    assert len(routes.router.routes) == len(api_routes) == 7
+    assert len(routes.router.routes) == len(api_routes) == 8
     assert all(any(dep.call is require_admin for dep in route.dependant.dependencies) for route in api_routes)
 
 

@@ -256,3 +256,17 @@
     animation: none;
   }
 }
+
+/* Linked PDM tool note: full-width line under "Used by:", primary text for contrast. */
+[data-pdm-linked-note] {
+  color: var(--color-text-primary);
+}
+#tools-connections .tool-card-schema-stats:has([data-pdm-linked-note]) {
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+#tools-connections [data-pdm-linked-note] {
+  flex: 1 0 100%;
+  margin-left: 0;
+  color: var(--color-text-primary);
+}

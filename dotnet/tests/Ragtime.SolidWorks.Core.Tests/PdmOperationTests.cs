@@ -1180,6 +1180,7 @@ namespace Ragtime.SolidWorks.Core.Tests
         [InlineData(@"c:\pdm\13_ragtime\Sub\new.SLDPRT", null, true)]
         [InlineData(@"C:\PDM\13_Ragtime\.\new.SLDPRT", null, true)]
         [InlineData(@"C:\Work\new.SLDPRT", @"C:\Work", true)]
+        [InlineData(@"C:\Work\copies\generated-id\assembly.SLDASM", @"C:\Work", true)]
         [InlineData(@"C:\Work\Ü\new.SLDPRT", @"C:\Work", true)]
         [InlineData(@"c:\work\Sub\new.SLDPRT", @"C:\Work\", true)]
         [InlineData(@"C:\Work\new.SLDPRT", null, false)]

@@ -26,6 +26,19 @@ least 30 s (`timeout` 30 leaves roughly 10 s for `Run`); shorter requests are re
 Build flow: run the script, save into `work_folder`, then use `pdm.file.add` and
 `pdm.file.checkin`. Do not call PDM APIs directly from scripts.
 
+Editing an existing model: a script may open a copy in `work_folder` read-write (`OpenDoc6` with
+`swOpenDocOptions_Silent`, without the read-only option), change it and save it. Make the copy with
+`document.copy` first. Save only that copy. Never save a file under a vault view (a folder in a
+vault's local view, or any view listed by `pdm.status`), and never save over a source file. Pass
+the copy path in `arguments` and read it with `(string)ctx.Arguments["path"]`. The complete repair
+scripts are in `repair-assembly`.
+
+Activate the copy with `ctx.App.ActivateDoc3` after `OpenDoc6`, and close it with `ctx.App.CloseDoc` in a
+`finally` block, so a failed run leaves no open copy behind.
+
+When scripts are off, `script.run` is refused with `scripts_not_allowed`. Read `error.details`, tell
+the user what an admin can change, and do not retry.
+
 ## Example: 20 × 30 × 10 mm block
 
 ```csharp

@@ -24,6 +24,8 @@ Every call goes to the same tool with an `operation` and optional `arguments`:
 1. `guide`: read this file (or another topic, see the index below).
 2. `describe`: the exact operation list with argument schemas, from the installed SolidWorks agent.
 3. `status`: is the SolidWorks agent running, which SolidWorks versions are installed, which instances exist.
+   Its `ragtime` object shows what this tool allows: `scripts_enabled`, `vault_linked`,
+   `vault_changes_enabled` and `approved_folders`.
 4. `documents.list` to see open documents, or `document.open` with a local path.
 5. Then use the topic-specific operations. Read `model.summary` before listing large models.
 
@@ -49,8 +51,8 @@ before you answer: millimetres = metres x 1000, inches = metres / 0.0254, degree
 ## Behaviour to keep in mind
 
 - Read operations are read-only: documents are opened read-only and silently, and nothing is saved,
-  rebuilt or modified. `script.run` can change and save models when `describe` reports
-  `scripts_enabled` true; see `scripts`. Vault changes through a linked PDM vault are separate; see `pdm`.
+  rebuilt or modified. `script.run` can change and save models when `status` shows `scripts_enabled`
+  true; see `scripts`. Vault changes through a linked PDM vault are separate; see `pdm`.
 - A background instance holds a floating SolidWorks licence until it is idle-shutdown. Close
   documents you opened (`document.close`) when you are done, and do not open files speculatively.
 - The tool works only while the Windows account has a desktop session. A disconnected remote
@@ -84,15 +86,39 @@ before you answer: millimetres = metres x 1000, inches = metres / 0.0254, degree
 | `stale_snapshot` | The model changed between pages. Restart the list from `offset` 0. |
 | `result_too_large` | The result exceeds the size budget. Narrow it, see `paging`. |
 | `invalid_arguments` | Arguments are wrong, including a rejected path. Fix them; do not repeat the same call. |
+| `scripts_not_allowed` | Scripts are off for this tool, so `script.run` is refused. Do not retry. Read `error.details.admin_action` and tell the user; `still_available` lists the work that remains. |
 
-Other codes (`invalid_request`, `protocol_mismatch`, `unknown_operation`, `write_not_allowed`,
-`solidworks_error`, `internal_error`) mean the request or the environment is wrong. Report them
-with the message rather than guessing.
+Other codes (`invalid_request`, `protocol_mismatch`, `unknown_operation`, `solidworks_error`,
+`internal_error`) mean the request or the environment is wrong. Report them with the message rather
+than guessing.
+
+`write_not_allowed` means vault changes are off for this tool. `scripts_not_allowed` means scripts are
+off. Do not retry either one. The refusal carries `error.details`:
+
+- `setting`: the setting in the tool's settings that controls it.
+- `admin_action`: one sentence on what an admin can change.
+- `still_available`: what still works, each entry as `<capability> (<operation>)`. Use these.
+
+Work through what is still available and report what is blocked, for example "vault changes are off,
+so I can read and edit a copy but not check it in."
+
+## Skills to load
+
+The matching skill has the full routine. Load it before you act on the task.
+
+- `solidworks-essentials`: always loaded (this file's core points).
+- `solidworks-find-model`: find a file or model by its name, part number or SKU.
+- `solidworks-repair-assembly`: diagnose broken mates or missing parts, then repair a copy.
+- `solidworks-scripts`, `solidworks-pdm`, `solidworks-documents`, `solidworks-assemblies` and the
+  other `solidworks-*` skills match the topics below.
 
 ## Other topics
 
+- `essentials`: the short core, read first when a skill is not loaded.
+- `find-model`: find a model when the name, part number or SKU does not match a file.
+- `repair-assembly`: diagnose broken mates and missing parts, then repair a copy with a script.
 - `documents`: open, list and close documents; summaries, configurations, properties, equations,
-  mass properties.
+  mass properties; copy a document to the work folder.
 - `features-and-sketches`: feature tree, feature details, sketch geometry, dimensions.
 - `assemblies`: components and mates.
 - `paging`: limits, `next_offset`, snapshots, large results.

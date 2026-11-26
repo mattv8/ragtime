@@ -1699,7 +1699,10 @@ No tools configured. Answer from indexed knowledge sources only (code, documenta
         if description:
             line += f": {description}"
         tool_lines.append(line)
-        for instruction_skill in config.get("skills") or []:
+        skill_owners = [config]
+        if config.get("pdm_link"):
+            skill_owners.append(config["pdm_link"])
+        for skill_owner, instruction_skill in ((owner, skill) for owner in skill_owners for skill in owner.get("skills") or []):
             skill_mode = instruction_skill["mode"]
             if skill_mode != SKILL_MODE_ALWAYS and not (skill_mode == SKILL_MODE_ON_DEMAND and instruction_skill_loader_available):
                 continue
@@ -1710,9 +1713,9 @@ No tools configured. Answer from indexed knowledge sources only (code, documenta
             skill_line = f"  - Skill `{skill_name}`: {skill_description}"
             if skill_mode == SKILL_MODE_ALWAYS:
                 skill_line += " (always applied; text below)"
-                always_instruction_skills.append(f"### {name} · {skill_name}\n\n{instruction_skill['content']}")
+                always_instruction_skills.append(f"### {skill_owner.get('name', name)} · {skill_name}\n\n{instruction_skill['content']}")
             else:
-                uri = build_skill_uri(SKILL_OWNER_TOOL, str(config.get("id") or ""), skill_name)
+                uri = build_skill_uri(SKILL_OWNER_TOOL, str(skill_owner.get("id") or ""), skill_name)
                 skill_line += f" Load with `read_skill` (uri `{uri}`)."
             tool_lines.append(skill_line)
 

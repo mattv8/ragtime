@@ -437,3 +437,145 @@ describe('SolidWorksPdmFolderBrowser', () => {
     expect(approveButton().disabled).toBe(true);
   });
 });
+
+describe('SolidWorksPdmFolderBrowser pick mode', () => {
+  const SANDBOX_PREFIX = 'solidworks-pdm-sandbox-browser';
+  afterEach(cleanup);
+  beforeEach(() => {
+    vi.mocked(solidworksApi.listPdmFolders).mockReset();
+  });
+
+  function pickBrowser(overrides: Partial<BrowserProps> = {}) {
+    return browserElement({
+      mode: 'pick',
+      idPrefix: SANDBOX_PREFIX,
+      onPick: vi.fn(),
+      ...overrides,
+    });
+  }
+
+  function useButton() {
+    return screen.getByRole('button', { name: 'Use as parent' }) as HTMLButtonElement;
+  }
+
+  it('uses the prefix for every id and never the approve ids', async () => {
+    mockRootListing([]);
+    const { container } = render(pickBrowser());
+    await screen.findByText('No subfolders.');
+    expect(document.getElementById(SANDBOX_PREFIX)).not.toBeNull();
+    expect(document.getElementById(`${SANDBOX_PREFIX}-label`)?.textContent).toBe(
+      'Browse the vault',
+    );
+    expect(document.getElementById(`${SANDBOX_PREFIX}-reload`)).not.toBeNull();
+    expect(document.getElementById(`${SANDBOX_PREFIX}-status`)).not.toBeNull();
+    expect(container.querySelector('[id^="solidworks-pdm-folder-browser"]')).toBeNull();
+  });
+
+  it('explains the pick and expands on open so the filter is there to focus', async () => {
+    mockRootListing([]);
+    render(pickBrowser());
+    expect(document.getElementById(`${SANDBOX_PREFIX}-help`)?.textContent).toBe(
+      'Open a folder, then choose Use as parent.',
+    );
+    expect(document.querySelector('.browser-filter-input')).not.toBeNull();
+    await screen.findByText('No subfolders.');
+  });
+
+  it('does not allow the vault root to be the parent', async () => {
+    mockRootListing([]);
+    render(pickBrowser());
+    await screen.findByText('No subfolders.');
+    expect(useButton().disabled).toBe(true);
+  });
+
+  it('chooses a folder as the parent through onPick, even when it is read only or approved', async () => {
+    const onPick = vi.fn();
+    const onChange = vi.fn();
+    mockRootListing([
+      { name: 'Ragtime', vault_path: '\\13_Ragtime', rights: readOnlyRights, write_ready: false },
+    ]);
+    render(pickBrowser({ onPick, onChange, folders: ['\\13_Ragtime'] }));
+    await screen.findByRole('button', { name: /Ragtime/ });
+    fireEvent.click(screen.getByRole('button', { name: /Ragtime/ }));
+    await waitFor(() => expect(useButton().disabled).toBe(false));
+    expect(screen.queryByText('Read only')).toBeNull();
+    fireEvent.click(useButton());
+    expect(onPick).toHaveBeenCalledWith('\\13_Ragtime');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('blocks a folder whose rights are not checked, with the reason', async () => {
+    mockRootListing([
+      { name: 'Ragtime', vault_path: '\\13_Ragtime', rights: null, write_ready: false },
+    ]);
+    render(pickBrowser());
+    await screen.findByRole('button', { name: /Ragtime/ });
+    fireEvent.click(screen.getByRole('button', { name: /Ragtime/ }));
+    expect(
+      await screen.findByText(
+        "Rights for this folder aren't checked. Choose Reload folders to try again.",
+      ),
+    ).toBeTruthy();
+    expect(useButton().disabled).toBe(true);
+  });
+});
+
+describe('SolidWorksPdmFolderBrowser with both browsers mounted', () => {
+  afterEach(cleanup);
+  beforeEach(() => {
+    vi.mocked(solidworksApi.listPdmFolders).mockReset();
+    mockRootListing([]);
+  });
+
+  it('keeps every id unique when the approve and the sandbox browsers share the page', async () => {
+    render(
+      <>
+        {browserElement()}
+        {browserElement({
+          mode: 'pick',
+          idPrefix: 'solidworks-pdm-sandbox-browser',
+          onPick: vi.fn(),
+        })}
+      </>,
+    );
+    await screen.findAllByText('No subfolders.');
+    const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('SolidWorksPdmFolderBrowser pick-mode truncation', () => {
+  afterEach(cleanup);
+  beforeEach(() => {
+    vi.mocked(solidworksApi.listPdmFolders).mockReset();
+    vi.mocked(solidworksApi.listPdmFolders).mockImplementation(async (_tool, request) =>
+      request.path === '\\'
+        ? listing({
+            items: [{ name: 'A', vault_path: '\\A', rights: fullRights, write_ready: true }],
+            total: 2,
+          })
+        : listing(),
+    );
+  });
+
+  it('explains the filter instead of the approve box in pick mode', async () => {
+    render(
+      browserElement({ mode: 'pick', idPrefix: 'solidworks-pdm-sandbox-browser', onPick: vi.fn() }),
+    );
+    const notice = await screen.findByText(/Showing the first 1 of 2 folders/);
+    expect(notice.textContent).toContain(
+      "To choose one that isn't listed, type its path in the filter box.",
+    );
+    expect(notice.textContent).not.toContain('To approve one');
+  });
+
+  it('keeps the approve wording in approve mode', async () => {
+    render(browserElement());
+    fireEvent.click(screen.getByRole('button', { name: '/ Vault' }));
+    const notice = await screen.findByText(/Showing the first 1 of 2 folders/);
+    expect(notice.textContent).toContain(
+      "To approve one that isn't listed, type its path in the box above.",
+    );
+  });
+});

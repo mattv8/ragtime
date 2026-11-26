@@ -57,9 +57,38 @@ export type AddFolderResult =
 export interface PdmLinkRelation {
   solidworksToolId: string;
   solidworksToolName: string;
+  /** Whether the SolidWorks tool is enabled; disabled tools no longer serve the PDM tool. */
+  solidworksEnabled: boolean;
   pdmToolId: string;
   allowWrite: boolean;
   approvedFolderCount: number;
+}
+
+const MAX_NAMED_TOOLS = 3;
+
+/** "A", "A and B", or "A, B, and C" (the Oxford comma, as Intl.ListFormat('en') writes it). */
+function joinConjunction(items: string[]): string {
+  if (items.length <= 2) return items.join(' and ');
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
+/**
+ * Card note for a PDM tool that enabled SolidWorks tools serve. Returns null
+ * when none is enabled, so the note is omitted and the PDM tool stays visible.
+ */
+export function describePdmLinkedNote(relations: PdmLinkRelation[]): string | null {
+  const names = relations
+    .filter((relation) => relation.solidworksEnabled)
+    .map((relation) => relation.solidworksToolName);
+  if (names.length === 0) return null;
+  if (names.length === 1) {
+    return `Served through “${names[0]}” for callers who can use it. They don't see this tool separately.`;
+  }
+  const quoted = names.slice(0, MAX_NAMED_TOOLS).map((name) => `“${name}”`);
+  const hidden = names.length - quoted.length;
+  const listed = joinConjunction(hidden > 0 ? [...quoted, `${hidden} more`] : quoted);
+  const who = names.length === 2 ? 'either' : 'any of them';
+  return `Served through ${listed} for callers who can use ${who}. They don't see this tool separately.`;
 }
 
 const MESSAGES = {
@@ -256,6 +285,7 @@ export function getPdmLinkRelations(tools: ToolConfig[]): PdmLinkRelation[] {
       {
         solidworksToolId: tool.id,
         solidworksToolName: tool.name,
+        solidworksEnabled: tool.enabled,
         pdmToolId: config.pdm_tool_id,
         allowWrite: tool.allow_write,
         approvedFolderCount: config.pdm_approved_folders?.length ?? 0,

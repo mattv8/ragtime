@@ -398,10 +398,7 @@ namespace Ragtime.SolidWorks.Readers
             var skipped = 0;
             var unreadable = 0;
             var missing = 0;
-            // Traverseflag true: every level (nested sub-assembly parts too). Searchflag false: the locations the
-            // references were last saved at, as the document loaded them. AddReadOnlyInfo false: name and path only.
-            var pairs = ComHelper.Strings(_application.GetDocumentDependencies2(source, true, false, false));
-            foreach (var dependency in NativeFiles.PathsFromDependencyPairs(pairs))
+            foreach (var dependency in DependencyPaths(source))
             {
                 if (!NativeFiles.IsSolidWorksFile(dependency))
                 {
@@ -449,6 +446,19 @@ namespace Ragtime.SolidWorks.Readers
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Every referenced path of a document, at all levels, in SolidWorks order. Used by the native export and by
+        /// <c>document.open</c> (missing references).
+        /// </summary>
+        private IReadOnlyList<string> DependencyPaths(string source)
+        {
+            // Traverseflag true: every level (nested sub-assembly parts too). Searchflag false: the locations the
+            // references were last saved at, as the document loaded them. AddReadOnlyInfo false: name and path only.
+            var pairs = ComHelper.Strings(_application.GetDocumentDependencies2(source, true, false, false));
+            ComWalk.RequireWithinLimit(pairs.Count, ComWalk.ItemLimit, "The dependency list");
+            return NativeFiles.PathsFromDependencyPairs(pairs);
         }
 
         /// <summary>A referenced document open with unsaved changes: the zip holds its saved version, so say so.</summary>

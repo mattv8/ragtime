@@ -317,7 +317,8 @@ namespace Ragtime.SolidWorks.Core
         private static string GeneratedPath(string workFolder, string prefix, string extension) =>
             Path.Combine(workFolder, prefix + "-" + Guid.NewGuid().ToString("N") + "." + extension);
 
-        private static bool IsInside(string fullPath, string folder)
+        /// <summary>True when <paramref name="fullPath"/> is inside <paramref name="folder"/> (case-insensitive, any depth).</summary>
+        internal static bool IsInside(string fullPath, string folder)
         {
             var root = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                 + Path.DirectorySeparatorChar;

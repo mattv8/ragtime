@@ -520,10 +520,10 @@ class MCPToolAdapter:
 
         # Get tool configs from database
         tool_configs = await get_tool_configs()
-
         # Apply route filter if provided
         if route_filter is not None:
             tool_configs = [c for c in tool_configs if c.get("id") in route_filter.tool_config_ids]
+        configs_by_id = {str(config.get("id")): config for config in tool_configs if config.get("enabled", True)}
 
         # Check heartbeat status
         health_status = await self._check_heartbeats(tool_configs)
@@ -535,7 +535,13 @@ class MCPToolAdapter:
                 linked_id = (config.get("connection_config") or {}).get("pdm_tool_id")
                 linked = await repository.get_tool_config(linked_id) if linked_id else None
                 link_name = linked.name if linked and linked.tool_type == "solidworks_pdm" and linked.enabled else None
-                config = {**config, "pdm_link_name": link_name}
+                linked_config = configs_by_id.get(str(linked_id))
+                pdm_link = (
+                    {key: linked_config.get(key) for key in ("id", "name", "description", "skills")}
+                    if link_name and linked_config and linked_config.get("enabled", True)
+                    else None
+                )
+                config = {**config, "pdm_link_name": link_name, "pdm_link": pdm_link}
             tool_id = config.get("id", "")
             tool_type = config.get("tool_type", "")
             enabled = config.get("enabled", True)
@@ -582,6 +588,11 @@ class MCPToolAdapter:
             if schema_tool_def:
                 schema_tool_def.is_healthy = status.alive if status is not None else True
                 tools.append(schema_tool_def)
+
+        from ragtime.solidworks.linking import hidden_pdm_config_ids
+
+        hidden_ids = hidden_pdm_config_ids([tool.tool_config for tool in tools])
+        tools = [tool for tool in tools if not (tool.tool_config.get("tool_type") == "solidworks_pdm" and str(tool.tool_config.get("id")) in hidden_ids)]
 
         # Add knowledge search tool(s) based on aggregate_search setting
         # Skip if route_filter explicitly excludes knowledge search
@@ -1263,7 +1274,7 @@ class MCPToolAdapter:
         """Build tool description for MCP."""
         tool_type = config.get("tool_type", "")
         if tool_type == "solidworks":
-            return build_solidworks_tool_description(config)
+            return build_solidworks_tool_description(config) + tool_skill_lines(config)
         name = config.get("name", "Unknown")
         description = config.get("description", "")
 

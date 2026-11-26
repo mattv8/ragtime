@@ -102,11 +102,24 @@ namespace Ragtime.SolidWorks.Core
     /// <summary>One mate entity reference.</summary>
     public sealed class MateEntity
     {
-        /// <summary>Component name that owns the entity.</summary>
+        /// <summary>Component name that owns the entity; empty when SolidWorks cannot return the entity.</summary>
         public string Component { get; set; } = string.Empty;
 
-        /// <summary>Entity type, e.g. "face" or "edge".</summary>
+        /// <summary>
+        /// Component names from the top assembly down, joined with "/" (for example "Sub-1/Bracket-2"), or null when there
+        /// is no path. Always serialized.
+        /// </summary>
+        [Newtonsoft.Json.JsonProperty(NullValueHandling = Newtonsoft.Json.NullValueHandling.Include)]
+        public string? ComponentPath { get; set; }
+
+        /// <summary>Entity type, e.g. "face" or "edge"; "unknown" when SolidWorks cannot return the entity.</summary>
         public string EntityType { get; set; } = string.Empty;
+
+        /// <summary>
+        /// True when the entity is present and its reference component, if any, is not missing. The session sets it;
+        /// the default is false so an entity that was never checked shows as a problem.
+        /// </summary>
+        public bool Resolved { get; set; }
     }
 
     /// <summary>One item of <c>mates.list</c>.</summary>
@@ -141,11 +154,28 @@ namespace Ragtime.SolidWorks.Core
             set => _warning = value ?? false;
         }
 
+        /// <summary>
+        /// The error object: null for a healthy mate, otherwise the raw code with its <c>swFeatureError_e</c> name and
+        /// meaning (see <see cref="FeatureErrorCodes"/>). Derived from <see cref="ErrorCode"/>; always serialized.
+        /// </summary>
+        [Newtonsoft.Json.JsonProperty(NullValueHandling = Newtonsoft.Json.NullValueHandling.Include)]
+        public FeatureErrorInfo? Error => FeatureErrorCodes.Describe(ErrorCode);
+
+        /// <summary>
+        /// SolidWorks' own explanation of the mate's error (the same source as <c>feature.get</c>), or null when none.
+        /// Always serialized.
+        /// </summary>
+        [Newtonsoft.Json.JsonProperty(NullValueHandling = Newtonsoft.Json.NullValueHandling.Include)]
+        public string? WhatsWrong { get; set; }
+
         /// <summary>Mate value in SI units, or null for mates without a value.</summary>
         public double? Value { get; set; }
 
         /// <summary>Entities the mate references.</summary>
         public List<MateEntity> Entities { get; set; } = new List<MateEntity>();
+
+        /// <summary>True when the mate has a warning (the warning value is anything but false).</summary>
+        internal bool HasWarning => !Equals(Warning, false);
     }
 
     /// <summary>One item of <c>components.list</c>.</summary>
@@ -187,6 +217,31 @@ namespace Ragtime.SolidWorks.Core
 
         /// <summary>Number of child components.</summary>
         public int ChildrenCount { get; set; }
+
+        /// <summary>True when the referenced file is on local disk. The session sets it; the default is false.</summary>
+        public bool FileExists { get; set; }
+
+        /// <summary>
+        /// "resolved", "lightweight", "suppressed" or "missing_file". The session reports the SolidWorks state; Core sets
+        /// "missing_file" when <see cref="FileExists"/> is false.
+        /// </summary>
+        public string Suppression { get; set; } = ComponentSuppression.Resolved;
+    }
+
+    /// <summary>The values of <see cref="ComponentItem.Suppression"/>.</summary>
+    public static class ComponentSuppression
+    {
+        /// <summary>Fully resolved.</summary>
+        public const string Resolved = "resolved";
+
+        /// <summary>Lightweight.</summary>
+        public const string Lightweight = "lightweight";
+
+        /// <summary>Suppressed.</summary>
+        public const string Suppressed = "suppressed";
+
+        /// <summary>The referenced file is not on disk.</summary>
+        public const string MissingFile = "missing_file";
     }
 
     /// <summary>One custom property of <c>properties.get</c>.</summary>

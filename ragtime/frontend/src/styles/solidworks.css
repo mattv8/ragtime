@@ -256,33 +256,39 @@
   }
 }
 
-#solidworks-pdm-folder-browser {
+/* Both folder browsers (approve and sandbox parent pick) share these rules through their id prefixes. */
+:is(#solidworks-pdm-folder-browser, #solidworks-pdm-sandbox-browser) {
   display: grid;
   gap: var(--space-sm);
 }
-#solidworks-pdm-folder-browser-label {
+#solidworks-pdm-folder-browser-label,
+#solidworks-pdm-sandbox-browser-label {
   margin-bottom: 0;
 }
 #solidworks-pdm-folder-browser-help,
-#solidworks-pdm-folder-browser [data-browser-select-reason] {
+#solidworks-pdm-sandbox-browser-help,
+:is(#solidworks-pdm-folder-browser, #solidworks-pdm-sandbox-browser) [data-browser-select-reason] {
   color: var(--color-text-secondary);
 }
-#solidworks-pdm-folder-browser [data-browser-select-reason] {
+:is(#solidworks-pdm-folder-browser, #solidworks-pdm-sandbox-browser) [data-browser-select-reason] {
   padding: var(--space-xs) var(--space-sm);
 }
-#solidworks-pdm-folder-browser-header {
+#solidworks-pdm-folder-browser-header,
+#solidworks-pdm-sandbox-browser-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-sm);
 }
-#solidworks-pdm-folder-browser :is(.browser-entry, .breadcrumb-btn, .mount-header, .browser-filter-input):focus-visible {
+:is(#solidworks-pdm-folder-browser, #solidworks-pdm-sandbox-browser)
+  :is(.browser-entry, .breadcrumb-btn, .mount-header, .browser-filter-input):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: -2px;
 }
 @media (pointer: coarse) {
-  #solidworks-pdm-folder-browser :is(.browser-entry, .breadcrumb-btn, .mount-header, .browser-filter-input) {
+  :is(#solidworks-pdm-folder-browser, #solidworks-pdm-sandbox-browser)
+    :is(.browser-entry, .breadcrumb-btn, .mount-header, .browser-filter-input) {
     min-height: 44px;
   }
 }
@@ -613,6 +619,69 @@
 }
 #solidworks-pdm-changes-detail {
   margin-top: var(--space-sm);
+}
+/* Sandbox setup: divided from the toggle row above it, as #solidworks-pdm-changes-detail is. */
+#solidworks-pdm-sandbox {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+}
+/* Sandbox setup: one column; long vault paths wrap instead of widening the box on 390 px. */
+#solidworks-pdm-sandbox-form {
+  display: grid;
+  gap: var(--space-md);
+}
+#solidworks-pdm-sandbox-parent-group {
+  display: grid;
+  gap: var(--space-xs);
+}
+.sw-sandbox-target,
+#solidworks-pdm-sandbox-parent {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+button.sw-inline-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+#solidworks-pdm-sandbox-name-help {
+  color: var(--color-text-secondary);
+}
+/* The invalid state keeps text primary; the error colour goes on the field border. */
+#solidworks-pdm-sandbox-name-help[data-invalid='true'] {
+  color: var(--color-text-primary);
+}
+#solidworks-pdm-sandbox-name[aria-invalid='true'] {
+  border-color: var(--color-error);
+}
+#solidworks-pdm-sandbox-success {
+  display: grid;
+  gap: var(--space-sm);
+  font-size: var(--text-sm);
+}
+#solidworks-pdm-sandbox-success:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+/* A link by underline and text colour: the shared .sw-inline-link is plain text, and the primary colour fails contrast on some packs. */
+#solidworks-pdm-sandbox-scripts-link {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+#solidworks-pdm-sandbox-scripts-link:hover {
+  color: var(--color-text-strong);
+}
+@media (pointer: coarse) {
+  #solidworks-pdm-sandbox-scripts-link,
+  #solidworks-pdm-sandbox-name {
+    min-height: 44px;
+  }
 }
 /* The column's grid gap already separates the field from the actions below it. */
 .sw-box > .form-group {

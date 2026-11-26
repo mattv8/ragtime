@@ -7768,6 +7768,7 @@ export function ToolWizard({
               onChange={handlePdmLinkChange}
               allowChanges={allowWrite}
               onAllowChangesChange={handlePdmAllowChangesChange}
+              allowScripts={solidworksOptions.allow_scripts === true}
               hostStatus={solidworksHostStatus}
               disabled={saving || testing}
               onBusyChange={setPdmBusy}

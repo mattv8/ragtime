@@ -53,6 +53,24 @@ namespace Ragtime.SolidWorks.Core.Tests
 
         public int FeatureCount { get; set; } = 3;
 
+        /// <summary>Raw swFileLoadWarning_e bits the next document open reports.</summary>
+        public int LoadWarningBits { get; set; }
+
+        /// <summary>Referenced paths reported as missing on the next document open.</summary>
+        public List<string> MissingReferences { get; } = new List<string>();
+
+        /// <summary>Components of the assembly; their FileExists flag drives <c>file_exists</c> and <c>missing_component_count</c>.</summary>
+        public List<ComponentItem> ComponentList { get; } = new List<ComponentItem>
+        {
+            new ComponentItem { Name = "Part1-1", Transform = new double[16], FileExists = true },
+        };
+
+        /// <summary>Mates of the assembly, returned raw as the session does (Core applies only_problems).</summary>
+        public List<MateItem> MateList { get; } = new List<MateItem>
+        {
+            new MateItem { Name = "Coincident1", Type = "Coincident", Alignment = "Aligned" },
+        };
+
         public int SegmentCount { get; set; } = 3;
 
         public bool ThrowUnexpected { get; set; }
@@ -72,7 +90,7 @@ namespace Ragtime.SolidWorks.Core.Tests
             return Open.ToList();
         }
 
-        public SessionDocumentInfo OpenReadOnlySilent(string path, string? configuration)
+        public SessionDocumentInfo OpenReadOnlySilent(string path, string? configuration, Deadline deadline)
         {
             Calls.Add(nameof(OpenReadOnlySilent));
             if (path.Contains("missing"))
@@ -86,7 +104,10 @@ namespace Ragtime.SolidWorks.Core.Tests
                 return new SessionDocumentInfo(existing.Title, existing.Path, existing.Type, existing.ActiveConfiguration, true, false, wasAlreadyOpen: true);
             }
 
-            var info = new SessionDocumentInfo(TitleOf(path), path, TypeOf(path), "Default", true, false);
+            var info = new SessionDocumentInfo(
+                TitleOf(path), path, TypeOf(path), "Default", true, false,
+                loadWarningBits: LoadWarningBits,
+                missingReferences: MissingReferences);
             Open.Add(info);
             return info;
         }
@@ -102,9 +123,10 @@ namespace Ragtime.SolidWorks.Core.Tests
         {
             Calls.Add(nameof(GetModelSummary));
             Refs.Add(document);
-            return new ModelSummary
+            var type = TypeOf(document.Path ?? document.Title ?? string.Empty);
+            var summary = new ModelSummary
             {
-                Type = TypeOf(document.Path ?? document.Title ?? string.Empty),
+                Type = type,
                 Title = document.Title ?? TitleOf(document.Path ?? string.Empty),
                 Path = document.Path ?? string.Empty,
                 ConfigurationCount = 1,
@@ -113,6 +135,15 @@ namespace Ragtime.SolidWorks.Core.Tests
                 SolidBodyCount = 1,
                 ActiveConfiguration = "Default",
             };
+            if (type == "assembly")
+            {
+                summary.SolidBodyCount = null;
+                summary.ComponentCount = ComponentList.Count;
+                summary.MateCount = MateList.Count;
+                summary.MissingComponentCount = ComponentList.Count(component => !component.FileExists);
+            }
+
+            return summary;
         }
 
         public IReadOnlyList<ConfigurationItem> ListConfigurations(DocumentRef document)
@@ -199,13 +230,13 @@ namespace Ragtime.SolidWorks.Core.Tests
         public IReadOnlyList<MateItem> ListMates(DocumentRef document)
         {
             Calls.Add(nameof(ListMates));
-            return new List<MateItem> { new MateItem { Name = "Coincident1", Type = "Coincident", Alignment = "Aligned" } };
+            return MateList.ToList();
         }
 
         public IReadOnlyList<ComponentItem> ListComponents(DocumentRef document, bool topLevelOnly)
         {
             Calls.Add(nameof(ListComponents) + ":" + topLevelOnly);
-            return new List<ComponentItem> { new ComponentItem { Name = "Part1-1", Transform = new double[16] } };
+            return ComponentList.ToList();
         }
 
         public PropertiesResult GetProperties(DocumentRef document, string? configuration)
@@ -224,6 +255,55 @@ namespace Ragtime.SolidWorks.Core.Tests
         {
             Calls.Add(nameof(ListEquations));
             return new List<EquationItem> { new EquationItem { Index = 0, Equation = "\"D1\"=0.02" } };
+        }
+
+        /// <summary>Copy requests received, in call order.</summary>
+        public List<DocumentCopyRequest> CopyRequests { get; } = new List<DocumentCopyRequest>();
+
+        /// <summary>Files Pack and Go would copy with references (the top document plus references). Default 3.</summary>
+        public int CopyFileCount { get; set; } = 3;
+
+        /// <summary>When set, the copy throws solidworks_error after writing its folder (Core must remove the folder).</summary>
+        public bool FailCopy { get; set; }
+
+        /// <summary>When set, the session ignores the file-count limit, so tests can check Core's own guard.</summary>
+        public bool IgnoreCopyFileLimit { get; set; }
+
+        /// <summary>Warnings the next copy reports.</summary>
+        public List<string> CopyWarnings { get; } = new List<string>();
+
+        /// <summary>Writes the copy files into the requested folder, as Pack and Go does; never touches the source.</summary>
+        public DocumentCopyOutcome CopyDocument(DocumentCopyRequest request)
+        {
+            Calls.Add(nameof(CopyDocument));
+            CopyRequests.Add(request);
+            var count = request.IncludeReferences ? CopyFileCount : 1;
+            if (count > request.MaxFiles && !IgnoreCopyFileLimit)
+            {
+                throw HostError.Coded(
+                    ErrorCodes.ResultTooLarge,
+                    "The copy has too many files.",
+                    new JObject { ["reason"] = "file_count", ["limit"] = request.MaxFiles, ["count"] = count });
+            }
+
+            Directory.CreateDirectory(request.FolderPath);
+            var sourceTop = request.Document.Path ?? @"C:\Models\Top.sldasm";
+            var topPath = Path.Combine(request.FolderPath, TitleOf(sourceTop));
+            File.WriteAllText(topPath, "copy");
+            var files = new List<CopiedFile> { new CopiedFile(sourceTop, topPath) };
+            for (var index = 1; index < count; index++)
+            {
+                var target = Path.Combine(request.FolderPath, "Ref" + index + ".sldprt");
+                File.WriteAllText(target, "copy");
+                files.Add(new CopiedFile(@"C:\Models\Ref" + index + ".sldprt", target));
+            }
+
+            if (FailCopy)
+            {
+                throw HostError.Coded(ErrorCodes.SolidworksError, "Pack and Go failed.");
+            }
+
+            return new DocumentCopyOutcome(topPath, files, CopyWarnings.ToList());
         }
 
         /// <summary>Export requests received, in call order.</summary>
@@ -955,5 +1035,7 @@ namespace Ragtime.SolidWorks.Core.Tests
         public static JToken S(string value) => WireJson.Value(value);
 
         public static JToken I(int value) => WireJson.Value(value);
+
+        public static JToken B(bool value) => WireJson.Value(value);
     }
 }

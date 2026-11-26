@@ -25,7 +25,11 @@ import {
   hasSchemaIndexingEnabled,
   isPairedWindowsTool,
 } from '@/utils/toolConfigDisplay';
-import { formatPdmSchedule, getPdmLinkRelations } from '@/utils/solidworksPdmLink';
+import {
+  describePdmLinkedNote,
+  formatPdmSchedule,
+  getPdmLinkRelations,
+} from '@/utils/solidworksPdmLink';
 import { useIsTruncated } from '@/utils/useIsTruncated';
 import { useFitLineClamp } from '@/utils/useFitLineClamp';
 import type { SolidworksConnectionConfig } from '@/api/solidworks';
@@ -265,6 +269,7 @@ export function ToolCard({
     tool.tool_type === 'solidworks_pdm'
       ? getPdmLinkRelations(tools).filter((relation) => relation.pdmToolId === tool.id)
       : [];
+  const linkedNote = describePdmLinkedNote(linkedFrom);
 
   // Inline editing state
   const [editingField, setEditingField] = useState<EditingField>(null);
@@ -797,6 +802,15 @@ export function ToolCard({
               <dd className="schema-stats-value">
                 {linkedFrom.map((relation) => relation.solidworksToolName).join(', ')}
               </dd>
+              {linkedNote && (
+                <dd
+                  className="schema-stats-memory"
+                  data-pdm-linked-note
+                  id={`tool-${tool.id}-pdm-linked-note`}
+                >
+                  {linkedNote}
+                </dd>
+              )}
             </div>
           )}
         </dl>

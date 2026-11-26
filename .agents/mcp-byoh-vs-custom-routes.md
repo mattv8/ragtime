@@ -157,3 +157,26 @@ Ragtime has three external-agent surfaces. Do not substitute one for another:
   the counter is unchanged when the load finishes. A load that straddles an
   invalidation is not cached, though its own request still uses its result. A
   failed load is logged and returns no skills, and the failure is not cached.
+
+## Tool skills and the linked pair on every route
+
+- Tool skills are not route skills. Admin tool skills and built-in tool skills
+  (`builtin:` ids, `ragtime/skills/builtin.py`) reach an MCP caller through the
+  tool's description: `_build_tool_description` (`ragtime/mcp/tools.py`) appends
+  `tool_skill_lines` (`ragtime/mcp/skills.py`). That applies on `/mcp`, on
+  group-filtered routes and on custom routes alike, so a custom route with a
+  SolidWorks tool still gets its skill list.
+- Always-applied built-ins are always inlined. Admin always-applied tool skills
+  are inlined while they total within `MCP_INLINE_SKILL_TEXT_LIMIT`; otherwise the
+  description tells the agent to load them first.
+- Linked pair: when a caller's tool set contains a SolidWorks tool that links a
+  PDM tool, the PDM tool is not listed to that caller on any MCP route. Its
+  `search_<name>` is not offered either. The SolidWorks tool carries the PDM
+  tool's skills, and `read_skill` and `resources/read` still resolve their
+  `skill://` URIs, because `visible_skills` registers them whether or not the PDM
+  tool is listed. The rule uses the route's selected, enabled configs; PDM health
+  does not change it. The PDM tool stays listed when the linked SolidWorks tool
+  is not in the caller's set.
+- Do not work around the rule in an agent or config. Giving a caller the
+  standalone PDM tool means leaving the linked SolidWorks tool out of that
+  caller's route selection; that is an admin decision.

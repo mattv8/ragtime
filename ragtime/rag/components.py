@@ -5201,7 +5201,7 @@ class RAGComponents:
         linked_id = (config.get("connection_config") or {}).get("pdm_tool_id")
         linked = await repository.get_tool_config(linked_id) if linked_id else None
         link_name = linked.name if linked and linked.tool_type.value == "solidworks_pdm" and linked.enabled else None
-        return create_solidworks_tool({**config, "pdm_link_name": link_name}, tool_name)
+        return create_solidworks_tool({**config, "pdm_link_name": link_name, "pdm_link": None}, tool_name)
 
     async def _create_http_api_tool(self, config: dict, tool_name: str, tool_id: str):
         """Create an HTTP API request tool from config."""
@@ -15989,6 +15989,36 @@ class RAGComponents:
         if conversation_export_tool is not None:
             runtime_tools = self._wrap_tools_with_export_context_tracking(runtime_tools, export_context)
 
+        linked_hidden_ids: set[str] = set()
+        if mode == "chat":
+            from ragtime.solidworks.linking import hidden_pdm_config_ids
+            from ragtime.solidworks.tool import build_solidworks_tool_description
+
+            allowed_ids = set(allowed_tool_config_ids) if allowed_tool_config_ids is not None else None
+            runtime_names = self._runtime_tool_names(runtime_tools)
+            candidates = [
+                config
+                for config in self._tool_configs or []
+                if (allowed_ids is None or config.get("id") in allowed_ids)
+                and (config.get("tool_type") != "solidworks" or bool(self._derive_config_tool_names(config) & runtime_names))
+            ]
+            pdm_by_id = {str(config.get("id")): config for config in candidates if config.get("tool_type") == "solidworks_pdm" and config.get("enabled", True)}
+            descriptions = {}
+            for config in candidates:
+                if config.get("tool_type") != "solidworks" or not config.get("enabled", True):
+                    continue
+                linked = pdm_by_id.get(str((config.get("connection_config") or {}).get("pdm_tool_id")))
+                if linked:
+                    description = build_solidworks_tool_description({**config, "pdm_link_name": linked.get("name"), "pdm_link": linked})
+                    descriptions.update({name: description for name in self._derive_config_tool_names(config)})
+            runtime_tools = [
+                self._clone_structured_tool(tool, description=descriptions[tool.name]) if getattr(tool, "name", "") in descriptions else tool
+                for tool in runtime_tools
+            ]
+            linked_hidden_ids = hidden_pdm_config_ids(candidates)
+            hidden_names = {name for config in candidates if str(config.get("id")) in linked_hidden_ids for name in self._derive_config_tool_names(config)}
+            runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in hidden_names]
+
         tool_skill_resolution = await self._resolve_request_tool_skill_bindings(
             runtime_tools=runtime_tools,
             mode=mode,
@@ -15997,14 +16027,24 @@ class RAGComponents:
             binding_state_override=tool_skill_binding_state_override,
         )
         runtime_tools = list(tool_skill_resolution["runtime_tools"])
+        tool_skill_resolution["tool_skill_hidden_ids"] = list(set(tool_skill_resolution["tool_skill_hidden_ids"]) | linked_hidden_ids)
         instruction_skill_runnable_ids = self._map_runtime_tools_to_runnable_tool_config_ids(runtime_tools)
         instruction_skill_hidden_ids = set(tool_skill_resolution["tool_skill_hidden_ids"])
         instruction_skill_allowed_ids = set(allowed_tool_config_ids) if allowed_tool_config_ids is not None else None
         instruction_skill_configs = [
             config
             for config in self._tool_configs or []
-            if config.get("id") in instruction_skill_runnable_ids
-            and config.get("id") not in instruction_skill_hidden_ids
+            if (
+                config.get("id") in instruction_skill_runnable_ids
+                and config.get("id") not in instruction_skill_hidden_ids
+                or str(config.get("id")) in linked_hidden_ids
+                and any(
+                    item.get("tool_type") == "solidworks"
+                    and (item.get("connection_config") or {}).get("pdm_tool_id") == config.get("id")
+                    and item.get("id") in instruction_skill_runnable_ids
+                    for item in self._tool_configs or []
+                )
+            )
             and (instruction_skill_allowed_ids is None or config.get("id") in instruction_skill_allowed_ids)
         ]
         instruction_skill_loader = build_read_skill_tool(instruction_skill_configs)
@@ -16157,6 +16197,15 @@ class RAGComponents:
             ]
             unavailable_tool_configs = [
                 config for config in candidate_tool_configs if (config.get("id") or "") not in runnable_ids and (config.get("id") or "") not in hidden_id_set
+            ]
+
+        if mode == "chat":
+            by_id = {str(config.get("id")): config for config in candidate_tool_configs}
+            filtered_tool_configs = [
+                {**config, "pdm_link": by_id.get(str((config.get("connection_config") or {}).get("pdm_tool_id")))}
+                if config.get("tool_type") == "solidworks"
+                else config
+                for config in filtered_tool_configs
             ]
 
         instruction_skill_loader_available = any(

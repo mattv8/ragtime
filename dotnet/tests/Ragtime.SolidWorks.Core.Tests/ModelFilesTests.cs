@@ -247,7 +247,7 @@ namespace Ragtime.SolidWorks.Core.Tests
             Assert.Equal(ProtocolInfo.Access.Read, preview.Access);
             Assert.True(names.IndexOf("model.export") > names.IndexOf("equations.list"));
             Assert.True(names.IndexOf("model.preview") > names.IndexOf("model.export"));
-            Assert.Equal(32, OperationRegistry.Default.Public.Count);
+            Assert.Equal(33, OperationRegistry.Default.Public.Count);
         }
 
         [Fact]

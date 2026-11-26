@@ -5,7 +5,7 @@ namespace Ragtime.SolidWorks.Core
     // DTOs for document, model, configuration, feature and dimension results (contract section 5).
 
     /// <summary>A document item of <c>documents.list</c> and the result of <c>document.open</c>.</summary>
-    public sealed class DocumentItem
+    public class DocumentItem
     {
         /// <summary>Host-assigned id such as "doc-1".</summary>
         public string DocumentId { get; set; } = string.Empty;
@@ -88,6 +88,55 @@ namespace Ragtime.SolidWorks.Core
 
         /// <summary>Assembly only: number of mates.</summary>
         public int? MateCount { get; set; }
+
+        /// <summary>
+        /// Assembly only: number of components whose referenced file is not on disk, at any depth (the components that
+        /// <c>components.list</c> reports with <c>file_exists</c> false).
+        /// </summary>
+        public int? MissingComponentCount { get; set; }
+    }
+
+    /// <summary>
+    /// Result of <c>document.open</c>: the document item plus what OpenDoc6 reported. <see cref="LoadWarnings"/> names the
+    /// warnings (an empty list when none); <see cref="MissingReferences"/> lists up to 50 referenced paths not on disk.
+    /// </summary>
+    public sealed class DocumentOpenResult : DocumentItem
+    {
+        /// <summary>Maximum number of paths in <see cref="MissingReferences"/>.</summary>
+        public const int MaxMissingReferences = 50;
+
+        /// <summary>Names of the load warnings (see <see cref="FileLoadWarnings"/>); empty when none.</summary>
+        public List<string> LoadWarnings { get; set; } = new List<string>();
+
+        /// <summary>Referenced file paths that are not on disk, at most <see cref="MaxMissingReferences"/>; empty when none.</summary>
+        public List<string> MissingReferences { get; set; } = new List<string>();
+
+        /// <summary>Builds the result from the registry's document item and the session's facts about the open.</summary>
+        public static DocumentOpenResult From(DocumentItem item, SessionDocumentInfo info)
+        {
+            return new DocumentOpenResult
+            {
+                DocumentId = item.DocumentId,
+                InstanceId = item.InstanceId,
+                Title = item.Title,
+                Path = item.Path,
+                Type = item.Type,
+                ActiveConfiguration = item.ActiveConfiguration,
+                OpenedByHost = item.OpenedByHost,
+                ReadOnly = item.ReadOnly,
+                Modified = item.Modified,
+                LoadWarnings = new List<string>(FileLoadWarnings.NamesOf(info.LoadWarningBits)),
+                MissingReferences = new List<string>(Take(info.MissingReferences, MaxMissingReferences)),
+            };
+        }
+
+        private static IEnumerable<string> Take(IReadOnlyList<string> paths, int limit)
+        {
+            for (var index = 0; index < paths.Count && index < limit; index++)
+            {
+                yield return paths[index];
+            }
+        }
     }
 
     /// <summary>One item of <c>configurations.list</c>.</summary>

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
 using Newtonsoft.Json.Linq;
 using Ragtime.SolidWorks.Core;
 using SW = global::SolidWorks.Interop.sldworks;
@@ -30,14 +32,14 @@ namespace Ragtime.SolidWorks.Readers
         /// Opens a file read-only and silently. The path must be on local storage (checked before any COM call). A
         /// document already open with that path is returned as it is (not reopened or activated). Never saves.
         /// </summary>
-        public SessionDocumentInfo OpenReadOnlySilent(string path, string? configuration) => Run("opening the document", () =>
+        public SessionDocumentInfo OpenReadOnlySilent(string path, string? configuration, Deadline deadline) => Run("opening the document", () =>
         {
             DocumentPaths.RequireOpenable(path);
             LocalFileCheck.Require(path, "path");
             var open = FindOpenDocument(new DocumentRef(path, null));
             if (open != null)
             {
-                return Describe(open, true, path);
+                return Describe(open, true, path, 0, MissingReferences(path, deadline));
             }
 
             if (!File.Exists(path))
@@ -59,8 +61,36 @@ namespace Ragtime.SolidWorks.Readers
                 throw OpenFailure(errors, warnings);
             }
 
-            return Describe(document, false, path);
+            return Describe(document, false, path, warnings, MissingReferences(path, deadline));
         });
+
+        /// <summary>
+        /// Referenced paths of a document that are not on local disk, in SolidWorks order, at most
+        /// <see cref="DocumentOpenResult.MaxMissingReferences"/>. Non-local references count as missing (they are not
+        /// checked). Probing stops at the request deadline (the list is then the prefix checked). Empty when the dependency
+        /// list cannot be read: the open still succeeds.
+        /// </summary>
+        private IReadOnlyList<string> MissingReferences(string path, Deadline deadline)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return new List<string>();
+            }
+
+            try
+            {
+                var references = DependencyPaths(path).Where(reference => !DocumentPaths.SamePath(reference, path));
+                return MissingReferenceScan.Collect(
+                    references,
+                    ComponentFiles.LocalFileExists,
+                    deadline,
+                    DocumentOpenResult.MaxMissingReferences);
+            }
+            catch (COMException)
+            {
+                return new List<string>();
+            }
+        }
 
         /// <summary>Closes a document without saving. The caller only asks for documents the host opened.</summary>
         public void CloseDocument(DocumentRef document) => RunVoid("closing the document", () =>
@@ -98,8 +128,10 @@ namespace Ragtime.SolidWorks.Readers
             }
             else if (type == ProtocolInfo.DocumentTypes.Assembly)
             {
-                summary.ComponentCount = ComponentCount(model);
+                var components = AssemblyComponents(model);
+                summary.ComponentCount = components.Count;
                 summary.MateCount = MateFeatures(model).Count;
+                summary.MissingComponentCount = components.Count(component => !ComponentFiles.LocalFileExists(component.GetPathName()));
             }
 
             return summary;
@@ -128,7 +160,12 @@ namespace Ragtime.SolidWorks.Readers
             return items;
         });
 
-        private static SessionDocumentInfo Describe(SW.ModelDoc2 document, bool wasAlreadyOpen, string? fallbackPath)
+        private static SessionDocumentInfo Describe(
+            SW.ModelDoc2 document,
+            bool wasAlreadyOpen,
+            string? fallbackPath,
+            int loadWarningBits = 0,
+            IReadOnlyList<string>? missingReferences = null)
         {
             var path = document.GetPathName() ?? string.Empty;
             if (path.Length == 0)
@@ -143,7 +180,9 @@ namespace Ragtime.SolidWorks.Readers
                 ActiveConfigurationName(document),
                 document.IsOpenedReadOnly(),
                 document.GetSaveFlag(),
-                wasAlreadyOpen);
+                wasAlreadyOpen,
+                loadWarningBits,
+                missingReferences);
         }
 
         private static int DocumentTypeFromPath(string path)
@@ -195,10 +234,10 @@ namespace Ragtime.SolidWorks.Readers
             return ComWalk.Collection(part.GetBodies2((int)SWC.swBodyType_e.swSolidBody, false), "The solid body list").Count;
         }
 
-        private static int ComponentCount(SW.ModelDoc2 model)
-        {
-            var assembly = ComHelper.Require(model as SW.AssemblyDoc, "the assembly document");
-            return assembly.GetComponentCount(false);
-        }
+        /// <summary>Every component of the assembly at any depth, suppressed ones included.</summary>
+        private static List<SW.Component2> AssemblyComponents(SW.ModelDoc2 model) =>
+            ComWalk.Collection(AssemblyOf(model).GetComponents(false), "The component list")
+                .OfType<SW.Component2>()
+                .ToList();
     }
 }

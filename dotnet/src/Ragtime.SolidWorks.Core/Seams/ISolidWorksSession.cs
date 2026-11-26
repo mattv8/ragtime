@@ -51,8 +51,10 @@ namespace Ragtime.SolidWorks.Core
         /// in this instance, returns its info with <see cref="SessionDocumentInfo.WasAlreadyOpen"/> = true.
         /// <paramref name="configuration"/> null means the file's active configuration.
         /// Throws document_not_found when the file does not exist and solidworks_error when SolidWorks cannot open it.
+        /// <paramref name="deadline"/> is the request's deadline: the missing-reference probes stop when it has run out, and
+        /// the result then lists what was checked.
         /// </summary>
-        SessionDocumentInfo OpenReadOnlySilent(string path, string? configuration);
+        SessionDocumentInfo OpenReadOnlySilent(string path, string? configuration, Deadline deadline);
 
         /// <summary>Closes a document without saving. Only called for documents the host opened.</summary>
         void CloseDocument(DocumentRef document);
@@ -117,6 +119,18 @@ namespace Ragtime.SolidWorks.Core
         /// afterwards. Throws preview_unavailable when no picture can be rendered. Never saves the document.
         /// </summary>
         ExportResult RenderPreview(PreviewRequest request);
+
+        /// <summary>
+        /// Copies the open document and, when <see cref="DocumentCopyRequest.IncludeReferences"/> is true, its references
+        /// into <see cref="DocumentCopyRequest.FolderPath"/> with Pack and Go. The folder does not exist yet; create it.
+        /// Never modifies, saves or renames the source, and changes no document state.
+        /// Before writing, count the files Pack and Go would copy (for example its file-name list) and throw
+        /// <see cref="ErrorCodes.ResultTooLarge"/> with details {"reason": "file_count", "limit": request.MaxFiles, "count": N}
+        /// when that count is above request.MaxFiles. Every source passes <see cref="LocalFileCheck.Require"/> first.
+        /// Sources that are missing, and references Pack and Go leaves outside the folder, go to the outcome's warnings.
+        /// Throws solidworks_error when Pack and Go fails. On any throw, Core removes the folder.
+        /// </summary>
+        DocumentCopyOutcome CopyDocument(DocumentCopyRequest request);
     }
 
     /// <summary>

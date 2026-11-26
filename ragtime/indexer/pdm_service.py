@@ -20,9 +20,10 @@ PDM Database Structure:
 
 import asyncio
 import json
+import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from ragtime.core.app_setting_defaults import DEFAULT_IVFFLAT_LISTS
 from ragtime.core.database import get_db
@@ -1283,6 +1284,11 @@ pdm_indexer = PdmIndexerService()
 # =============================================================================
 
 
+_CAD_EXTENSIONS = (".sldasm", ".sldprt", ".slddrw")
+IDENTIFIER_HIT_LIMIT = 5
+SUMMARY_CONFIGURATION_LIMIT = 50
+
+
 class _PdmFilterError(ValueError):
     pass
 
@@ -1387,6 +1393,9 @@ async def _lookup_pdm_rows(
     filename: str | None = None,
     part_number: str | None = None,
     max_results: int = 10,
+    *,
+    offset: int = 0,
+    document_type: str | None = None,
 ) -> list[dict]:
     limit = max(1, min(50, int(max_results)))
     filters = ["index_name = $1"]
@@ -1400,12 +1409,35 @@ async def _lookup_pdm_rows(
     if part_number:
         params.append(f"%{_escape_like(part_number)}%")
         filters.append(f"(part_number ILIKE ${len(params)} ESCAPE '\\' OR state_json::text ILIKE ${len(params)} ESCAPE '\\')")
+    if document_type:
+        params.append(f"%.{document_type.casefold()}")
+        filters.append(f"lower(filename) LIKE ${len(params)}")
+    order_by = _lookup_order_by(filename, params)
+    page = f"LIMIT {limit} OFFSET {max(0, int(offset))}"
     query = (
         "SELECT document_id, filename, part_number, target_revision, state_json, extracted_at "
-        "FROM pdm_document_state WHERE " + " AND ".join(filters) + f" ORDER BY filename LIMIT {limit}"
+        "FROM pdm_document_state WHERE " + " AND ".join(filters) + f" {order_by} {page}"
     )
     db: Any = await get_db()
     return await db.query_raw(query, *params)
+
+
+def _lookup_order_by(filename: str | None, params: list[Any]) -> str:
+    """Rank exact filename (with or without extension), then prefix, then CAD files, then the rest.
+
+    CAD files come first within a tier; ties are ordered by filename.
+    """
+    whens: list[str] = []
+    if filename:
+        term = filename.casefold()
+        pattern = _escape_like(term)
+        params.extend([term, f"{pattern}.%", f"{pattern}%"])
+        exact, dotted, prefix = f"${len(params) - 2}", f"${len(params) - 1}", f"${len(params)}"
+        whens.append(f"WHEN lower(filename) = {exact} OR lower(filename) LIKE {dotted} ESCAPE '\\' THEN 0")
+        whens.append(f"WHEN lower(filename) LIKE {prefix} ESCAPE '\\' THEN 1")
+    cad = " OR ".join(f"lower(filename) LIKE '%{extension}'" for extension in _CAD_EXTENSIONS)
+    whens.append(f"WHEN {cad} THEN 2")
+    return f"ORDER BY CASE {' '.join(whens)} ELSE 3 END, CASE WHEN {cad} THEN 0 ELSE 1 END, filename, document_id"
 
 
 async def lookup_pdm_documents(
@@ -1497,6 +1529,10 @@ def _pdm_values(values: dict) -> dict:
     return {value.variable_name: "" if value.is_blank else value.value_text for value in values.values()}
 
 
+def _iso_timestamp(value: Any) -> Any:
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
 def _pdm_lookup_item(state: PdmDocumentStateModel, extracted_at: Any) -> dict:
     return {
         "document_id": state.document_id,
@@ -1506,7 +1542,7 @@ def _pdm_lookup_item(state: PdmDocumentStateModel, extracted_at: Any) -> dict:
         "description": state.description,
         "revision": state.target_revision,
         "vault_paths": _pdm_vault_paths(state.folder_paths, state.filename),
-        "extracted_at": extracted_at.isoformat() if hasattr(extracted_at, "isoformat") else extracted_at,
+        "extracted_at": _iso_timestamp(extracted_at),
         "document_values": _pdm_values(state.document_values),
         "configurations": [{"name": item.name, "values": _pdm_values(item.values)} for item in state.configurations],
         "bom": [item.model_dump() for item in state.bom_components],
@@ -1514,18 +1550,132 @@ def _pdm_lookup_item(state: PdmDocumentStateModel, extracted_at: Any) -> dict:
     }
 
 
-async def search_pdm_documents(
-    query: str,
+class LookupPage(NamedTuple):
+    """One lookup page. `positions` are the 1-based source row numbers of `items`; `examined` counts rows read."""
+
+    items: list[dict]
+    positions: list[int]
+    has_more: bool
+    examined: int
+
+
+def _pdm_summary_item(state: PdmDocumentStateModel, extracted_at: Any, configuration: str | None) -> dict:
+    names = [item.name for item in _narrowed_configurations(state, configuration)]
+    return {
+        "document_id": state.document_id,
+        "filename": state.filename,
+        "document_type": state.document_type,
+        "part_number": state.part_number,
+        "description": state.description,
+        "revision": state.target_revision,
+        "vault_paths": _pdm_vault_paths(state.folder_paths, state.filename),
+        "extracted_at": _iso_timestamp(extracted_at),
+        "configuration_names": names[:SUMMARY_CONFIGURATION_LIMIT],
+        "configuration_count": len(state.configurations),
+        "bom_count": len(state.bom_components),
+    }
+
+
+def _narrowed_configurations(state: PdmDocumentStateModel, configuration: str | None) -> list:
+    if configuration is None:
+        return list(state.configurations)
+    name = configuration.casefold()
+    return [] if name == "@" else [item for item in state.configurations if item.name.casefold() == name]
+
+
+def _narrow_configurations(state: PdmDocumentStateModel, configuration: str | None) -> PdmDocumentStateModel:
+    if configuration is None:
+        return state
+    return state.model_copy(update={"configurations": _narrowed_configurations(state, configuration)})
+
+
+def _matched_on(state: PdmDocumentStateModel, filename: str | None, part_number: str | None) -> str:
+    if filename and filename.casefold() in state.filename.casefold():
+        return "filename"
+    if part_number and part_number.casefold() in (state.part_number or "").casefold():
+        return "part_number"
+    if filename or part_number:
+        return "properties"
+    return "document_id"
+
+
+async def lookup_pdm_document_page(
     index_name: str,
+    document_id: int | None = None,
+    filename: str | None = None,
+    part_number: str | None = None,
+    *,
+    limit: int = 10,
+    offset: int = 0,
     document_type: str | None = None,
-    max_results: int = 10,
-) -> list[dict]:
-    try:
-        rows = await _search_pdm_rows(query, index_name, document_type, max_results)
-    except (EmbeddingOperationError, _PdmFilterError, _PdmConfigurationError):
-        raise
-    except Exception as exc:
-        raise RuntimeError(f"Error searching PDM: {exc}") from exc
+    configuration: str | None = None,
+    detail: str = "summary",
+) -> LookupPage:
+    """Return one page of checked-in PDM document snapshots, with the source row position of each item."""
+    if document_id is None and not filename and not part_number:
+        raise ValueError("Provide document_id, filename, or part_number.")
+    rows = await _lookup_pdm_rows(index_name, document_id, filename, part_number, limit + 1, offset=offset, document_type=document_type) or []
+    examined = rows[:limit]
+    items: list[dict] = []
+    positions: list[int] = []
+    for position, row in enumerate(examined, start=1):
+        try:
+            state = _pdm_state(row)
+        except Exception as exc:
+            logger.warning(f"Skipping invalid PDM document state: {exc}")
+            continue
+        if detail == "full":
+            item = _pdm_lookup_item(_narrow_configurations(state, configuration), row.get("extracted_at"))
+        else:
+            item = _pdm_summary_item(state, row.get("extracted_at"), configuration)
+        items.append({**item, "matched_on": _matched_on(state, filename, part_number)})
+        positions.append(position)
+    return LookupPage(items, positions, len(rows) > limit, len(examined))
+
+
+def _is_identifier_query(query: str) -> bool:
+    return re.fullmatch(r"\S+", query) is not None and any(char.isdigit() for char in query)
+
+
+def _is_filename_prefix(filename: str, query: str) -> bool:
+    return filename.casefold().startswith(query.casefold())
+
+
+def _search_item(row: dict, state: PdmDocumentStateModel | None, match: str) -> dict:
+    filename = state.filename if state else row.get("filename", "")
+    return {
+        "document_id": row.get("document_id"),
+        "filename": filename,
+        "document_type": state.document_type if state else row.get("document_type"),
+        "part_number": state.part_number if state else row.get("part_number"),
+        "description": state.description if state else None,
+        "revision": state.target_revision if state else None,
+        "vault_paths": _pdm_vault_paths(state.folder_paths if state else [row.get("folder_path") or ""], filename),
+        "similarity": row.get("similarity", 0),
+        "configurations": [item.name for item in state.configurations] if state else [],
+        "bom_count": len(state.bom_components) if state else 0,
+        "match": match,
+    }
+
+
+async def _identifier_hits(query: str, index_name: str, document_type: str | None) -> list[dict]:
+    """Filename-prefix matches for a one-token query that contains a digit, such as a part number."""
+    if not _is_identifier_query(query):
+        return []
+    rows = await _lookup_pdm_rows(index_name, filename=query, max_results=IDENTIFIER_HIT_LIMIT, document_type=document_type) or []
+    hits = []
+    for row in rows:
+        try:
+            state = _pdm_state(row)
+        except Exception as exc:
+            logger.warning(f"Skipping invalid PDM document state: {exc}")
+            continue
+        if _is_filename_prefix(state.filename, query):
+            hits.append(_search_item(row, state, "filename"))
+    return hits
+
+
+async def _semantic_items(rows: list[dict], index_name: str) -> list[dict]:
     if not rows:
         return []
     db: Any = await get_db()
@@ -1546,44 +1696,38 @@ async def search_pdm_documents(
             by_id[row["document_id"]] = _pdm_state(row)
         except Exception as exc:
             logger.warning(f"Skipping invalid PDM document state: {exc}")
-    items = []
-    for row in rows:
-        state = by_id.get(row.get("document_id"))
-        filename = state.filename if state else row.get("filename", "")
-        items.append(
-            {
-                "document_id": row.get("document_id"),
-                "filename": filename,
-                "document_type": state.document_type if state else row.get("document_type"),
-                "part_number": state.part_number if state else row.get("part_number"),
-                "description": state.description if state else None,
-                "revision": state.target_revision if state else None,
-                "vault_paths": _pdm_vault_paths(state.folder_paths if state else [row.get("folder_path") or ""], filename),
-                "similarity": row.get("similarity", 0),
-                "configurations": [item.name for item in state.configurations] if state else [],
-                "bom_count": len(state.bom_components) if state else 0,
-            }
-        )
-    return items
+    return [_search_item(row, by_id.get(row.get("document_id")), "semantic") for row in rows]
 
 
-async def lookup_pdm_document_states(
+class SearchResult(NamedTuple):
+    items: list[dict]
+    semantic_unavailable: bool
+
+
+async def search_pdm_documents(
+    query: str,
     index_name: str,
-    document_id: int | None = None,
-    filename: str | None = None,
-    part_number: str | None = None,
+    document_type: str | None = None,
     max_results: int = 10,
-) -> list[dict]:
-    if document_id is None and not filename and not part_number:
-        raise ValueError("Provide document_id, filename, or part_number.")
-    rows = await _lookup_pdm_rows(index_name, document_id, filename, part_number, max_results)
-    items = []
-    for row in rows or []:
-        try:
-            items.append(_pdm_lookup_item(_pdm_state(row), row.get("extracted_at")))
-        except Exception as exc:
-            logger.warning(f"Skipping invalid PDM document state: {exc}")
-    return items
+) -> SearchResult:
+    try:
+        hits = await _identifier_hits(query, index_name, document_type)
+    except Exception as exc:
+        raise RuntimeError(f"Error searching PDM: {exc}") from exc
+    try:
+        rows = await _search_pdm_rows(query, index_name, document_type, max_results)
+    except (EmbeddingOperationError, _PdmConfigurationError) as exc:
+        if not hits:
+            raise
+        logger.warning(f"Semantic PDM search unavailable; returning filename matches: {exc}")
+        return SearchResult(hits[:max_results], semantic_unavailable=True)
+    except _PdmFilterError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Error searching PDM: {exc}") from exc
+    hit_ids = {hit["document_id"] for hit in hits}
+    semantic = await _semantic_items([row for row in rows if row.get("document_id") not in hit_ids], index_name)
+    return SearchResult((hits + semantic)[:max_results], semantic_unavailable=False)
 
 
 async def get_pdm_index_summary(index_name: str) -> dict:

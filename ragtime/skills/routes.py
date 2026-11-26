@@ -8,9 +8,11 @@ from pydantic import ValidationError
 
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.security import require_admin
+from ragtime.indexer.repository import repository as tool_repository
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
 from ragtime.skills import repository
+from ragtime.skills.builtin import list_builtin_skills
 from ragtime.skills.contract import SkillOwnerKind
 from ragtime.skills.models import CopyInstructionSkills, CreateInstructionSkill, InstructionSkill, ReorderInstructionSkills, UpdateInstructionSkill
 
@@ -148,6 +150,15 @@ def _register_owner_routes(path: str, owner_kind: SkillOwnerKind) -> None:
         path + "/{skill_id}", update_instruction_skill, methods=["PUT"], response_model=InstructionSkill, name=f"update_{owner_kind}_instruction_skill"
     )
     router.add_api_route(path + "/{skill_id}", delete_instruction_skill, methods=["DELETE"], name=f"delete_{owner_kind}_instruction_skill")
+
+
+@router.get("/tools/{tool_id}/skills/builtin")
+async def get_builtin_skills(tool_id: str) -> list[dict[str, Any]]:
+    tool = await tool_repository.get_tool_config(tool_id)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    skills = await repository.list_instruction_skills("tool", tool_id)
+    return list_builtin_skills(tool.model_dump(), skills)
 
 
 _register_owner_routes("/tools/{tool_id}/skills", "tool")

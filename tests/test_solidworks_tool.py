@@ -30,25 +30,25 @@ class SolidworksToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             description,
             "Read SolidWorks model data (features, sketches, dimensions, mates, components, properties, mass properties) "
-            "from 'Design Shop' as JSON. Engineering models. Read-only. Pinned to SolidWorks 2024. "
-            'Call with operation "guide" first, then "describe" for the operation list.',
+            "from 'Design Shop' as JSON. Engineering models. Scripts: off. No PDM vault linked. Pinned to SolidWorks 2024. "
+            "Load the skills listed below before acting; call describe for argument schemas.",
         )
 
     def test_description_defaults_to_any_installed_version(self) -> None:
         for connection in ({}, {"solidworks_version": None}, None):
             with self.subTest(connection=connection):
                 description = build_solidworks_tool_description({"name": "Shop", "connection_config": connection})
-                self.assertIn("from 'Shop' as JSON. Read-only. Pinned to SolidWorks any installed version.", description)
-                self.assertTrue(description.endswith('Call with operation "guide" first, then "describe" for the operation list.'))
+                self.assertIn("from 'Shop' as JSON. Scripts: off. No PDM vault linked. Pinned to SolidWorks any installed version.", description)
+                self.assertTrue(description.endswith("Load the skills listed below before acting; call describe for argument schemas."))
 
     def test_description_cap_truncates_only_admin_description(self) -> None:
         config = {"name": "Shop", "description": "x" * 3000, "connection_config": {"solidworks_version": 2025}}
         description = build_solidworks_tool_description(config)
         without_admin = build_solidworks_tool_description({**config, "description": ""})
-        prefix, suffix = without_admin.split(" Read-only.")
+        prefix, suffix = without_admin.split(" Scripts: off.")
         self.assertLess(len(description), 1500)
         self.assertTrue(description.startswith(prefix + " xxx"))
-        self.assertTrue(description.endswith(". Read-only." + suffix))
+        self.assertTrue(description.endswith(". Scripts: off." + suffix))
         self.assertEqual(config["description"], "x" * 3000)
 
     def test_input_schema_and_pydantic_arguments(self) -> None:
