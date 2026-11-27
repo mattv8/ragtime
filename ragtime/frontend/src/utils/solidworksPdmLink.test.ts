@@ -15,6 +15,38 @@ import {
   type PdmLinkStateInput,
   type PdmViewFacts,
 } from './solidworksPdmLink';
+import { splitVaultDraft } from './solidworksPdmLink';
+
+describe('splitVaultDraft', () => {
+  it.each([
+    ['', '\\', ''],
+    ['   ', '\\', ''],
+    ['\\', '\\', ''],
+    ['\\04_Cu', '\\', '04_Cu'],
+    ['04_Cu', '\\', '04_Cu'],
+    ['\\04_Custom\\', '\\04_Custom', ''],
+    ['/04_Custom/01', '\\04_Custom', '01'],
+    ['\\04_Custom\\\\01', '\\04_Custom', '01'],
+    ['C:\\Vault\\04_Custom\\x', '\\04_Custom', 'x'],
+    ['  \\folder\\partial ', '\\folder', 'partial '],
+  ])('splits %j, preserving trailing prefix spaces', (draft, parent, prefix) => {
+    expect(splitVaultDraft(draft, 'C:\\Vault')).toEqual({ parent, prefix });
+  });
+
+  it.each([
+    'D:\\other',
+    '\\\\server\\share',
+    '\\a\\..\\b',
+    '\\a\\.',
+    '\\a*',
+    '\\a\\bad\u0001',
+    '\\a\\é',
+    '\\bad \\child',
+    '\\bad.\\child',
+  ])('rejects invalid draft %j', (draft) => {
+    expect(splitVaultDraft(draft, 'C:\\Vault')).toBeNull();
+  });
+});
 
 const VAULT_ROOT = 'C:\\PDM';
 const EMPTY_MESSAGE = 'Enter a vault folder, for example \\13_Ragtime.';

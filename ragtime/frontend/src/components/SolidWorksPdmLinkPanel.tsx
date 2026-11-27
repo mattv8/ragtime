@@ -14,7 +14,6 @@ import type { PdmSandboxResponse, SolidworksHostStatus } from '../api/solidworks
 import { usePdmTools } from '../hooks/usePdmTools';
 import { usePdmRights } from '../hooks/usePdmRights';
 import type { RightsState } from '../utils/solidworksPdmRights';
-import { SolidWorksPdmFolderBrowser } from './SolidWorksPdmFolderBrowser';
 import { SolidWorksPdmSandboxSetup, type SandboxTarget } from './SolidWorksPdmSandboxSetup';
 import type {
   PdmIndexJob,
@@ -32,7 +31,10 @@ import {
   type PdmMachineState,
   type PdmViewFacts,
 } from '../utils/solidworksPdmLink';
-import { SolidWorksApprovedFolders } from './SolidWorksApprovedFolders';
+import {
+  SolidWorksApprovedFolders,
+  type FolderSuggestionSource,
+} from './SolidWorksApprovedFolders';
 import { SolidWorksPdmSetupForm } from './SolidWorksPdmSetupForm';
 import { InfoPopover } from './shared/InfoPopover';
 import { MESSAGE_ICON, PdmMessage, type PdmMessageTone } from './shared/PdmMessage';
@@ -155,23 +157,50 @@ function withApprovedFolder(folders: string[], folder: string): string[] {
   return [...folders.filter((item) => !isWithinFolder(item, folder)), folder];
 }
 
-/** Why the sandbox action cannot run yet; the same conditions as the folder browser's help. */
-function sandboxBlockReason(input: {
+type VaultBrowseBlock = 'unsaved' | 'loading' | 'tool_disabled' | 'agent';
+
+/**
+ * Why the vault can't be used yet; null when it can. Listing folders works with a disabled PDM
+ * tool, so only actions that need an enabled one pass `requireEnabledTool`.
+ */
+function vaultBrowseBlock(input: {
   toolId: string | null;
   linkedTool: ToolConfig | undefined;
   loading: boolean;
   database: string | null;
   machineState: PdmMachineState;
-}): string | null {
-  if (!input.toolId) return 'Save the connection first to browse the vault.';
-  if (!input.linkedTool || input.loading || !input.database) {
-    return 'Wait for the search index tool to load.';
-  }
-  if (!input.linkedTool.enabled) return 'Enable the PDM tool first.';
-  if (input.machineState !== 'ready') {
-    return 'Install and start the SolidWorks agent and log in to the vault view to browse the vault.';
-  }
+  requireEnabledTool: boolean;
+}): VaultBrowseBlock | null {
+  if (!input.toolId) return 'unsaved';
+  if (!input.linkedTool || input.loading || !input.database) return 'loading';
+  if (input.requireEnabledTool && !input.linkedTool.enabled) return 'tool_disabled';
+  if (input.machineState !== 'ready') return 'agent';
   return null;
+}
+
+const SANDBOX_BLOCK_REASON: Record<VaultBrowseBlock, string> = {
+  unsaved: 'Save the connection first to browse the vault.',
+  loading: 'Wait for the search index tool to load.',
+  tool_disabled: 'Enable the PDM tool first.',
+  agent: 'Install and start the SolidWorks agent and log in to the vault view to browse the vault.',
+};
+
+const TYPED_PATH_STILL_WORKS = 'You can still type a path and press Enter.';
+const SUGGESTIONS_BLOCK_REASON: Record<Exclude<VaultBrowseBlock, 'tool_disabled'>, string> = {
+  unsaved: `Save the connection first to get folder suggestions. ${TYPED_PATH_STILL_WORKS}`,
+  loading: `Wait for the search index tool to load to get folder suggestions. ${TYPED_PATH_STILL_WORKS}`,
+  agent: `Install and start the SolidWorks agent and log in to the vault view to get folder suggestions. ${TYPED_PATH_STILL_WORKS}`,
+};
+
+function folderSuggestionSource(
+  toolId: string | null,
+  pdmToolId: string | null,
+  block: VaultBrowseBlock | null,
+): FolderSuggestionSource {
+  if (block === null && toolId && pdmToolId) return { toolId, pdmToolId };
+  // Without `requireEnabledTool` the block is never 'tool_disabled'.
+  const reason = block === 'unsaved' || block === 'agent' ? block : 'loading';
+  return { unavailableReason: SUGGESTIONS_BLOCK_REASON[reason] };
 }
 
 function linkPill(state: PdmLinkState, status: PdmIndexStatusResponse | null): Pill {
@@ -636,13 +665,14 @@ export function SolidWorksPdmLinkPanel({
     onAllowChangesChange(true);
   };
 
-  const sandboxBlock = sandboxBlockReason({
+  const vaultState = { toolId, linkedTool, loading, database, machineState };
+  const sandboxBlockCode = vaultBrowseBlock({ ...vaultState, requireEnabledTool: true });
+  const sandboxBlock = sandboxBlockCode && SANDBOX_BLOCK_REASON[sandboxBlockCode];
+  const folderSuggestions = folderSuggestionSource(
     toolId,
-    linkedTool,
-    loading,
-    database,
-    machineState,
-  });
+    linkedId,
+    vaultBrowseBlock({ ...vaultState, requireEnabledTool: false }),
+  );
   const sandboxTarget: SandboxTarget | null =
     toolId && linkedId && database && sandboxBlock === null
       ? { toolId, pdmToolId: linkedId, vaultName: database }
@@ -1215,27 +1245,8 @@ export function SolidWorksPdmLinkPanel({
                 vaultRoot={vaultRoot}
                 disabled={disabled || setupBusy}
                 rights={rights.state.folders}
+                suggestions={folderSuggestions}
               />
-              {toolId && linkedTool && linkedId && database && machineState === 'ready' ? (
-                <SolidWorksPdmFolderBrowser
-                  key={`${toolId}:${linkedId}:${database}`}
-                  toolId={toolId}
-                  pdmToolId={linkedId}
-                  vaultName={database}
-                  folders={value.approved_folders}
-                  vaultRoot={vaultRoot}
-                  onChange={changeFolders}
-                  disabled={disabled || setupBusy || pending !== null || rights.loading}
-                />
-              ) : (
-                <p id="solidworks-pdm-folder-browse-help" className="field-help">
-                  {!toolId
-                    ? 'Save the connection first to browse the vault.'
-                    : !linkedTool || loading || !linkedId || !database
-                      ? 'Wait for the search index tool to load.'
-                      : 'Install and start the SolidWorks agent and log in to the vault view to browse the vault.'}
-                </p>
-              )}
             </div>
           )}
         </fieldset>

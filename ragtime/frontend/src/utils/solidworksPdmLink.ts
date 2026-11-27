@@ -182,6 +182,28 @@ export function normalizeVaultFolder(
   return { ok: true, path: folder, converted: relative !== slashed };
 }
 
+export function splitVaultDraft(
+  draft: string,
+  vaultRoot: string | null,
+): { parent: string; prefix: string } | null {
+  const slashed = toBackslashes(draft.trimStart());
+  if (slashed === '') return { parent: '\\', prefix: '' };
+  if (hasControlCharacter(slashed) || hasNonAsciiCharacter(slashed)) return null;
+
+  const root = viewRootPrefix(vaultRoot);
+  const relative =
+    root !== null && isWithinViewRoot(slashed, root) ? slashed.slice(root.length) : slashed;
+  if (ABSOLUTE_PATH.test(relative)) return null;
+
+  const rooted = (relative.startsWith('\\') ? relative : `\\${relative}`).replace(/\\{2,}/g, '\\');
+  const separator = rooted.lastIndexOf('\\');
+  const parent = rooted.slice(0, separator) || '\\';
+  const prefix = rooted.slice(separator + 1);
+  if (ILLEGAL_CHARACTER.test(rooted) || rooted.split('\\').some(isDotSegment)) return null;
+  if (parent.slice(1).split('\\').some(hasEdgeSpaceOrDot)) return null;
+  return { parent, prefix };
+}
+
 function buildNotice(parts: {
   input: string;
   converted: boolean;

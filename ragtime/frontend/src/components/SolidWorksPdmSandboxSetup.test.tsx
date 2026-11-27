@@ -15,14 +15,12 @@ vi.mock('../api/solidworks', async (importOriginal) => ({
 vi.mock('./SolidWorksPdmFolderBrowser', () => ({
   SolidWorksPdmFolderBrowser: (props: {
     idPrefix?: string;
-    mode?: string;
     disabled?: boolean;
     onPick?: (path: string) => void;
   }) => (
     <div
       data-testid="sandbox-browser"
       data-id-prefix={props.idPrefix}
-      data-mode={props.mode}
       data-disabled={String(props.disabled === true)}
     >
       <input className="browser-filter-input" aria-label="Filter folders" />
@@ -175,12 +173,11 @@ describe('SolidWorksPdmSandboxSetup', () => {
       expect(document.activeElement).toBe(screen.getByLabelText('Filter folders'));
     });
 
-    it('renders the parent browser in pick mode with its own id prefix', () => {
+    it('renders the parent browser with its own id prefix', () => {
       renderSandbox();
       openForm();
       const browser = screen.getByTestId('sandbox-browser');
       expect(browser.dataset.idPrefix).toBe('solidworks-pdm-sandbox-browser');
-      expect(browser.dataset.mode).toBe('pick');
     });
 
     it('starts with no parent and blocks creation until one is chosen', () => {

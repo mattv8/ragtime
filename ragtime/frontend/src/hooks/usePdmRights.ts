@@ -28,8 +28,22 @@ export function usePdmRights(input: UsePdmRightsInput): UsePdmRightsResult {
   current.current = { input, key, active };
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controller = useRef<AbortController | null>(null);
+  const identity = active ? JSON.stringify([toolId, pdmToolId]) : null;
+  const carried = useRef<{
+    identity: string | null;
+    response: PdmRightsResponse | null;
+    generation: number;
+  }>({
+    identity,
+    response: null,
+    generation: 0,
+  });
+  if (carried.current.identity !== identity) {
+    carried.current = { identity, response: null, generation: carried.current.generation + 1 };
+  }
   const [result, setResult] = useState<{
     key: string;
+    generation: number;
     response: PdmRightsResponse | null;
     error: string | null;
     loading: boolean;
@@ -42,8 +56,9 @@ export function usePdmRights(input: UsePdmRightsInput): UsePdmRightsResult {
     const { input: options, key: requestKey, active: canRequest } = current.current;
     if (!canRequest || !options.toolId || !options.pdmToolId) return;
     const abort = new AbortController();
+    const generation = carried.current.generation;
     controller.current = abort;
-    setResult({ key: requestKey, response: null, error: null, loading: true });
+    setResult({ key: requestKey, generation, response: null, error: null, loading: true });
     void solidworksApi
       .checkPdmRights(
         options.toolId,
@@ -51,9 +66,16 @@ export function usePdmRights(input: UsePdmRightsInput): UsePdmRightsResult {
         abort.signal,
       )
       .then((response) => {
-        if (!abort.signal.aborted && current.current.active && current.current.key === requestKey) {
+        if (
+          !abort.signal.aborted &&
+          current.current.active &&
+          current.current.key === requestKey &&
+          carried.current.generation === generation
+        ) {
+          if (!response.error) carried.current.response = response;
           setResult({
             key: requestKey,
+            generation,
             response,
             error: response.error?.message ?? null,
             loading: false,
@@ -62,9 +84,14 @@ export function usePdmRights(input: UsePdmRightsInput): UsePdmRightsResult {
       })
       .catch((error: unknown) => {
         if (abort.signal.aborted || (error instanceof Error && error.name === 'AbortError')) return;
-        if (current.current.active && current.current.key === requestKey) {
+        if (
+          current.current.active &&
+          current.current.key === requestKey &&
+          carried.current.generation === generation
+        ) {
           setResult({
             key: requestKey,
+            generation,
             response: null,
             error: error instanceof Error ? error.message : String(error),
             loading: false,
@@ -87,9 +114,17 @@ export function usePdmRights(input: UsePdmRightsInput): UsePdmRightsResult {
     };
   }, [active, key, recheck]);
 
-  const fresh = active && result?.key === key ? result : null;
+  const fresh =
+    active && result?.key === key && result.generation === carried.current.generation
+      ? result
+      : null;
   return {
-    state: resolveRightsState({ response: fresh?.response ?? null, allowChanges, folders }),
+    state: resolveRightsState({
+      response:
+        fresh?.response ?? (active && (!fresh || fresh.loading) ? carried.current.response : null),
+      allowChanges,
+      folders,
+    }),
     loading: active && (fresh?.loading ?? true),
     error: fresh?.error ?? null,
     recheck,

@@ -326,12 +326,9 @@ export function SolidWorksPdmSandboxSetup({
             <SolidWorksPdmFolderBrowser
               key={`${target.toolId}:${target.pdmToolId}:${target.vaultName}`}
               idPrefix="solidworks-pdm-sandbox-browser"
-              mode="pick"
               toolId={target.toolId}
               pdmToolId={target.pdmToolId}
               vaultName={target.vaultName}
-              folders={[]}
-              vaultRoot={null}
               onPick={pickParent}
               disabled={locked}
             />
